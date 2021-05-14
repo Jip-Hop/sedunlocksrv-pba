@@ -1,0 +1,72 @@
+#!/bin/busybox ash
+# Custom Tiny Core Linux RC Script
+
+# Hide cursor
+echo -e "\e[?1c"
+# Disable showing keyboard input
+stty -echo
+
+. /etc/init.d/busybox-aliases
+export PATH=/usr/local/sbin:/usr/local/bin:"$PATH"
+
+# Start Udev to populate /dev and handle hotplug events
+/sbin/udevd --daemon 2>&1 >/dev/null
+/sbin/udevadm trigger --action=add 2>&1 >/dev/null &
+
+# rotdash $!
+# modprobe loop 2>/dev/null
+
+# Setup clock
+while [ ! -e /dev/rtc0 ]; do usleep 50000; done
+/sbin/hwclock -u -s &
+
+/sbin/ifconfig lo 127.0.0.1 up
+/sbin/route add 127.0.0.1 lo &
+
+# chmod u+s /bin/busybox.suid /usr/bin/sudo
+# modprobe -q squashfs 2>/dev/null
+# touch /var/tmp/k5_skip
+
+# Creates the necessary links and cache to the most recent shared libraries
+/sbin/ldconfig 2>/dev/null
+
+# sync
+# wait $fstab_pid
+
+# /etc/init.d/dhcp.sh &
+
+# DHCP, from /etc/init.d/dhcp.sh
+. /etc/init.d/tc-functions
+
+# This waits until all devices have registered
+/sbin/udevadm settle --timeout=5
+
+NETDEVICES="$(awk -F: '/eth.:|tr.:/{print $1}' /proc/net/dev 2>/dev/null)"
+for DEVICE in $NETDEVICES; do
+  ifconfig $DEVICE | grep -q "inet addr"
+  if [ "$?" != 0 ]; then
+    echo -e "${GREEN}Network device ${MAGENTA}$DEVICE${GREEN} detected, DHCP broadcasting for IP.\n${NORMAL}"
+    # trap 2 3 11
+    # /sbin/udhcpc -b -i $DEVICE -x hostname:$(/bin/hostname) -p /var/run/udhcpc.$DEVICE.pid >/dev/null 2>&1 &
+    # trap "" 2 3 11
+
+    /sbin/udhcpc -b -i $DEVICE -x hostname:$(/bin/hostname) -p /var/run/udhcpc.$DEVICE.pid
+
+    sleep 1
+  fi
+done
+
+# /sbin/loadcpufreq 2>/dev/null &
+
+# Fix to get the 64-bit binaries working
+if [ ! -d /lib64 ]; then
+    ln -s /lib /lib64
+fi
+
+cd /usr/local/sbin/sedunlocksrv/
+./sedunlocksrv
+
+# Reboot when sedunlocksrv exits
+echo "Rebooting..."
+sleep 3
+reboot -nf

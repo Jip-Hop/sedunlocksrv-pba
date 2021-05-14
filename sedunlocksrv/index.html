@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      form {
+        border: 3px solid #f1f1f1;
+      }
+
+      input[type="password"],
+      input[type="text"] {
+        width: 100%;
+        padding: 12px 20px;
+        margin: 8px 0;
+        display: inline-block;
+        border: 1px solid #ccc;
+        box-sizing: border-box;
+      }
+
+      button {
+        background-color: #04aa6d;
+        color: white;
+        padding: 14px 20px;
+        margin: 8px 0;
+        border: none;
+        cursor: pointer;
+        width: 100%;
+      }
+
+      #reboot {
+        background: #ffa500;
+      }
+
+      button:hover {
+        opacity: 0.8;
+      }
+
+      .container {
+        padding: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>SED Unlock</h2>
+
+    <form>
+      <div class="container">
+        <label for="psw"><b>Password</b></label>
+        <input id="psw" type="password" placeholder="Enter Password" />
+
+        <label>
+          <input
+            id="passwordVisibilityToggle"
+            type="checkbox"
+            checked="false"
+          />
+          Show password
+        </label>
+        <button id="submit">Unlock</button>
+        <button id="reboot">Reboot</button>
+      </div>
+    </form>
+    <pre id="log"></pre>
+    <script>
+      function postData(e, params) {
+        e.preventDefault();
+
+        var logger = document.getElementById("log");
+        logger.textContent = "";
+
+        var xhr = new XMLHttpRequest();
+        xhr.seenBytes = 0;
+        xhr.open("POST", "/", true);
+
+        xhr.setRequestHeader(
+          "Content-type",
+          "application/x-www-form-urlencoded"
+        );
+
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState > 2) {
+            var newData = xhr.responseText.substr(xhr.seenBytes);
+            xhr.seenBytes = xhr.responseText.length;
+            logger.textContent += newData;
+          }
+        };
+
+        xhr.ontimeout = function (e) {
+          logger.textContent += "\nSending data timed out. Is the server still turned on?";
+        };
+
+        xhr.addEventListener("error", function (e) {
+          if(e instanceof ProgressEvent){
+            logger.textContent += "\nError sending data. Is the server still turned on?";
+          } else {
+            logger.textContent += "\nError sending data. Check the browser console for details."
+            console.log(e);
+          }
+        });
+
+        xhr.send(params);
+      }
+
+      function togglePasswordVisibility() {
+        var x = document.getElementById("psw");
+
+        if (x.type === "password") {
+          x.type = "text";
+        } else {
+          x.type = "password";
+        }
+      }
+
+      var checkbox = document.getElementById("passwordVisibilityToggle");
+      checkbox.checked = false;
+      checkbox.addEventListener("click", togglePasswordVisibility);
+      document.getElementById("submit").addEventListener("click", function (e) {
+        postData(e, "psw=" + document.getElementById("psw").value);
+      });
+      document.getElementById("reboot").addEventListener("click", function (e) {
+        postData(e, "reboot=1");
+      });
+    </script>
+  </body>
+</html>
