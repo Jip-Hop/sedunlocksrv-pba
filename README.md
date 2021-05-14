@@ -1,6 +1,8 @@
 # sedunlocksrv-pba
 Conveniently unlock your Self Encrypting Drive on startup (via HTTPS) without the need to attach monitor and keyboard.
 
+<img width="450" alt="screenshot" src="https://user-images.githubusercontent.com/2871973/118311084-ba41f400-b4ef-11eb-987d-13834a31c034.png">
+
 ## Compatibility
 This tool, `sedunlocksrv-pba`, will only work if you have a Self Encrypting Drive (SED) which is compatible with [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) (TCG OPAL). For example the Samsung EVO 850 SSD.
 
