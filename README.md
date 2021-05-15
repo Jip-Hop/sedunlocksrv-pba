@@ -20,31 +20,37 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 
 ## SED benefits
 - Encrypt your (boot) drive, even when the OS doesn't (fully) support encryption
-
+- Drive locks when power is lost, protecting data when server is stolen 
+- 
 ## Requirements
 - A Self Encrypting Drive compatible with [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) (TCG OPAL)
 - Ubuntu to build the PBA image
 - Two USB sticks to flash the PBA image
 
-## Building with Ubuntu (inside VirtualBox)
-- Download and install [VirtualBox](https://www.virtualbox.org/wiki/Downloads).
-- Also install the VirtualBox Extension Pack from the link above.
-[Download Ubuntu 20.04.2 Focal Fossa](https://sourceforge.net/projects/linuxvmimages/files/VirtualBox/U/20.04/Ubuntu_20.04.2_VB.zip/download) from [osboxes](https://www.linuxvmimages.com/images/ubuntu-2004).
+## Setup a VM for building with VirtualBox
+- Download and install [VirtualBox](https://www.virtualbox.org/wiki/Downloads)
+- Also install the VirtualBox Extension Pack from the link above
+- [Download Ubuntu 20.04.2 Focal Fossa](https://sourceforge.net/projects/linuxvmimages/files/VirtualBox/U/20.04/Ubuntu_20.04.2_VB.zip/download) from [linuxvmimages](https://www.linuxvmimages.com/images/ubuntu-2004)
 - Extract the downloaded archive
 - Import the VM by double clicking the `Ubuntu_20.04.2_VB_LinuxVMImages.COM.ova` file
 - Open Settings for the newly created VM and go to Ports->USB to enable the USB 3.0 (xHCI) Controller
 - Boot the VM and login with username `ubuntu` and password `ubuntu`
+- Tip: enable Shared Clipboard from the Devices dropdown menu to copy and paste the commands in the next steps
+- Optional: open Terminal and run `sudo apt-get -y install nautilus-admin && sudo adduser $USER vboxsf` for convenience (access VirtualBox shared folders and browse in Files as admin via right click -> Open as Administrator)
 - Insert the `Guest Additions CD image` from the `Devices` menu dropdown, update the installation and reboot
-- Become root with: `sudo su`
-- Open Terminal and update with: `apt-get update && sudo apt-get -y upgrade`
+- Open Terminal and become root with: `sudo su`
+- Update with: `apt-get update && apt-get -y upgrade`
+- Continue with building in the next steps
+
+## Building on Ubuntu 20.04.2
 - Install the Go compiler with: `snap install go --classic`
 - Install build dependencies: `apt-get -y install curl xorriso libarchive-tools`
-- Clone this repo and run: `./build.sh`
-- Attach your USB stick to the VM from the Devises dropdown menu
+- [Download](https://github.com/Jip-Hop/sedunlocksrv-pba/archive/refs/heads/main.zip) or clone this repo and run: `./build.sh`
+- Connect your USB stick to Ubuntu (if inside VirtualBox, use the Devices dropdown menu)
 - Format the stick with a supported filesystem (e.g. FAT32) if this is not already the case
 - Copy the `sedunlocksrv-pba.iso` file onto your USB stick (use the GUI file explorer or `cp` from the Terminal)
-- Eject the USB stick and turn off the Ubuntu VM
-- Put this USB stick aside for now, and use the other USB stick for the sedutil rescue system (see next step)
+- Eject the USB stick and put it aside for now
+- Use the other USB stick for the sedutil rescue system (see next step)
 
 ## Encrypting your drive and flashing the PBA
 Follow the instructions from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.iso`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.iso /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED.
