@@ -12,7 +12,6 @@ import (
 
 var httpAddr string = ":80"
 var httpsAddr string = ":443"
-var attempt int = 0
 
 // ANSI colors
 var green string = "\033[1;32m"
@@ -85,12 +84,17 @@ func index(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "ParseForm() err: %v", err)
 			return
 		}
-		if r.FormValue("reboot") == "1" {
+		if r.FormValue("action") == "reboot" {
 			cmdExec(w, "./reboot.sh")
 		} else {
 			psw := r.FormValue("psw")
-			attempt++
-			cmdExec(w, "./unlock.sh", psw, fmt.Sprint(attempt))
+			if r.FormValue("action") == "unlock" {
+				cmdExec(w, "./unlock.sh", psw)
+			} else if r.FormValue("action") == "change-pwd" {
+				newpsw := r.FormValue("newpsw")
+				newpsw2 := r.FormValue("newpsw2")
+				cmdExec(w, "./unlock.sh", psw, newpsw, newpsw2)
+			}
 		}
 
 	default:

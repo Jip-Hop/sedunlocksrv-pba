@@ -3,6 +3,9 @@ Conveniently unlock your Self Encrypting Drive on startup (via HTTPS) without th
 
 <img width="450" alt="screenshot" src="https://user-images.githubusercontent.com/2871973/118311084-ba41f400-b4ef-11eb-987d-13834a31c034.png">
 
+## Disclaimer
+Use at your own risk! You may lock yourself out of the data on the disk.
+
 ## Compatibility
 This tool, `sedunlocksrv-pba`, will only work if you have a Self Encrypting Drive (SED) which is compatible with [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) (TCG OPAL). For example the Samsung EVO 850 SSD.
 
@@ -15,6 +18,8 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 
 ## Features
 - Unlock your SED from a browser (via HTTPS)
+- Change disk password from a browser (via HTTPS)
+- Not limited to us_english keyboard mapping
 - Reboot button to boot from the unlocked drive
 - BIOS and UEFI support
 
@@ -62,7 +67,6 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
 
 ## Wishlist
-- SED password change via the web gui
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
 - PBA flashing via the web gui
 

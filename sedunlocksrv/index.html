@@ -6,8 +6,40 @@
       body {
         font-family: Arial, Helvetica, sans-serif;
       }
-      form {
-        border: 3px solid #f1f1f1;
+
+      h2 {
+        text-align: center;
+      }
+
+      #toolbar input[type="radio"] {
+        opacity: 0;
+        position: fixed;
+        width: 0;
+      }
+
+      #toolbar label {
+        display: inline-block;
+        background-color: #ddd;
+        padding: 10px 20px;
+        text-transform: uppercase;
+        margin: 0 0 10px 0;
+      }
+
+      #toolbar input[type="radio"]:not(:checked) + label:hover,
+      button:hover {
+        cursor: pointer;
+        opacity: 0.8;
+      }
+
+      #toolbar input[type="radio"]:checked + label,
+      button {
+        background-color: #04aa6d;
+        color: white;
+      }
+
+      #reboot + label {
+        background: #ffa500;
+        color: white;
       }
 
       input[type="password"],
@@ -21,46 +53,58 @@
       }
 
       button {
-        background-color: #04aa6d;
-        color: white;
         padding: 14px 20px;
-        margin: 8px 0;
+        margin: 8px 0 0 0;
         border: none;
-        cursor: pointer;
         width: 100%;
       }
 
-      #reboot {
-        background: #ffa500;
-      }
-
-      button:hover {
-        opacity: 0.8;
-      }
-
       .container {
-        padding: 16px;
+        padding: 10px;
+        border: 3px solid #f1f1f1;
+      }
+
+      html > body:not([data-action="change-pwd"]) .container .change-pwd {
+        display: none;
       }
     </style>
   </head>
   <body>
-    <h2>SED Unlock</h2>
-
+    <h2>SED Unlock Server</h2>
     <form>
-      <div class="container">
-        <label for="psw"><b>Password</b></label>
-        <input id="psw" type="password" placeholder="Enter Password" />
+      <div id="toolbar">
+        <input type="radio" id="unlock" name="action" /><label for="unlock"
+          >Unlock</label
+        ><input type="radio" id="change-pwd" name="action" /><label
+          for="change-pwd"
+          >Change password</label
+        ><input type="radio" id="reboot" /><label for="reboot">Reboot</label>
+      </div>
 
+      <div class="container">
+        <input
+          id="psw"
+          class="password"
+          type="password"
+          placeholder="Enter password"
+        />
+        <input
+          id="newpsw"
+          class="password change-pwd"
+          type="password"
+          placeholder="Enter new Password"
+        />
+        <input
+          id="newpsw2"
+          class="password change-pwd"
+          type="password"
+          placeholder="Confirm new password"
+        />
         <label>
-          <input
-            id="passwordVisibilityToggle"
-            type="checkbox"
-            checked="false"
-          />
+          <input id="password-toggle" type="checkbox" checked="false" />
           Show password
         </label>
-        <button id="submit">Unlock</button>
-        <button id="reboot">Reboot</button>
+        <button id="submit">Submit</button>
       </div>
     </form>
     <pre id="log"></pre>
@@ -89,14 +133,17 @@
         };
 
         xhr.ontimeout = function (e) {
-          logger.textContent += "\nSending data timed out. Is the server still turned on?";
+          logger.textContent +=
+            "\nSending data timed out. Is the server still turned on?";
         };
 
         xhr.addEventListener("error", function (e) {
-          if(e instanceof ProgressEvent){
-            logger.textContent += "\nError sending data. Is the server still turned on?";
+          if (e instanceof ProgressEvent) {
+            logger.textContent +=
+              "\nError sending data. Is the server still turned on?";
           } else {
-            logger.textContent += "\nError sending data. Check the browser console for details."
+            logger.textContent +=
+              "\nError sending data. Check the browser console for details.";
             console.log(e);
           }
         });
@@ -104,25 +151,52 @@
         xhr.send(params);
       }
 
-      function togglePasswordVisibility() {
-        var x = document.getElementById("psw");
-
-        if (x.type === "password") {
-          x.type = "text";
-        } else {
-          x.type = "password";
+      function togglePasswordVisibility(e) {
+        var passwordFields = document.getElementsByClassName("password");
+        var newType = e.target.checked ? "text" : "password";
+        for (var x = 0; x < passwordFields.length; x++) {
+          passwordFields[x].type = newType;
         }
       }
 
-      var checkbox = document.getElementById("passwordVisibilityToggle");
-      checkbox.checked = false;
-      checkbox.addEventListener("click", togglePasswordVisibility);
-      document.getElementById("submit").addEventListener("click", function (e) {
-        postData(e, "psw=" + document.getElementById("psw").value);
-      });
-      document.getElementById("reboot").addEventListener("click", function (e) {
-        postData(e, "reboot=1");
-      });
+      function handleClick(e) {
+        var target = e.target;
+        switch (target.id) {
+          case "change-pwd":
+          case "unlock":
+            document.body.dataset.action = target.id;
+            break;
+          case "reboot":
+            postData(e, "action=reboot");
+            break;
+          case "submit":
+            var action = document.body.dataset.action;
+            var data =
+              "action=" +
+              action +
+              "&psw=" +
+              document.getElementById("psw").value;
+
+            if (action === "change-pwd") {
+              data += "&newpsw=" + document.getElementById("newpsw").value;
+              data += "&newpsw2=" + document.getElementById("newpsw2").value;
+            }
+
+            postData(e, data);
+            break;
+          case "password-toggle":
+            togglePasswordVisibility(e);
+            break;
+        }
+      }
+
+      function setup() {
+        document.getElementById("password-toggle").checked = false;
+        document.body.addEventListener("click", handleClick);
+        document.getElementById("unlock").click();
+      }
+
+      setup();
     </script>
   </body>
 </html>
