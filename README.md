@@ -21,7 +21,8 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 ## SED benefits
 - Encrypt your (boot) drive, even when the OS doesn't (fully) support encryption
 - Drive locks when power is lost, protecting data when server is stolen 
-- 
+- Hardware encryption means less CPU usage 
+
 ## Requirements
 - A Self Encrypting Drive compatible with [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) (TCG OPAL)
 - Ubuntu to build the PBA image
