@@ -89,11 +89,11 @@ func index(w http.ResponseWriter, r *http.Request) {
 		} else {
 			psw := r.FormValue("psw")
 			if r.FormValue("action") == "unlock" {
-				cmdExec(w, "./unlock.sh", psw)
+				cmdExec(w, "./opal-functions.sh", psw)
 			} else if r.FormValue("action") == "change-pwd" {
 				newpsw := r.FormValue("newpsw")
 				newpsw2 := r.FormValue("newpsw2")
-				cmdExec(w, "./unlock.sh", psw, newpsw, newpsw2)
+				cmdExec(w, "./opal-functions.sh", psw, newpsw, newpsw2)
 			}
 		}
 
