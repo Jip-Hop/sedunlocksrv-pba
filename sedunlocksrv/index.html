@@ -10,13 +10,36 @@
         user-select: none;
       }
 
-      :focus, #toolbar input[type="radio"]:focus + label {
+      :focus,
+      #toolbar input[type="radio"]:focus + label,
+      input[type="checkbox"]:focus + label::before {
         outline: 1px solid #007fd4;
         outline-offset: -1px;
       }
 
-      #password-toggle:focus {
-        outline-style: auto;
+      input[type="checkbox"] {
+        appearance: none;
+        position: fixed;
+        cursor: pointer;
+      }
+
+      input[type="checkbox"] + label {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+      }
+
+      input[type="checkbox"] + label::before {
+        content: "";
+        background: #fff;
+        height: 1em;
+        width: 1em;
+        display: inline-block;
+        margin-right: 0.5em;
+      }
+
+      input[type="checkbox"]:checked + label::before {
+        background: #0e639c;
       }
 
       html {
@@ -98,7 +121,6 @@
         background: #3c3c3c;
         color: #ccc;
       }
-
 
       button {
         margin: 8px 0 0 0;
@@ -203,10 +225,8 @@
           type="password"
           placeholder="Confirm new password"
         />
-        <label>
-          <input id="password-toggle" type="checkbox" checked="false" />
-          Show password
-        </label>
+        <input id="password-toggle" type="checkbox" checked="false" />
+        <label for="password-toggle">Show password</label>
         <button id="submit">Submit</button>
       </div>
     </form>
