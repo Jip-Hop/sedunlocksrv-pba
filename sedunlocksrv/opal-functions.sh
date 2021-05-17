@@ -128,6 +128,7 @@ function opaladmin_changePW_action() {
             echo "SKIPPING: Device $(opal_device_identification "$device") has not been setup, cannot change password."
         fi
     done
+    echo "Done"
 }
 
 # Find TCG Opal 2-compliant disks
