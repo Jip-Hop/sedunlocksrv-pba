@@ -67,6 +67,57 @@
       html > body:not([data-action="change-pwd"]) .container .change-pwd {
         display: none;
       }
+
+      #rebooting {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        right: 0;
+        background: rgba(0, 0, 0, 0.75);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: white;
+      }
+
+      html > body:not(.rebooting) #rebooting {
+        display: none;
+      }
+
+      .lds-ripple {
+        display: inline-block;
+        position: relative;
+        width: 80px;
+        height: 80px;
+      }
+      .lds-ripple div {
+        position: absolute;
+        border: 4px solid #fff;
+        opacity: 1;
+        border-radius: 50%;
+        animation: lds-ripple 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+      }
+      .lds-ripple div:nth-child(2) {
+        animation-delay: -0.5s;
+      }
+      @keyframes lds-ripple {
+        0% {
+          top: 36px;
+          left: 36px;
+          width: 0;
+          height: 0;
+          opacity: 1;
+        }
+        100% {
+          top: 0px;
+          left: 0px;
+          width: 72px;
+          height: 72px;
+          opacity: 0;
+        }
+      }
     </style>
   </head>
   <body>
@@ -108,21 +159,29 @@
       </div>
     </form>
     <pre id="log"></pre>
+    <div id="rebooting">
+      <div>
+        <h3>REBOOTING</h3>
+        <div class="lds-ripple">
+          <div></div>
+          <div></div>
+        </div>
+      </div>
+    </div>
     <script>
       (function () {
         var pingTimeout = 2000;
         var maxPingTime = 10 * 60 * 1000;
         var pingTimeRemaining = maxPingTime;
-        var rebooting = false;
 
         function ping(url, isUp, isDown) {
           var handled = false;
 
           function handleStatus() {
-            if(handled){
+            if (handled) {
               return;
             }
-            
+
             handled = true;
             var status = xhr.status;
             if (status >= 200 && status < 400) {
@@ -191,7 +250,7 @@
 
           xhr.addEventListener("error", function (e) {
             if (e instanceof ProgressEvent) {
-              if (rebooting) {
+              if (document.body.classList.contains("rebooting")) {
                 ping(window.location.href, function () {
                   window.location.reload();
                 });
@@ -225,7 +284,7 @@
               document.body.dataset.action = target.id;
               break;
             case "reboot":
-              rebooting = true;
+              document.body.classList.add("rebooting");
               postData(e, "action=reboot");
               setTimeout(reloadIfUp, 2000);
               break;
