@@ -109,94 +109,151 @@
     </form>
     <pre id="log"></pre>
     <script>
-      function postData(e, params) {
-        e.preventDefault();
+      (function () {
+        var pingTimeout = 2000;
+        var maxPingTime = 10 * 60 * 1000;
+        var pingTimeRemaining = maxPingTime;
+        var rebooting = false;
 
-        var logger = document.getElementById("log");
-        logger.textContent = "";
+        function ping(url, isUp, isDown) {
+          var handled = false;
 
-        var xhr = new XMLHttpRequest();
-        xhr.seenBytes = 0;
-        xhr.open("POST", "/", true);
-
-        xhr.setRequestHeader(
-          "Content-type",
-          "application/x-www-form-urlencoded"
-        );
-
-        xhr.onreadystatechange = function () {
-          if (xhr.readyState > 2) {
-            var newData = xhr.responseText.substr(xhr.seenBytes);
-            xhr.seenBytes = xhr.responseText.length;
-            logger.textContent += newData;
-          }
-        };
-
-        xhr.ontimeout = function (e) {
-          logger.textContent +=
-            "\nSending data timed out. Is the server still turned on?";
-        };
-
-        xhr.addEventListener("error", function (e) {
-          if (e instanceof ProgressEvent) {
-            logger.textContent +=
-              "\nError sending data. Is the server still turned on?";
-          } else {
-            logger.textContent +=
-              "\nError sending data. Check the browser console for details.";
-            console.log(e);
-          }
-        });
-
-        xhr.send(params);
-      }
-
-      function togglePasswordVisibility(e) {
-        var passwordFields = document.getElementsByClassName("password");
-        var newType = e.target.checked ? "text" : "password";
-        for (var x = 0; x < passwordFields.length; x++) {
-          passwordFields[x].type = newType;
-        }
-      }
-
-      function handleClick(e) {
-        var target = e.target;
-        switch (target.id) {
-          case "change-pwd":
-          case "unlock":
-            document.body.dataset.action = target.id;
-            break;
-          case "reboot":
-            postData(e, "action=reboot");
-            break;
-          case "submit":
-            var action = document.body.dataset.action;
-            var data =
-              "action=" +
-              action +
-              "&psw=" +
-              document.getElementById("psw").value;
-
-            if (action === "change-pwd") {
-              data += "&newpsw=" + document.getElementById("newpsw").value;
-              data += "&newpsw2=" + document.getElementById("newpsw2").value;
+          function handleStatus() {
+            if(handled){
+              return;
             }
+            
+            handled = true;
+            var status = xhr.status;
+            if (status >= 200 && status < 400) {
+              if (isUp) isUp();
+            } else {
+              if (isDown) isDown();
+            }
+          }
 
-            postData(e, data);
-            break;
-          case "password-toggle":
-            togglePasswordVisibility(e);
-            break;
+          var xhr = new XMLHttpRequest();
+
+          xhr.open("HEAD", url, true);
+          xhr.timeout = 2000;
+          xhr.ontimeout = handleStatus;
+          xhr.onloadend = handleStatus;
+
+          xhr.send();
         }
-      }
 
-      function setup() {
+        function reloadIfUp() {
+          pingTimeRemaining -= pingTimeout;
+
+          if (pingTimeRemaining <= 0) {
+            // Try reloading anyway
+            window.location.reload();
+            return;
+          }
+
+          ping(
+            window.location.href,
+            function () {
+              window.location.reload();
+            },
+            function () {
+              setTimeout(reloadIfUp, pingTimeout);
+            }
+          );
+        }
+        function postData(e, params) {
+          e.preventDefault();
+
+          var logger = document.getElementById("log");
+          logger.textContent = "";
+
+          var xhr = new XMLHttpRequest();
+          xhr.seenBytes = 0;
+          xhr.open("POST", "/", true);
+
+          xhr.setRequestHeader(
+            "Content-type",
+            "application/x-www-form-urlencoded"
+          );
+
+          xhr.onreadystatechange = function () {
+            if (xhr.readyState > 2) {
+              var newData = xhr.responseText.substr(xhr.seenBytes);
+              xhr.seenBytes = xhr.responseText.length;
+              logger.textContent += newData;
+            }
+          };
+
+          xhr.ontimeout = function (e) {
+            logger.textContent +=
+              "\nSending data timed out. Is the server still turned on?";
+          };
+
+          xhr.addEventListener("error", function (e) {
+            if (e instanceof ProgressEvent) {
+              if (rebooting) {
+                ping(window.location.href, function () {
+                  window.location.reload();
+                });
+              } else {
+                logger.textContent +=
+                  "\nError sending data. Is the server still turned on?";
+              }
+            } else {
+              logger.textContent +=
+                "\nError sending data. Check the browser console for details.";
+              console.log(e);
+            }
+          });
+
+          xhr.send(params);
+        }
+
+        function togglePasswordVisibility(e) {
+          var passwordFields = document.getElementsByClassName("password");
+          var newType = e.target.checked ? "text" : "password";
+          for (var x = 0; x < passwordFields.length; x++) {
+            passwordFields[x].type = newType;
+          }
+        }
+
+        function handleClick(e) {
+          var target = e.target;
+          switch (target.id) {
+            case "change-pwd":
+            case "unlock":
+              document.body.dataset.action = target.id;
+              break;
+            case "reboot":
+              rebooting = true;
+              postData(e, "action=reboot");
+              setTimeout(reloadIfUp, 2000);
+              break;
+            case "submit":
+              var action = document.body.dataset.action;
+              var data =
+                "action=" +
+                action +
+                "&psw=" +
+                document.getElementById("psw").value;
+
+              if (action === "change-pwd") {
+                data += "&newpsw=" + document.getElementById("newpsw").value;
+                data += "&newpsw2=" + document.getElementById("newpsw2").value;
+              }
+
+              postData(e, data);
+              break;
+            case "password-toggle":
+              togglePasswordVisibility(e);
+              break;
+          }
+        }
+
         document.getElementById("password-toggle").checked = false;
         document.body.addEventListener("click", handleClick);
         document.getElementById("unlock").click();
-      }
-
-      setup();
+      })();
     </script>
   </body>
 </html>
