@@ -1,7 +1,7 @@
 # sedunlocksrv-pba
 Conveniently unlock your Self Encrypting Drive on startup (via HTTPS) without the need to attach monitor and keyboard.
 
-<img width="450" alt="screenshot" src="https://user-images.githubusercontent.com/2871973/118410489-f318cf00-b68f-11eb-9248-826c0728ccbd.png">
+<img width="450" alt="screenshot" src="https://user-images.githubusercontent.com/2871973/118612963-91a34e00-b7be-11eb-9480-9d23e427982c.png">
 
 ## Disclaimer
 Use at your own risk! You may lock yourself out of the data on the disk.
