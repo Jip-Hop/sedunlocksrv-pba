@@ -74,6 +74,7 @@
 
       #toolbar {
         display: flex;
+        flex-wrap: wrap-reverse;
       }
 
       #toolbar input[type="radio"] {
@@ -90,10 +91,11 @@
       }
 
       #toolbar label {
-        display: inline-block;
         background-color: #2d2d2d;
         text-transform: uppercase;
         margin: 0 0 10px 0;
+        display: flex;
+        align-items: center;
       }
 
       #toolbar input[type="radio"]:not(:checked) + label:hover,
