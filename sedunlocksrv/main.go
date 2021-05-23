@@ -117,11 +117,11 @@ func getOutboundIP() net.IP {
 }
 
 func main() {
-
+	ip := getOutboundIP()
 	// redirect every http request to https
 	go http.ListenAndServe(httpAddr, http.HandlerFunc(redirect))
 
-	fmt.Printf("\n%sStarting SED unlock server at %s%s%s%s...%s\n", green, magenta, getOutboundIP(), httpsAddr, green, normal)
+	fmt.Printf("\n%sStarting SED unlock server at %s%s%s%s...%s\n", green, magenta, ip, httpsAddr, green, normal)
 
 	l, err := net.Listen("tcp", httpsAddr)
 	if err != nil {
