@@ -22,7 +22,7 @@ SEDUTILPATHINTAR="sedutil/Release_x86_64/GNU-Linux/${SEDUTILBINFILENAME}"
 
 # Build sedunlocksrv binary with Go
 cd ./sedunlocksrv
-env GOOS=linux GOARCH=amd64 go build
+env GOOS=linux GOARCH=amd64 go build -trimpath
 chmod +x sedunlocksrv
 cd ../
 
