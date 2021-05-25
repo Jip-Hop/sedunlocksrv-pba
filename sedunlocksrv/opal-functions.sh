@@ -174,7 +174,9 @@ if (( unlocked_device_count > 0 )); then
 else
     if (( device_count == 1 )); then
         echo "Could not unlock the disk."
+        exit 1
     else
         echo "Could not unlock any of $device_count disks."
+        exit 1
     fi
 fi
