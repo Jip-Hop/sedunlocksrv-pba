@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
-
 set -ex
 
 function cleanup() {
-    # clean up our temp folder
+    umount "${TMPDIR}/img" || true
+    losetup -d ${LOOP_DEVICE_HDD}|| true
     rm -rf "${TMPDIR}"
 }
 trap cleanup EXIT
 
 # Default config for 64-bit Linux and Sedutil
+GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/12.x/x86_64"
 EXTENSIONS="bash.tcz"
 INPUTISO="TinyCorePure64-current.iso"
-OUTPUTISO="sedunlocksrv-pba.iso"
+OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
-SYSLINUXURL="https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/syslinux-6.03.tar.xz"
 SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
 SEDUTILBINFILENAME="sedutil-cli"
 SEDUTILPATHINTAR="sedutil/Release_x86_64/GNU-Linux/${SEDUTILBINFILENAME}"
 
 # Build sedunlocksrv binary with Go
-cd ./sedunlocksrv
-env GOOS=linux GOARCH=amd64 go build -trimpath
-chmod +x sedunlocksrv
-cd ../
+(cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
 
 # Generate cert if not existing
 if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
@@ -32,8 +29,8 @@ if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
 fi
 
 # Create our working folders
-TMPDIR="$(mktemp -d --tmpdir=$(pwd) 'iso.XXXXXX')"
-chmod 755 "${TMPDIR}"
+TMPDIR="$(mktemp -d --tmpdir=$(pwd) 'img.XXXXXX')"
+mkdir -p "${TMPDIR}"/{fs/boot,core,img}
 mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
 
 # Downloads a Tiny Core Linux asset, only if not already cached
@@ -51,14 +48,6 @@ if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
     mv "${CACHEDIR}/iso-extracting" "${CACHEDIR}/iso-extracted"
 fi
 
-if [ ! -d "${CACHEDIR}/syslinux" ]; then
-    rm -rf "${CACHEDIR}/syslinux-extracting" && mkdir -p "${CACHEDIR}/syslinux-extracting"
-    # Download and Unpack Syslinux
-    # Use bsdtar to auto-detect de-compression algorithm
-    curl -s ${SYSLINUXURL} | bsdtar -xf- -C "${CACHEDIR}/syslinux-extracting"
-    mv "${CACHEDIR}/syslinux-extracting" "${CACHEDIR}/syslinux"
-fi
-
 if [ ! -f "${CACHEDIR}/${SEDUTILBINFILENAME}" ]; then
     SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
     LEVELSDEEP="${#SLASHESONLY}"
@@ -67,59 +56,17 @@ if [ ! -f "${CACHEDIR}/${SEDUTILBINFILENAME}" ]; then
     curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
 fi
 
-mkdir -p "${TMPDIR}/boot"
-
-# Get the initrd and kernel from the ISO
-cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/boot"
-# Copy files for UEFI booting
-cp -r "${CACHEDIR}/iso-extracted/EFI" "${TMPDIR}/EFI"
-
-# Copy the precompiled files 'isolinux.bin' and 'ldlinux.c32'. These files
-# are used by Syslinux during the legacy BIOS boot process.
-EXTRACTED_SYSLINUX_DIR=$(ls -d ${CACHEDIR}/syslinux/syslinux-*)
-mkdir -p "${TMPDIR}/boot/syslinux"
-cp "${EXTRACTED_SYSLINUX_DIR}/bios/core/isolinux.bin" \
-    "${TMPDIR}/boot/syslinux"
-cp "${EXTRACTED_SYSLINUX_DIR}/bios/com32/elflink/ldlinux/ldlinux.c32" \
-    "${TMPDIR}/boot/syslinux"
-
-cat >"${TMPDIR}/boot/syslinux/isolinux.cfg" <<EOF
-default core
-label core
-	kernel /boot/vmlinuz64
-	initrd /boot/corepure64.gz
-	append $BOOTARGS
-EOF
-
-cat >"${TMPDIR}/EFI/BOOT/grub/grub.cfg" <<EOF
-set timeout_style=hidden
-set timeout=0
-set default=0
-
-if loadfont unicode ; then
-    set gfxmode=auto
-    set gfxpayload=keep
-    set gfxterm_font=unicode
-    terminal_output gfxterm
-fi
-
-menuentry "tc" {
-  linux /boot/vmlinuz64 $BOOTARGS
-  initrd /boot/corepure64.gz
-}
-EOF
+# Copy the kernel
+cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 
 # Remaster the initrd
-rm -rf "${CACHEDIR}/core" && mkdir -p "${CACHEDIR}/core"
-cd "${CACHEDIR}/core"
-zcat "../iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d
-cd ../../
+(cd "${TMPDIR}/core" && zcat "../../${CACHEDIR}/iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d)
 
-mkdir -p "${CACHEDIR}/core/usr/local/sbin/"
+mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
-cp "${CACHEDIR}/${SEDUTILBINFILENAME}" "${CACHEDIR}/core/usr/local/sbin/"
-rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${CACHEDIR}/core/usr/local/sbin/"
-cp ./tc/tc-config "${CACHEDIR}/core/etc/init.d/tc-config"
+cp "${CACHEDIR}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
+rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
+cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
 
 # Install extensions and dependencies
 while [ -n "${EXTENSIONS}" ]; do
@@ -127,49 +74,73 @@ while [ -n "${EXTENSIONS}" ]; do
     for EXTENSION in ${EXTENSIONS}; do
         cachetcfile "${EXTENSION}" tcz tcz
         cachetcfile "${EXTENSION}.dep" dep tcz
-        unsquashfs -f -d "${CACHEDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
+        unsquashfs -f -d "${TMPDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
         DEPS=$(echo ${DEPS} | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
     done
     EXTENSIONS=${DEPS}
 done
 
-# Now repackage it
-cd "${CACHEDIR}/core"
-find | cpio -o -H newc | gzip -9 >"${TMPDIR}/boot/corepure64.gz"
-cd ../../
+# Repackage the initrd
+(cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")
 
-# Generate ISO image for both BIOS and UEFI based systems.
-xorriso -as mkisofs \
-    -isohybrid-mbr "${EXTRACTED_SYSLINUX_DIR}/bios/mbr/isohdpfx.bin" \
-    -c boot/syslinux/boot.cat \
-    -b boot/syslinux/isolinux.bin \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -eltorito-alt-boot \
-    -e EFI/BOOT/efiboot.img \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    -o "${OUTPUTISO}" \
-    "${TMPDIR}/"
+FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
 
-# # Generate ISO image for BIOS based systems.
-# xorriso -as mkisofs \
-#     -isohybrid-mbr "${EXTRACTED_SYSLINUX_DIR}/bios/mbr/isohdpfx.bin" \
-#     -c boot/syslinux/boot.cat \
-#     -b boot/syslinux/isolinux.bin \
-#     -no-emul-boot \
-#     -boot-load-size 4 \
-#     -boot-info-table \
-#     -o "${OUTPUTISO}" \
-#     "${TMPDIR}/"
+# Make the image
+dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((${FSSIZE}+${GRUBSIZE}))
 
-# # Generate ISO image for UEFI based systems.
-# xorriso -as mkisofs \
-#     -isohybrid-mbr "${EXTRACTED_SYSLINUX_DIR}/bios/mbr/isohdpfx.bin" \
-#     -c boot/syslinux/boot.cat \
-#     -e EFI/BOOT/efiboot.img \
-#     -no-emul-boot \
-#     -isohybrid-gpt-basdat \
-#     -o "${OUTPUTISO}" \
-#     "${TMPDIR}/"
+# Attaching hard disk image file to loop device.
+LOOP_DEVICE_HDD=$(losetup -f)
+
+losetup ${LOOP_DEVICE_HDD} ${OUTPUTIMG}
+
+(
+echo o # clear the in memory partition table
+echo n # new partition
+echo p # primary partition
+echo 1 # partition number 1
+echo   # default - start at beginning of disk 
+echo   # default, extend partition to end of disk
+echo t # change partition type
+echo e f # set partition type to EFI (FAT-12/16/32)
+echo a # make a partition bootable
+echo w # write the partition table
+echo q # and we're done
+) | fdisk ${LOOP_DEVICE_HDD} || partprobe ${LOOP_DEVICE_HDD}
+
+mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
+
+mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
+
+# Install GRUB
+
+grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc ${LOOP_DEVICE_HDD}
+grub-install --removable --boot-directory="${TMPDIR}/img/boot" --efi-directory="${TMPDIR}/img/" --target=x86_64-efi ${LOOP_DEVICE_HDD}
+grub-install --removable --boot-directory=/mnt/boot --efi-directory="${TMPDIR}/img/" --target=i386-efi ${LOOP_DEVICE_HDD}
+
+cat >"${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
+set timeout_style=hidden
+set timeout=0
+set default=0
+
+menuentry "tc" {
+  linux /boot/vmlinuz64 ${BOOTARGS}
+  initrd /boot/corepure64.gz
+}
+EOF
+
+# Copy the boot directory (initrd and kernel)
+cp -r "${TMPDIR}/fs/boot" "${TMPDIR}/img/"
+
+# Unmounting image file
+sync
+umount "${TMPDIR}/img"
+sync
+sleep 1
+
+# Free loop device
+losetup -d ${LOOP_DEVICE_HDD}
+
+# Make sure the image is readable
+chmod ugo+r ${OUTPUTIMG}
+
+echo "DONE"
