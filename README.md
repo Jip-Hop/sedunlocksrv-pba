@@ -50,16 +50,16 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 
 ## Building on Ubuntu 20.04.2
 - Install the Go compiler with: `snap install go --classic`
-- Install build dependencies: `apt-get -y install curl xorriso libarchive-tools`
+- Install build dependencies: `apt-get -y install curl libarchive-tools grub-pc-bin grub-efi-ia32-bin grub-efi-amd64-bin`
 - [Download](https://github.com/Jip-Hop/sedunlocksrv-pba/archive/refs/heads/main.zip) or clone this repo and run: `./build.sh`
 - Connect your USB stick to Ubuntu (if inside VirtualBox, use the Devices dropdown menu)
 - Format the stick with a supported filesystem (e.g. FAT32) if this is not already the case
-- Copy the `sedunlocksrv-pba.iso` file onto your USB stick (use the GUI file explorer or `cp` from the Terminal)
+- Copy the `sedunlocksrv-pba.img` file onto your USB stick (use the GUI file explorer or `cp` from the Terminal)
 - Eject the USB stick and put it aside for now
 - Use the other USB stick for the sedutil rescue system (see next step)
 
 ## Encrypting your drive and flashing the PBA
-Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.iso`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.iso /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.
+Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.img`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.img /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.
 
 ## Tips
 - Flash the PBA to all the Self Encrypting Drives in your server
@@ -78,5 +78,5 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - [How to redirect HTTP to HTTPS with a golang webserver](https://gist.github.com/d-schmidt/587ceec34ce1334a5e60)
 - [How do I get the local IP address in Go?](https://stackoverflow.com/a/37382208/)
 - [Simple login form example](https://www.w3schools.com/howto/howto_css_login_form.asp)
-- [How to use xorriso](https://github.com/ivandavidov/minimal/blob/master/src/14_generate_iso.sh)
 - [Fix to get the 64-bit binaries working](http://forum.tinycorelinux.net/index.php?topic=19607.0)
+- Guides on installing GRUB: [grub2-bios-uefi-usb](https://github.com/ndeineko/grub2-bios-uefi-usb) and [grub_hybrid](https://www.normalesup.org/~george/comp/live_iso_usb/grub_hybrid.html)
