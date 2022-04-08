@@ -375,11 +375,11 @@
                 "action=" +
                 action +
                 "&psw=" +
-                document.getElementById("psw").value;
+                encodeURIComponent(document.getElementById("psw").value);
 
               if (action === "change-pwd") {
-                data += "&newpsw=" + document.getElementById("newpsw").value;
-                data += "&newpsw2=" + document.getElementById("newpsw2").value;
+                data += "&newpsw=" + encodeURIComponent(document.getElementById("newpsw").value);
+                data += "&newpsw2=" + encodeURIComponent(document.getElementById("newpsw2").value);
               }
 
               postData(e, data);
