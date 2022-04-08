@@ -18,7 +18,7 @@ OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
 SEDUTILBINFILENAME="sedutil-cli"
-SEDUTILPATHINTAR="sedutil/Release_x86_64/GNU-Linux/${SEDUTILBINFILENAME}"
+SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
 
 # Build sedunlocksrv binary with Go
 (cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
