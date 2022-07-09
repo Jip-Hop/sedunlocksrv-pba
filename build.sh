@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+
 set -ex
 
 function cleanup() {
     umount "${TMPDIR}/img" || true
-    losetup -d ${LOOP_DEVICE_HDD}|| true
+    losetup -d "${LOOP_DEVICE_HDD}" || true
     rm -rf "${TMPDIR}"
 }
 trap cleanup EXIT
@@ -29,7 +30,7 @@ if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
 fi
 
 # Create our working folders
-TMPDIR="$(mktemp -d --tmpdir=$(pwd) 'img.XXXXXX')"
+TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
 mkdir -p "${TMPDIR}"/{fs/boot,core,img}
 mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
 
@@ -75,9 +76,9 @@ while [ -n "${EXTENSIONS}" ]; do
         cachetcfile "${EXTENSION}" tcz tcz
         cachetcfile "${EXTENSION}.dep" dep tcz
         unsquashfs -f -d "${TMPDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
-        DEPS=$(echo ${DEPS} | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
+        DEPS=$(echo "${DEPS}" | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
     done
-    EXTENSIONS=${DEPS}
+    EXTENSIONS="${DEPS}"
 done
 
 # Repackage the initrd
@@ -86,26 +87,26 @@ done
 FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
 
 # Make the image
-dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((${FSSIZE}+${GRUBSIZE}))
+dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE))
 
 # Attaching hard disk image file to loop device.
 LOOP_DEVICE_HDD=$(losetup -f)
 
-losetup ${LOOP_DEVICE_HDD} ${OUTPUTIMG}
+losetup "${LOOP_DEVICE_HDD}" "${OUTPUTIMG}"
 
 (
-echo o # clear the in memory partition table
-echo n # new partition
-echo p # primary partition
-echo 1 # partition number 1
-echo   # default - start at beginning of disk 
-echo   # default, extend partition to end of disk
-echo t # change partition type
-echo e f # set partition type to EFI (FAT-12/16/32)
-echo a # make a partition bootable
-echo w # write the partition table
-echo q # and we're done
-) | fdisk ${LOOP_DEVICE_HDD} || partprobe ${LOOP_DEVICE_HDD}
+    echo o   # clear the in memory partition table
+    echo n   # new partition
+    echo p   # primary partition
+    echo 1   # partition number 1
+    echo     # default - start at beginning of disk
+    echo     # default, extend partition to end of disk
+    echo t   # change partition type
+    echo e f # set partition type to EFI (FAT-12/16/32)
+    echo a   # make a partition bootable
+    echo w   # write the partition table
+    echo q   # and we're done
+) | fdisk "${LOOP_DEVICE_HDD}" || partprobe "${LOOP_DEVICE_HDD}"
 
 mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
 
@@ -113,9 +114,9 @@ mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
 
 # Install GRUB
 
-grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc ${LOOP_DEVICE_HDD}
-grub-install --removable --boot-directory="${TMPDIR}/img/boot" --efi-directory="${TMPDIR}/img/" --target=x86_64-efi ${LOOP_DEVICE_HDD}
-grub-install --removable --boot-directory=/mnt/boot --efi-directory="${TMPDIR}/img/" --target=i386-efi ${LOOP_DEVICE_HDD}
+grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
+grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=i386-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
 
 cat >"${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
 set timeout_style=hidden
@@ -138,9 +139,9 @@ sync
 sleep 1
 
 # Free loop device
-losetup -d ${LOOP_DEVICE_HDD}
+losetup -d "${LOOP_DEVICE_HDD}"
 
 # Make sure the image is readable
-chmod ugo+r ${OUTPUTIMG}
+chmod ugo+r "${OUTPUTIMG}"
 
 echo "DONE"
