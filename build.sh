@@ -91,9 +91,7 @@ FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf
 dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE))
 
 # Attaching hard disk image file to loop device.
-LOOP_DEVICE_HDD=$(losetup -f)
-
-losetup "${LOOP_DEVICE_HDD}" "${OUTPUTIMG}"
+LOOP_DEVICE_HDD=$(losetup --find --show --partscan ${OUTPUTIMG})
 
 (
     echo o   # clear the in memory partition table
@@ -107,7 +105,19 @@ losetup "${LOOP_DEVICE_HDD}" "${OUTPUTIMG}"
     echo a   # make a partition bootable
     echo w   # write the partition table
     echo q   # and we're done
-) | fdisk "${LOOP_DEVICE_HDD}" || partprobe "${LOOP_DEVICE_HDD}"
+) | fdisk "${LOOP_DEVICE_HDD}" || true
+
+# Using mknod to create partition node files
+# https://github.com/moby/moby/issues/27886#issuecomment-417074845
+# drop the first line, as this is our LOOP_DEVICE_HDD itself, but we only want the child partitions
+PARTITIONS=$(lsblk --raw --output "MAJ:MIN" --noheadings ${LOOP_DEVICE_HDD} | tail -n +2)
+COUNTER=1
+for i in $PARTITIONS; do
+    MAJ=$(echo $i | cut -d: -f1)
+    MIN=$(echo $i | cut -d: -f2)
+    if [ ! -e "${LOOP_DEVICE_HDD}p${COUNTER}" ]; then mknod ${LOOP_DEVICE_HDD}p${COUNTER} b $MAJ $MIN; fi
+    COUNTER=$((COUNTER + 1))
+done
 
 mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
 
