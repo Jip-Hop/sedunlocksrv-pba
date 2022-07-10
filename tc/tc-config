@@ -45,6 +45,12 @@ for DEVICE in $NETDEVICES; do
   fi
 done
 
+echo "Wait for network connection..."
+until ifconfig | grep -q Bcast
+do
+    sleep 1
+done
+
 # Fix to get the 64-bit binaries working
 if [ ! -d /lib64 ]; then
     ln -s /lib /lib64
