@@ -33,6 +33,16 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 - Ubuntu to build the PBA image
 - Two USB sticks to flash the PBA image
 
+## Building with Docker
+
+This allows building the image with Docker, even on ARM architecture (Apple Silicon / M1 processor).
+
+```bash
+(NAME=sedunlocksrv-pba; docker build -t $NAME . && docker run --name $NAME --privileged $NAME && docker cp $NAME:/tmp/sedunlocksrv-pba.img sedunlocksrv-pba.img; docker rm $NAME)
+```
+
+After running the command above you will find sedunlocksrv-pba.img in your current working directory. Continue with [Encrypting your drive and flashing the PBA](#encrypting-your-drive-and-flashing-the-pba).
+
 ## Setup a VM for building with VirtualBox
 - Download and install [VirtualBox](https://www.virtualbox.org/wiki/Downloads)
 - Also install the VirtualBox Extension Pack from the link above
