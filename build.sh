@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -ex
+set -euox pipefail
 
 function cleanup() {
     umount "${TMPDIR}/img" || true
@@ -130,7 +130,7 @@ wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-pc-bin_2.04-1ubunt
 dpkg -x /tmp/grub-pc-bin.deb /tmp/grub-pc-bin
 wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-efi-ia32-bin_2.04-1ubuntu26.12_amd64.deb -O /tmp/grub-efi-ia32-bin.deb
 dpkg -x /tmp/grub-efi-ia32-bin.deb /tmp/grub-efi-ia32-bin
-wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2-unsigned/grub-efi-amd64-bin_2.04-1ubuntu44.2_amd64.deb -O /tmp/grub-efi-amd64-bin.deb
+wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2-unsigned/grub-efi-amd64-bin_2.04-1ubuntu47.4_amd64.deb -O /tmp/grub-efi-amd64-bin.deb
 dpkg -x /tmp/grub-efi-amd64-bin.deb /tmp/grub-efi-amd64-bin
 
 grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --directory=/tmp/grub-pc-bin/usr/lib/grub/i386-pc "${LOOP_DEVICE_HDD}"
