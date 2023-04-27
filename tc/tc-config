@@ -12,7 +12,6 @@ GREEN="$(echo -e '\033[1;32m')"
 MAGENTA="$(echo -e '\033[1;35m')"
 NORMAL="$(echo -e '\033[0;39m')"
 
-. /etc/init.d/busybox-aliases
 export PATH=/usr/local/sbin:/usr/local/bin:"$PATH"
 
 # Start Udev to populate /dev and handle hotplug events
