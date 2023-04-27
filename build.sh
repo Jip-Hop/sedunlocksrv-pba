@@ -126,6 +126,7 @@ mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
 # Install GRUB
 
 # Allow installing GRUB for AMD architecture from ARM host (these packages aren't available to install)
+# We just fetch the deb and unpack (no need to install), we only need the extracted files
 wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-pc-bin_2.04-1ubuntu26.12_amd64.deb -O /tmp/grub-pc-bin.deb
 dpkg -x /tmp/grub-pc-bin.deb /tmp/grub-pc-bin
 wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-efi-ia32-bin_2.04-1ubuntu26.12_amd64.deb -O /tmp/grub-efi-ia32-bin.deb
