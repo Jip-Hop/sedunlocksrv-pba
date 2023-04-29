@@ -7,19 +7,38 @@ function cleanup() {
     losetup -d "${LOOP_DEVICE_HDD}" || true
     rm -rf "${TMPDIR}"
 }
+
+SSHBUILD=FALSE
+if [ "${1-default}" == "SSH" ]; then
+    SSHBUILD=TRUE
+    # check SSH build dependencies
+    if [ ! -f ./ssh/authorized_keys ]; then
+        echo "You have to create authorized_keys file in ssh folder"
+        exit
+    fi
+    if ! which dropbear; then
+        echo "Please install dropbear: apt install dropbear"
+        exit
+    fi
+fi
+
 trap cleanup EXIT
 
 # Default config for 64-bit Linux and Sedutil
 GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/14.x/x86_64"
-EXTENSIONS="bash.tcz"
 INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
 SEDUTILBINFILENAME="sedutil-cli"
 SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
+if [ $SSHBUILD == "TRUE" ]; then
+    EXTENSIONS="bash.tcz dropbear.tcz"
+else
+    EXTENSIONS="bash.tcz"
+fi
 
 # Build sedunlocksrv binary with Go
 (cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
@@ -81,6 +100,24 @@ while [ -n "${EXTENSIONS}" ]; do
     done
     EXTENSIONS="${DEPS}"
 done
+
+if [ $SSHBUILD == "TRUE" ]; then
+    # Generate dropbear hostkeys if not existing
+    if [[ ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
+        dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
+        dropbearkey -t rsa -s 4096 -f ./ssh/dropbear_rsa_host_key
+    fi
+
+    # Copy dropbear files to the image
+    mkdir -p "${TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/dropbear* "${TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/banner "${TMPDIR}/core/usr/local/etc/dropbear/"
+
+    # Copy tc user files to the image
+    mkdir -p "${TMPDIR}/core/home/tc/.ssh"
+    cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
+    cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
+fi
 
 # Repackage the initrd
 (cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")

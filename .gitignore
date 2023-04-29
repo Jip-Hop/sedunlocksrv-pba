@@ -22,3 +22,7 @@ sedunlocksrv/sedunlocksrv
 
 # Ignore Resilio Sync selective sync placeholders
 *.rsls*
+
+# SSH build temporary files
+ssh/dropbear*
+ssh/authorized_keys

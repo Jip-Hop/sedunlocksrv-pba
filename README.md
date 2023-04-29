@@ -1,5 +1,5 @@
 # sedunlocksrv-pba
-Conveniently unlock your Self Encrypting Drive on startup (via HTTPS) without the need to attach monitor and keyboard.
+Conveniently unlock your Self Encrypting Drive on startup (via HTTPS or SSH) without the need to attach monitor and keyboard.
 
 <img width="450" alt="screenshot" src="https://user-images.githubusercontent.com/2871973/118612963-91a34e00-b7be-11eb-9480-9d23e427982c.png">
 
@@ -14,10 +14,11 @@ Fully encrypt your home server or NAS and conveniently unlock it on startup with
 
 Because the drive is using hardware encryption, you can encrypt your server if the OS doesn't support encryption at all, or only for some disks (e.g. no encryption for the drive on which the OS is installed).
 
-Even for systems which support encrypting all drives, using a SED with `sedunlocksrv-pba` can be useful because of the remote unlock functionality. Unlock and continue booting from any device on your LAN via HTTPS. If you're using a password manager you can conveniently auto-fill the unlock password.
+Even for systems which support encrypting all drives, using a SED with `sedunlocksrv-pba` can be useful because of the remote unlock functionality. Unlock and continue booting from any device on your LAN via HTTPS/SSH. If you're using a password manager you can conveniently auto-fill the unlock password.
 
 ## Features
 - Unlock your SED from a browser (via HTTPS)
+- Unlock your SED via SSH
 - Change disk password from a browser (via HTTPS)
 - Not limited to us_english keyboard mapping
 - Reboot button to boot from the unlocked drive
@@ -67,6 +68,21 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 - Copy the `sedunlocksrv-pba.img` file onto your USB stick (use the GUI file explorer or `cp` from the Terminal)
 - Eject the USB stick and put it aside for now
 - Use the other USB stick for the sedutil rescue system (see next step)
+
+## Optional SED unlock via SSH
+
+<img width="490" alt="screenshot" src="https://user-images.githubusercontent.com/15635386/235292505-39fd4461-ea31-4ee3-b98e-df76aa311b94.png">
+
+Optionally SED disks can be unlocked via SSH. To enable this feature (in addition to HTTPS unlocking) follow above build steps with small extras:
+
+- install dropbear (it will be used to generate dropbear host keys):`apt-get -y install dropbear`
+- create authorized_keys file in `sedunlocksrv-pba/ssh` folder. It should contain public keys of all key pairs allowed to connect to unlocking service. Have a look at provided `sedunlocksrv-pba/ssh/authorized_keys.example`
+- run build with SSH option: `./build.sh SSH`
+
+Usage:
+run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (if all disks have the same password they will be unlocked in one step) --> press ESC to reboot.
+
+It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. It only allows to access SED unlocking with any other SSH services disabled.
 
 ## Encrypting your drive and flashing the PBA
 Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.img`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.img /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.
