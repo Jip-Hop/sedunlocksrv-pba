@@ -60,7 +60,7 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 
 ## Building on Ubuntu 20.04.2
 - Install the Go compiler with: `snap install go --classic`
-- Install build dependencies: `apt-get -y install curl libarchive-tools grub-pc-bin grub-efi-ia32-bin grub-efi-amd64-bin`
+- Install build dependencies: `apt-get -y install curl libarchive-tools grub-pc-bin grub-efi-ia32-bin grub-efi-amd64-bin xorriso wget git cpio rsync squashfs-tools udev dosfstools fdisk grub2-common`
 - [Download](https://github.com/Jip-Hop/sedunlocksrv-pba/archive/refs/heads/main.zip) or clone this repo and run: `./build.sh`
 - Connect your USB stick to Ubuntu (if inside VirtualBox, use the Devices dropdown menu)
 - Format the stick with a supported filesystem (e.g. FAT32) if this is not already the case
