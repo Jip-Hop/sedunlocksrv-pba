@@ -138,7 +138,7 @@ LOOP_DEVICE_HDD=$(losetup --find --show --partscan ${OUTPUTIMG})
     echo     # default - start at beginning of disk
     echo     # default, extend partition to end of disk
     echo t   # change partition type
-    echo e f # set partition type to EFI (FAT-12/16/32)
+    echo ef  # set partition type to EFI (FAT-12/16/32)
     echo a   # make a partition bootable
     echo w   # write the partition table
     echo q   # and we're done
