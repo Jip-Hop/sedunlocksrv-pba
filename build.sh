@@ -87,6 +87,7 @@ mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 cp "${CACHEDIR}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
 rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
 cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
+sed -i "s/::exclude_devices::/${EXCLUDE_NETDEV-}/" "${TMPDIR}/core/etc/init.d/tc-config"
 # cp ./tc/bootsync.sh "${TMPDIR}/core/opt/bootsync.sh"
 
 # Install extensions and dependencies
