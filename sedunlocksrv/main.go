@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
 var httpAddr string = ":80"
@@ -69,6 +71,39 @@ func cmdExec(w http.ResponseWriter, args ...string) {
 	}
 }
 
+func cmdExecStdIO(args ...string) {
+
+	baseCmd := args[0]
+	cmdArgs := args[1:]
+
+	cmd := exec.Command(baseCmd, cmdArgs...)
+
+	// create a pipe for the output of the script
+	cmdReader, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error creating StdoutPipe for Cmd", err)
+		return
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error starting Cmd", err)
+		return
+	}
+
+	scanner := bufio.NewScanner(cmdReader)
+	for scanner.Scan() {
+		m := scanner.Text()
+		fmt.Println(m)
+	}
+
+	cmd.Wait()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error waiting for Cmd", err)
+		return
+	}
+}
+
 func index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.Error(w, "404 not found.", http.StatusNotFound)
@@ -116,7 +151,23 @@ func getOutboundIP() net.IP {
 	return localAddr.IP
 }
 
-func main() {
+func passwordInput() {
+	for {
+		fmt.Printf("\nKey in SED password in this screen and press Enter to unlock\n")
+		fmt.Printf("Enter \"r\" or \"reboot\" as the password in this screen to reboot\n")
+		var password string
+		fmt.Scanln(&password)
+		if strings.ToLower(password) == "r" || strings.ToLower(password) == "reboot" {
+			fmt.Printf("Rebooting in 3 seconds\n")
+			time.Sleep(3 * time.Second)
+			cmdExecStdIO("./reboot.sh")
+		} else {
+			cmdExecStdIO("./opal-functions.sh", password)
+		}
+	}
+}
+
+func httpServer() {
 	ip := getOutboundIP()
 	// redirect every http request to https
 	go http.ListenAndServe(httpAddr, http.HandlerFunc(redirect))
@@ -135,6 +186,29 @@ func main() {
 	fmt.Printf("\nReady to connect\n")
 
 	log.Fatal(http.ServeTLS(l, mux, "server.crt", "server.key"))
+}
 
-	// ServeTLS blocks, so this point is never reached
+func sshServer() {
+	if _, err := os.Stat("/usr/local/sbin/dropbear"); err == nil {
+		// Start SSH server listening on port 2222
+		fmt.Printf("\n%sStarting SSH SED unlock service on port %s2222%s\n", green, magenta, normal)
+		cmd := exec.Command("/usr/local/sbin/dropbear", "-s", "-g", "-w", "-j", "-k", "-p", "2222", "-b", "/usr/local/etc/dropbear/banner")
+		cmd.Run()
+	}
+}
+
+func waitForNetworkAndStartNetServices() {
+	fmt.Printf("\nWait for network connection...\n")
+	cmd := exec.Command("./wait-for-network.sh")
+	cmd.Run()
+	go httpServer()
+	go sshServer()
+}
+
+func main() {
+
+	go waitForNetworkAndStartNetServices()
+	time.Sleep(2 * time.Second)
+	passwordInput()
+
 }
