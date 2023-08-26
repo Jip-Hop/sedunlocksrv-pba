@@ -33,7 +33,15 @@ while [ ! -e /dev/rtc0 ]; do usleep 50000; done
 /sbin/udevadm settle --timeout=5
 
 NETDEVICES="$(awk -F: '/eth.:|tr.:/{print $1}' /proc/net/dev 2>/dev/null)"
+EXCLUDEDEVICES="::exclude_devices::"
 for DEVICE in $NETDEVICES; do
+  for EXCLUDEDEVICE in $EXCLUDEDEVICES; do
+    if [ $DEVICE = $EXCLUDEDEVICE ]; then
+      echo -e "${GREEN}Excluding device ${MAGENTA}$DEVICE${GREEN} for DHCP configuration.\n${NORMAL}"
+      # continue on the outer loop
+      continue 2
+    fi
+  done
   ifconfig $DEVICE | grep -q "inet addr"
   if [ "$?" != 0 ]; then
     echo -e "${GREEN}Network device ${MAGENTA}$DEVICE${GREEN} detected, DHCP broadcasting for IP.\n${NORMAL}"
