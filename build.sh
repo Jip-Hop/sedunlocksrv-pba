@@ -31,14 +31,21 @@ TCURL="http://distro.ibiblio.org/tinycorelinux/14.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
-SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
 SEDUTILBINFILENAME="sedutil-cli"
-SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="bash.tcz dropbear.tcz"
 else
     EXTENSIONS="bash.tcz"
 fi
+case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
+    "chubbyant")
+        SEDUTILURL="https://github.com/ChubbyAnt/sedutil/releases/download/1.15-5ad84d8/sedutil-cli-1.15-5ad84d8.zip"
+    ;;
+    *)
+        SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
+        SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
+    ;;
+esac
 
 # Build sedunlocksrv binary with Go
 (cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
@@ -69,11 +76,21 @@ if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
 fi
 
 if [ ! -f "${CACHEDIR}/${SEDUTILBINFILENAME}" ]; then
-    SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
-    LEVELSDEEP="${#SLASHESONLY}"
-    # Download and Unpack Sedutil
-    # Use bsdtar to auto-detect de-compression algorithm
-    curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
+    case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
+        "chubbyant")
+            # Download and Unpack Sedutil
+            # Use bsdtar to auto-detect de-compression algorithm
+            wget -O - ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}"
+            chmod +x "${CACHEDIR}/${SEDUTILBINFILENAME}"
+        ;;
+        *)
+        SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
+        LEVELSDEEP="${#SLASHESONLY}"
+        # Download and Unpack Sedutil
+        # Use bsdtar to auto-detect de-compression algorithm
+        curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
+        ;;
+    esac
 fi
 
 # Copy the kernel
