@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -152,17 +152,37 @@ func getOutboundIP() net.IP {
 }
 
 func passwordInput() {
+	var b []byte = make([]byte, 1)
+	var password_buffer bytes.Buffer
 	for {
-		fmt.Printf("\nKey in SED password in this screen and press Enter to unlock\n")
-		fmt.Printf("Enter \"r\" or \"reboot\" as the password in this screen to reboot\n")
-		var password string
-		fmt.Scanln(&password)
-		if strings.ToLower(password) == "r" || strings.ToLower(password) == "reboot" {
-			fmt.Printf("Rebooting in 3 seconds\n")
-			time.Sleep(3 * time.Second)
-			cmdExecStdIO("./reboot.sh")
-		} else {
-			cmdExecStdIO("./opal-functions.sh", password)
+		fmt.Printf("\nKey in SED password and press Enter anytime to unlock\n")
+		fmt.Printf("Note that keystrokes won't be echoed on the screen\n")
+		fmt.Printf("Press ESC anytime to reboot\n")
+		fmt.Printf("Press Ctrl-D anytime to shutdown\n")
+	out:
+		for {
+			os.Stdin.Read(b)
+			switch bi := b[0]; bi {
+			case 4: // CTRL-D key
+				fmt.Println("Shutting down in 3 seconds")
+				time.Sleep(3 * time.Second)
+				cmdExecStdIO("./shutdown.sh")
+			case 27: // ESC key
+				fmt.Println("Rebooting in 3 seconds")
+				time.Sleep(3 * time.Second)
+				cmdExecStdIO("./reboot.sh")
+			case 10: // ENTER key
+				fmt.Println("Password entered. Trying to unlock disk with password...")
+				cmdExecStdIO("./opal-functions.sh", password_buffer.String())
+				password_buffer.Reset()
+				break out
+			case 127: // BACKSPACE key
+				if password_buffer.Len() > 0 {
+					password_buffer.Truncate(password_buffer.Len() - 1)
+				}
+			default:
+				password_buffer.Write(b)
+			}
 		}
 	}
 }

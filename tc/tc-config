@@ -6,6 +6,8 @@
 echo -e "\e[?1c"
 # Disable showing keyboard input
 stty -echo
+# Disable input buffering
+stty cbreak min 1
 
 # ANSI COLORS
 GREEN="$(echo -e '\033[1;32m')"
