@@ -6,6 +6,8 @@
 echo -e "\e[?1c"
 # Disable showing keyboard input
 stty -echo
+# Disable input buffering
+stty cbreak min 1
 
 # ANSI COLORS
 GREEN="$(echo -e '\033[1;32m')"
@@ -52,21 +54,9 @@ for DEVICE in $NETDEVICES; do
   fi
 done
 
-echo "Wait for network connection..."
-until ifconfig | grep -q Bcast
-do
-    sleep 1
-done
-
 # Fix to get the 64-bit binaries working
 if [ ! -d /lib64 ]; then
     ln -s /lib /lib64
-fi
-
-if [ -f /usr/local/sbin/dropbear ]; then
-    # Start SSH server listening on port 2222
-    echo -e "\n${GREEN}Starting SSH SED unlock service on port ${MAGENTA}2222${NORMAL}"
-    /usr/local/sbin/dropbear -s -g -w -j -k -p 2222 -b /usr/local/etc/dropbear/banner
 fi
 
 cd /usr/local/sbin/sedunlocksrv/
