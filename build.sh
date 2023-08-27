@@ -39,9 +39,11 @@ else
 fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
+        SEDUTIL_FORK="ChubbyAnt"
         SEDUTILURL="https://github.com/ChubbyAnt/sedutil/releases/download/1.15-5ad84d8/sedutil-cli-1.15-5ad84d8.zip"
     ;;
     *)
+        SEDUTIL_FORK="Drive-Trust-Alliance"
         SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
         SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
     ;;
@@ -59,6 +61,7 @@ fi
 TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
 mkdir -p "${TMPDIR}"/{fs/boot,core,img}
 mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
+mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
 # Downloads a Tiny Core Linux asset, only if not already cached
 function cachetcfile() {
@@ -75,20 +78,20 @@ if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
     mv "${CACHEDIR}/iso-extracting" "${CACHEDIR}/iso-extracted"
 fi
 
-if [ ! -f "${CACHEDIR}/${SEDUTILBINFILENAME}" ]; then
-    case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
-        "chubbyant")
+if [ ! -f "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" ]; then
+    case "${SEDUTIL_FORK}" in
+        "ChubbyAnt")
             # Download and Unpack Sedutil
             # Use bsdtar to auto-detect de-compression algorithm
-            wget -O - ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}"
-            chmod +x "${CACHEDIR}/${SEDUTILBINFILENAME}"
+            wget -O - ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
+            chmod +x "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}"
         ;;
         *)
-        SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
-        LEVELSDEEP="${#SLASHESONLY}"
-        # Download and Unpack Sedutil
-        # Use bsdtar to auto-detect de-compression algorithm
-        curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
+            SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
+            LEVELSDEEP="${#SLASHESONLY}"
+            # Download and Unpack Sedutil
+            # Use bsdtar to auto-detect de-compression algorithm
+            curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
         ;;
     esac
 fi
@@ -101,7 +104,7 @@ cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 
 mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
-cp "${CACHEDIR}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
+cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
 rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
 cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
 # cp ./tc/bootsync.sh "${TMPDIR}/core/opt/bootsync.sh"
