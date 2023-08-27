@@ -73,6 +73,14 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 
 Note that you can still unlock SED disks using the keyboard with this PBA image. Just key in your password and press Enter when the prompt "Key in SED password and press Enter anytime to unlock" appears. Note that keystrokes won't be echoed on the screen. Repeat for other disks (if all disks have the same password they will be unlocked in one step). After the disks are successfully unlocked, reboot by pressing ESC.
 
+## Using other forks of `sedutil`
+
+Optionally you can use other `sedutil` forks of the [official Drive-Trust-Alliance one](https://github.com/Drive-Trust-Alliance/sedutil) by setting the environment variable `SEDUTIL_FORK` as follows:
+
+- `ChubbyAnt`: [Fork by ChubbyAnt](https://github.com/ChubbyAnt/sedutil)
+
+Example: `sudo SEDUTIL_FORK="ChubbyAnt" ./build.sh`
+
 ## Optional SED unlock via SSH
 
 <img width="490" alt="screenshot" src="https://user-images.githubusercontent.com/15635386/235292505-39fd4461-ea31-4ee3-b98e-df76aa311b94.png">
@@ -87,6 +95,16 @@ Usage:
 run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (if all disks have the same password they will be unlocked in one step) --> press ESC to reboot.
 
 It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. It only allows to access SED unlocking with any other SSH services disabled.
+
+## Excluding network device(s)
+
+Note that by default, the PBA image will try to configure all network devices with dynamic IP addresses using DHCP, and the web server and SSH server will listen on all interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
+
+To solve this problem, optionally it is possible to set a list of network devices to be excluded when running the build script, for example:
+```
+sudo EXCLUDE_NETDEV="eth0 eth1" ./build.sh
+```
+will exclude `eth0` and `eth1` from DHCP configuration.
 
 ## Encrypting your drive and flashing the PBA
 Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.img`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.img /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.
