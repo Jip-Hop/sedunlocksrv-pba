@@ -47,9 +47,9 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 ## Setup a VM for building with VirtualBox
 - Download and install [VirtualBox](https://www.virtualbox.org/wiki/Downloads)
 - Also install the VirtualBox Extension Pack from the link above
-- [Download Ubuntu 20.04.2 Focal Fossa](https://sourceforge.net/projects/linuxvmimages/files/VirtualBox/U/20.04/Ubuntu_20.04.2_VB.zip/download) from [linuxvmimages](https://www.linuxvmimages.com/images/ubuntu-2004)
+- [Download Ubuntu 22.04](https://sourceforge.net/projects/linuxvmimages/files/VirtualBox/U/22.04/Ubuntu_22.04_VB.7z/download) from [linuxvmimages](https://www.linuxvmimages.com/images/ubuntu-2204/)
 - Extract the downloaded archive
-- Import the VM by double clicking the `Ubuntu_20.04.2_VB_LinuxVMImages.COM.ova` file
+- Import the VM by double clicking the extracted `.ova` file
 - Open Settings for the newly created VM and go to Ports->USB to enable the USB 3.0 (xHCI) Controller
 - Boot the VM and login with username `ubuntu` and password `ubuntu`
 - Tip: enable Shared Clipboard from the Devices dropdown menu to copy and paste the commands in the next steps
@@ -59,9 +59,8 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 - Update with: `apt-get update && apt-get -y upgrade`
 - Continue with building in the next steps
 
-## Building on Ubuntu 20.04 LTS or Ubuntu 22.04 LTS
-- Install the Go compiler with: `snap install go --classic`
-- Install build dependencies: `apt-get -y install curl libarchive-tools grub-pc-bin grub-efi-ia32-bin grub-efi-amd64-bin xorriso wget git cpio rsync squashfs-tools udev dosfstools fdisk grub2-common`
+## Building on Ubuntu 22.04 LTS
+- Install build dependencies: `apt-get -y install cpio curl dosfstools dropbear fdisk git golang-go grub-efi-amd64-bin grub-efi-ia32-bin grub-pc-bin grub2-common libarchive-tools rsync squashfs-tools udev wget xorriso`
 - [Download](https://github.com/Jip-Hop/sedunlocksrv-pba/archive/refs/heads/main.zip) or clone this repo and run: `./build.sh`
 - Connect your USB stick to Ubuntu (if inside VirtualBox, use the Devices dropdown menu)
 - Format the stick with a supported filesystem (e.g. FAT32) if this is not already the case

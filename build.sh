@@ -183,18 +183,9 @@ mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
 
 # Install GRUB
 
-# Allow installing GRUB for AMD architecture from ARM host (these packages aren't available to install)
-# We just fetch the deb and unpack (no need to install), we only need the extracted files
-wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-pc-bin_2.04-1ubuntu26.12_amd64.deb -O /tmp/grub-pc-bin.deb
-dpkg -x /tmp/grub-pc-bin.deb /tmp/grub-pc-bin
-wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2/grub-efi-ia32-bin_2.04-1ubuntu26.12_amd64.deb -O /tmp/grub-efi-ia32-bin.deb
-dpkg -x /tmp/grub-efi-ia32-bin.deb /tmp/grub-efi-ia32-bin
-wget http://security.ubuntu.com/ubuntu/pool/main/g/grub2-unsigned/grub-efi-amd64-bin_2.04-1ubuntu47.4_amd64.deb -O /tmp/grub-efi-amd64-bin.deb
-dpkg -x /tmp/grub-efi-amd64-bin.deb /tmp/grub-efi-amd64-bin
-
-grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --directory=/tmp/grub-pc-bin/usr/lib/grub/i386-pc "${LOOP_DEVICE_HDD}"
-grub-install --removable --boot-directory="${TMPDIR}/img/boot" --directory=/tmp/grub-efi-amd64-bin/usr/lib/grub/x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
-grub-install --removable --boot-directory="${TMPDIR}/img/boot" --directory=/tmp/grub-efi-ia32-bin/usr/lib/grub/i386-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
+grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=i386-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
 
 cat >"${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
 set timeout_style=hidden
