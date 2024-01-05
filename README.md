@@ -36,7 +36,7 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 
 ## Building with Docker
 
-This allows building the image with Docker, even on ARM architecture (Apple Silicon / M1 processor).
+This allows building the image with Docker, even on Apple Silicon (arm64) using [Rosetta for Linux](https://www.docker.com/blog/docker-desktop-4-25/) in Docker Desktop v4.25 and up.
 
 ```bash
 (NAME=sedunlocksrv-pba; docker build -t $NAME . && docker run --name $NAME --privileged $NAME && docker cp $NAME:/tmp/sedunlocksrv-pba.img sedunlocksrv-pba.img; docker rm $NAME)
