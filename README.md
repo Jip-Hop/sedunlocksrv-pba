@@ -93,7 +93,7 @@ Optionally SED disks can be unlocked via SSH. To enable this feature (in additio
 Usage:
 run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (if all disks have the same password they will be unlocked in one step) --> press ESC to reboot.
 
-It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. It only allows to access SED unlocking with any other SSH services disabled.
+It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. As long as you prefix every key in authorized_keys with the 'command=...' prefix like in the example, it will only allow SED unlocking, with any other SSH services disabled.
 
 ## Excluding network device(s)
 
@@ -112,6 +112,9 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Flash the PBA to all the Self Encrypting Drives in your server
 - Use the same password for all the SEDs in your server (otherwise you need to enter multiple passwords during startup)
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
+
+## Troubleshooting
+To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
 
 ## Wishlist
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)

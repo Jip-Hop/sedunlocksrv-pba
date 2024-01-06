@@ -59,6 +59,8 @@ if [ ! -d /lib64 ]; then
     ln -s /lib /lib64
 fi
 
+sedutil-cli --scan
+
 cd /usr/local/sbin/sedunlocksrv/
 ./sedunlocksrv
 
