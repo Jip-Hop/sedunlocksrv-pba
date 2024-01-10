@@ -29,13 +29,13 @@ GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this nu
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/14.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
+TC_KERNEL_VERSION="6.1.2-tinycore64"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
+EXTENSIONS="scsi-${TC_KERNEL_VERSION}.tcz bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
-    EXTENSIONS="bash.tcz dropbear.tcz"
-else
-    EXTENSIONS="bash.tcz"
+    EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
@@ -139,6 +139,9 @@ if [ $SSHBUILD == "TRUE" ]; then
     cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
     cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
 fi
+
+# Since we installed the scsi extension by extracting it rather than using tce-load, we need to fix modules.dep
+chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
 
 # Repackage the initrd
 (cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")
