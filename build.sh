@@ -29,11 +29,10 @@ GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this nu
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/14.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
-TC_KERNEL_VERSION="6.1.2-tinycore64"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="scsi-${TC_KERNEL_VERSION}.tcz bash.tcz"
+EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
@@ -101,6 +100,11 @@ cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 
 # Remaster the initrd
 (cd "${TMPDIR}/core" && zcat "../../${CACHEDIR}/iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d)
+
+# We can only detect the kernel version after the intird is extracted.
+# We need the kernel version to install the right scsi driver 
+TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
+EXTENSIONS="$EXTENSIONS  scsi-${TC_KERNEL_VERSION}.tcz"
 
 mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
