@@ -68,6 +68,12 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 - Eject the USB stick and put it aside for now
 - Use the other USB stick for the sedutil rescue system (see next step)
 
+## Testing PBA with qemu
+
+```
+qemu-system-x86_64 -drive format=raw,file=sedunlocksrv-pba.img
+```
+
 ## SED unlock with keyboard
 
 Note that you can still unlock SED disks using the keyboard with this PBA image. Just key in your password and press Enter when the prompt "Key in SED password and press Enter anytime to unlock" appears. Note that keystrokes won't be echoed on the screen. Repeat for other disks (if all disks have the same password they will be unlocked in one step). After the disks are successfully unlocked, reboot by pressing ESC.
