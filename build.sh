@@ -32,10 +32,9 @@ INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
+EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
-    EXTENSIONS="bash.tcz dropbear.tcz"
-else
-    EXTENSIONS="bash.tcz"
+    EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
@@ -102,6 +101,11 @@ cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 # Remaster the initrd
 (cd "${TMPDIR}/core" && zcat "../../${CACHEDIR}/iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d)
 
+# We can only detect the kernel version after the intird is extracted.
+# We need the kernel version to install the right scsi driver 
+TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
+EXTENSIONS="$EXTENSIONS  scsi-${TC_KERNEL_VERSION}.tcz"
+
 mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
 cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
@@ -139,6 +143,9 @@ if [ $SSHBUILD == "TRUE" ]; then
     cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
     cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
 fi
+
+# Since we installed the scsi extension by extracting it rather than using tce-load, we need to fix modules.dep
+chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
 
 # Repackage the initrd
 (cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")
