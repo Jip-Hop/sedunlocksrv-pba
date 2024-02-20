@@ -136,3 +136,6 @@ To gain shell access to the PBA for debugging, enable SSH and add an SSH key _wi
 - [Simple login form example](https://www.w3schools.com/howto/howto_css_login_form.asp)
 - [Fix to get the 64-bit binaries working](http://forum.tinycorelinux.net/index.php?topic=19607.0)
 - Guides on installing GRUB: [grub2-bios-uefi-usb](https://github.com/ndeineko/grub2-bios-uefi-usb) and [grub_hybrid](https://www.normalesup.org/~george/comp/live_iso_usb/grub_hybrid.html)
+
+## Featured in
+- [Home Lab SSD Encryption](https://watsonbox.github.io/posts/2024/02/19/home-lab-ssd-encryption.html) by [watsonbox](https://github.com/watsonbox)
