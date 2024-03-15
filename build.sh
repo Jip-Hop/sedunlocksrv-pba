@@ -153,7 +153,8 @@ chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
 FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
 
 # Make the image
-dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE))
+# Add 1 MiB extra to account for FSSIZE rounding errors
+dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE +1))
 
 # Attaching hard disk image file to loop device.
 LOOP_DEVICE_HDD=$(losetup --find --show --partscan ${OUTPUTIMG})
