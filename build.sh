@@ -142,6 +142,9 @@ if [ $SSHBUILD == "TRUE" ]; then
     mkdir -p "${TMPDIR}/core/home/tc/.ssh"
     cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
     cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
+    chown -R 1001 "${TMPDIR}/core/home/tc/"
+    chmod 700 "${TMPDIR}/core/home/tc/.ssh"
+    chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
 fi
 
 # Since we installed the scsi extension by extracting it rather than using tce-load, we need to fix modules.dep
