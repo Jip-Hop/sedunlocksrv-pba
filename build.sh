@@ -118,9 +118,14 @@ sed -i "s/::exclude_devices::/${EXCLUDE_NETDEV-}/" "${TMPDIR}/core/etc/init.d/tc
 while [ -n "${EXTENSIONS}" ]; do
     DEPS=""
     for EXTENSION in ${EXTENSIONS}; do
+        MOUNTDIREXT="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
         cachetcfile "${EXTENSION}" tcz tcz
         cachetcfile "${EXTENSION}.dep" dep tcz
-        unsquashfs -f -d "${TMPDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
+        mount -o loop "${CACHEDIR}/tcz/${EXTENSION}" "${MOUNTDIREXT}"
+        cp -r "${MOUNTDIREXT}/"* "${TMPDIR}/core/"
+        umount "${MOUNTDIREXT}"
+        rm -rfv "${MOUNTDIREXT}"
+        #unsquashfs -f -d "${TMPDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
         DEPS=$(echo "${DEPS}" | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
     done
     EXTENSIONS="${DEPS}"
