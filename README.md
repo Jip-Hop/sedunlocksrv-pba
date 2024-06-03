@@ -23,6 +23,7 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 - Not limited to us_english keyboard mapping
 - Reboot button to boot from the unlocked drive
 - BIOS and UEFI support
+- Possible Add Entry on UEFI if remove when boot on sedunlocksrv-pba with sed status mbrdone is false ( work only on ssh and console no https)
 
 ## SED benefits
 - Encrypt your (boot) drive, even when the OS doesn't (fully) support encryption
@@ -85,6 +86,13 @@ Optionally you can use other `sedutil` forks of the [official Drive-Trust-Allian
 - `ChubbyAnt`: [Fork by ChubbyAnt](https://github.com/ChubbyAnt/sedutil)
 
 Example: `sudo SEDUTIL_FORK="ChubbyAnt" ./build.sh`
+
+
+## Optional Add Entry on UEFI 
+
+USE ENV Variable PARTID for defined partion id of partion EFI ( PARTID="05ED-05ED" )
+Use Ctrl-E For add entry on EFI need path /EFI/Label/*.efi
+
 
 ## Optional SED unlock via SSH
 

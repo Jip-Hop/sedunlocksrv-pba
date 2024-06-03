@@ -18,8 +18,20 @@ shutdown_function () {
     poweroff -nf
 }
 
+efiupdate_function () {
+    # efiupdate
+    echo
+    /usr/local/sbin/sedunlocksrv/efiupdate.sh
+    echo
+}
+
+
 echo "Press ESC anytime to reboot."
 echo "Press CTRL-D anytime to shutdown."
+if [ -e /home/tc/partid-efi ]; then
+    echo "Press CTRL-E anytime for add entry EFI."
+fi
+
 echo
 
 if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TCG Opal 2-compliant disks"
@@ -42,6 +54,12 @@ while [ true ] ; do
             reboot_function
             ;;
         $'\0') # if input == ENTER key
+            break
+            ;;
+        $'\005') # if input == CTRL-E key
+            if [ -e /home/tc/partid-efi ]; then
+                efiupdate_function
+            fi
             break
             ;;
         $'\177') # if input == BACKSPACE key

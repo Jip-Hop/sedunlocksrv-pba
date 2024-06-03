@@ -36,6 +36,11 @@ EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
+if [ ! -z ${PARTID} ] ;then
+  echo "Add entry EFI configured"
+  EXTENSIONS="$EXTENSIONS efibootmgr.tcz"
+  BOOTARGS="$BOOTARGS efi=runtime"
+fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
         SEDUTIL_FORK="ChubbyAnt"
@@ -131,6 +136,11 @@ while [ -n "${EXTENSIONS}" ]; do
     EXTENSIONS="${DEPS}"
 done
 
+if [ ! -z ${PARTID} ] ;then
+  mkdir -p "${TMPDIR}/core/home/tc/"
+  echo -en  ${PARTID} > "${TMPDIR}/core/home/tc/partid-efi"
+fi    
+
 if [ $SSHBUILD == "TRUE" ]; then
     # Generate dropbear hostkeys if not existing
     if [[ ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
@@ -198,6 +208,7 @@ mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
 mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
 
 # Install GRUB
+
 
 grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
 grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
