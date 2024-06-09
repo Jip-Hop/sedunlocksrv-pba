@@ -125,9 +125,10 @@ func index(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.FormValue("action") == "reboot" {
-			cmdExec(w, "./reboot.sh")
-                } else if r.FormValue("action") == "efiupdate" {
-                        cmdExec(w, "./efiupdate.sh")
+			if fileExists("/home/tc/partid-efi") {
+                        	cmdExec(w, "./efiupdate.sh")
+				cmdExec(w, "./reboot.sh")
+			}
 		} else {
 			psw := r.FormValue("psw")
 			if r.FormValue("action") == "unlock" {
@@ -166,9 +167,6 @@ func passwordInput() {
 		fmt.Printf("Note that keystrokes won't be echoed on the screen\n")
 		fmt.Printf("Press ESC anytime to reboot\n")
 		fmt.Printf("Press Ctrl-D anytime to shutdown\n")
-                if fileExists("/home/tc/partid-efi") {
-			fmt.Printf("Press Ctrl-E Add Entry EFI\n")
-		}
 	out:
 		for {
 			os.Stdin.Read(b)
@@ -178,17 +176,15 @@ func passwordInput() {
 				time.Sleep(3 * time.Second)
 				cmdExecStdIO("./shutdown.sh")
 			case 27: // ESC key
-				fmt.Println("Rebooting in 3 seconds")
-				time.Sleep(3 * time.Second)
-				cmdExecStdIO("./reboot.sh")
-			case 5: // CTRL-E key
 				if fileExists("/home/tc/partid-efi") {
 					fmt.Println("Reinstall EFI")
 					time.Sleep(3 * time.Second)
 					cmdExecStdIO("./efiupdate.sh")
 					password_buffer.Reset()
-                                        break out
 				}
+				fmt.Println("Rebooting in 3 seconds")
+				time.Sleep(3 * time.Second)
+				cmdExecStdIO("./reboot.sh")
 			case 10: // ENTER key
 				fmt.Println("Password entered. Trying to unlock disk with password...")
 				cmdExecStdIO("./opal-functions.sh", password_buffer.String())

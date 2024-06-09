@@ -37,7 +37,5 @@ sudo mount -t efivarfs efivarfs /sys/firmware/efi/efivars
 
 # Add Entry EFI
 sudo efibootmgr --create --disk "$efi_disk" --part "$efi_part_num" --label "$labelefi" --loader "${loaderefi}"
-
 # Prevent reboot without sync
 sync
-sleep 2

@@ -130,7 +130,6 @@ while [ -n "${EXTENSIONS}" ]; do
         cp -r "${MOUNTDIREXT}/"* "${TMPDIR}/core/"
         umount "${MOUNTDIREXT}"
         rm -rfv "${MOUNTDIREXT}"
-        #unsquashfs -f -d "${TMPDIR}/core" "${CACHEDIR}/tcz/${EXTENSION}"
         DEPS=$(echo "${DEPS}" | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
     done
     EXTENSIONS="${DEPS}"
@@ -139,7 +138,7 @@ done
 if [ ! -z ${PARTID} ] ;then
   mkdir -p "${TMPDIR}/core/home/tc/"
   echo -en  ${PARTID} > "${TMPDIR}/core/home/tc/partid-efi"
-fi    
+fi
 
 if [ $SSHBUILD == "TRUE" ]; then
     # Generate dropbear hostkeys if not existing
@@ -208,7 +207,6 @@ mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
 mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
 
 # Install GRUB
-
 
 grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
 grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
