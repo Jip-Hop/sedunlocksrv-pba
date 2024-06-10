@@ -36,6 +36,9 @@ EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
+if [ ! -z "${KEYMAP+x}" ]; then
+    EXTENSIONS="$EXTENSIONS kmaps.tcz"
+fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
         SEDUTIL_FORK="ChubbyAnt"
@@ -129,6 +132,11 @@ while [ -n "${EXTENSIONS}" ]; do
     done
     EXTENSIONS="${DEPS}"
 done
+
+if [ ! -z "${KEYMAP+x}" ]; then
+  mkdir -p "${TMPDIR}/core/home/tc"
+  echo -en "${KEYMAP}" > "${TMPDIR}/core/home/tc/keymap"
+fi
 
 if [ $SSHBUILD == "TRUE" ]; then
     # Generate dropbear hostkeys if not existing

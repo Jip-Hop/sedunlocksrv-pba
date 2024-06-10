@@ -59,6 +59,13 @@ if [ ! -d /lib64 ]; then
     ln -s /lib /lib64
 fi
 
+if [ -e /home/tc/keymap ]; then
+    KEYMAP=$(cat /home/tc/keymap)
+    keymapfile=$(find /usr/share/kmap/ -name "${KEYMAP}.kmap")
+    echo "Loading keymapfile $keymapfile"
+    loadkmap < $keymapfile
+fi
+
 sedutil-cli --scan
 
 cd /usr/local/sbin/sedunlocksrv/
