@@ -36,15 +36,8 @@ EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
-
 if [ ! -z "${KEYMAP+x}" ]; then
     EXTENSIONS="$EXTENSIONS kmaps.tcz"
-fi
-
-if [ ! -z "${PARTID+x}" ] ;then
-  echo "Add entry EFI configured"
-  EXTENSIONS="$EXTENSIONS efibootmgr.tcz"
-  BOOTARGS="$BOOTARGS efi=runtime"
 fi
 case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     "chubbyant")
@@ -140,15 +133,9 @@ while [ -n "${EXTENSIONS}" ]; do
     EXTENSIONS="${DEPS}"
 done
 
-
 if [ ! -z "${KEYMAP+x}" ]; then
   mkdir -p "${TMPDIR}/core/home/tc"
   echo -en "${KEYMAP}" > "${TMPDIR}/core/home/tc/keymap"
-fi  
-
-if [ ! -z "${PARTID+x}" ] ;then
-  mkdir -p "${TMPDIR}/core/home/tc/"
-  echo -en  ${PARTID} > "${TMPDIR}/core/home/tc/partid-efi"
 fi
 
 if [ $SSHBUILD == "TRUE" ]; then

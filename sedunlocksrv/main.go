@@ -30,11 +30,6 @@ func redirect(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, target, http.StatusPermanentRedirect)
 }
 
-func fileExists(filename string) bool {
-    _, err := os.Stat(filename)
-    return err == nil
-}
-
 func cmdExec(w http.ResponseWriter, args ...string) {
 
 	baseCmd := args[0]
@@ -125,9 +120,6 @@ func index(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.FormValue("action") == "reboot" {
-			if fileExists("/home/tc/partid-efi") {
-				cmdExec(w, "./efiupdate.sh")
-			}
 			cmdExec(w, "./reboot.sh")
 		} else {
 			psw := r.FormValue("psw")
@@ -176,10 +168,6 @@ func passwordInput() {
 				time.Sleep(3 * time.Second)
 				cmdExecStdIO("./shutdown.sh")
 			case 27: // ESC key
-				if fileExists("/home/tc/partid-efi") {
-					fmt.Println("Reinstall EFI")
-					cmdExecStdIO("./efiupdate.sh")
-				}
 				fmt.Println("Rebooting in 3 seconds")
 				time.Sleep(3 * time.Second)
 				cmdExecStdIO("./reboot.sh")
