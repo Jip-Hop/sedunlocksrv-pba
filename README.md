@@ -81,7 +81,7 @@ Note that you can still unlock SED disks using the keyboard with this PBA image.
 
 ## Configuring specific keymaps on the console
 
-You can use specifice keymaps. Need build with varible environment KEYMAP. Per exemple KEYMAP=fr-latin9
+To use specific keymaps, build with the KEYMAP environment variable set. For example: `KEYMAP=fr-latin9`.
 
 ## Using other forks of `sedutil`
 
