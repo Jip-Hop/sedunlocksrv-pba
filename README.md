@@ -23,6 +23,7 @@ Even for systems which support encrypting all drives, using a SED with `sedunloc
 - Not limited to us_english keyboard mapping
 - Reboot button to boot from the unlocked drive
 - BIOS and UEFI support
+- Configuring specific keymaps on the console
 
 ## SED benefits
 - Encrypt your (boot) drive, even when the OS doesn't (fully) support encryption
@@ -77,6 +78,10 @@ qemu-system-x86_64 -drive format=raw,file=sedunlocksrv-pba.img
 ## SED unlock with keyboard
 
 Note that you can still unlock SED disks using the keyboard with this PBA image. Just key in your password and press Enter when the prompt "Key in SED password and press Enter anytime to unlock" appears. Note that keystrokes won't be echoed on the screen. Repeat for other disks (if all disks have the same password they will be unlocked in one step). After the disks are successfully unlocked, reboot by pressing ESC.
+
+## Configuring specific keymaps on the console
+
+To use specific keymaps, build with the KEYMAP environment variable set. For example: `KEYMAP=fr-latin9`.
 
 ## Using other forks of `sedutil`
 
