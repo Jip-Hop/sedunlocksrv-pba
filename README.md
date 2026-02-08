@@ -72,7 +72,7 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 ## Testing PBA with qemu
 
 ```
-qemu-system-x86_64 -drive format=raw,file=sedunlocksrv-pba.img
+qemu-system-x86_64 -drive format=raw,file=sedunlocksrv-pba.img -netdev user,id=net0,hostfwd=tcp::8443-:443 -device virtio-net-pci,netdev=net0
 ```
 
 ## SED unlock with keyboard
