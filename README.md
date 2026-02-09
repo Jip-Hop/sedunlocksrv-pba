@@ -125,7 +125,7 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
 
 ## Troubleshooting
-To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
+To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -F /dev/null -o IdentitiesOnly=yes -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
 
 ## Wishlist
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
