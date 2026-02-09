@@ -66,6 +66,9 @@ if [ -e /home/tc/keymap ]; then
     loadkmap < $keymapfile
 fi
 
+# scan and display connected disks
+echo
+echo -e "${GREEN}Displaying connected disks:\n${NORMAL}"
 sedutil-cli --scan
 
 cd /usr/local/sbin/sedunlocksrv/
