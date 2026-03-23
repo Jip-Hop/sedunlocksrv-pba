@@ -68,7 +68,38 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
 esac
 
 # Build sedunlocksrv binary with Go
-(cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath && chmod +x sedunlocksrv)
+(
+    cd ./sedunlocksrv
+    echo "--- Verifying Go Code ---"
+    
+    # 1. Initialize and fetch dependencies
+    [ -f go.mod ] || go mod init sedunlocksrv
+    go get golang.org/x/term
+    go mod tidy
+
+    # 2. Run Go Vet to check for common mistakes (shadowed variables, etc.)
+    if ! go vet ./...; then
+        echo "❌ Go Vet failed! Fix the code before building."
+        exit 1
+    fi
+
+    # 3. Test build to check for syntax/compilation errors without saving a file
+    if ! go build -o /dev/null .; then
+        echo "❌ Compilation failed! Check the errors above."
+        exit 1
+    fi
+
+    # 4. Final optimized build
+    echo "--- Compiling Optimized Binary ---"
+    if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o sedunlocksrv; then
+        echo "✅ Go build successful: sedunlocksrv created."
+        chmod +x sedunlocksrv
+    else
+        echo "❌ Final build failed."
+        exit 1
+    fi
+)
+
 
 # Generate cert if not existing
 if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
