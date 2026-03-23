@@ -32,7 +32,7 @@ INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="bash.tcz"
+EXTENSIONS=""
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
@@ -52,7 +52,7 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
 esac
 
 # Build sedunlocksrv binary with Go
-(cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
+(cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath && chmod +x sedunlocksrv)
 
 # Generate cert if not existing
 if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
@@ -107,7 +107,14 @@ cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 # We can only detect the kernel version after the intird is extracted.
 # We need the kernel version to install the right scsi driver 
 TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
-EXTENSIONS="$EXTENSIONS  scsi-${TC_KERNEL_VERSION}.tcz"
+EXTENSIONS="$EXTENSIONS scsi-${TC_KERNEL_VERSION}.tcz"
+
+# add this extension if the bond driver is needed
+if [ 
+
+EXTENSIONS="$EXTENSIONS ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
+
+
 
 mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
@@ -159,11 +166,17 @@ if [ $SSHBUILD == "TRUE" ]; then
     chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
 fi
 
+# Remove bloat from the core filesystem to reduce PBA size
+find "${TMPDIR}/core/usr/share/man" -type f -delete 2>/dev/null || true
+find "${TMPDIR}/core/usr/share/doc" -type f -delete 2>/dev/null || true
+find "${TMPDIR}/core/usr/share/locale" -type f -delete 2>/dev/null || true
+rm -rf "${TMPDIR}/core/usr/include" "${TMPDIR}/core/usr/lib/pkgconfig"
+
 # Since we installed the scsi extension by extracting it rather than using tce-load, we need to fix modules.dep
 chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
 
-# Repackage the initrd
-(cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")
+# Repackage the initrd - change compression to xz instead of gzip
+(cd "${TMPDIR}/core" && find | cpio -o -H newc | xz -9 --check=crc32 >"${TMPDIR}/fs/boot/corepure64.gz")
 
 FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
 
