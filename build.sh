@@ -8,30 +8,16 @@ function cleanup() {
     rm -rf "${TMPDIR}"
 }
 
-SSHBUILD=FALSE
-if [ "${1-default}" == "SSH" ]; then
-    SSHBUILD=TRUE
-    # check SSH build dependencies
-    if [ ! -f ./ssh/authorized_keys ]; then
-        echo "You have to create authorized_keys file in ssh folder"
-        exit
-    fi
-    if ! which dropbear; then
-        echo "Please install dropbear: apt install dropbear"
-        exit
-    fi
-fi
-
-trap cleanup EXIT
-
 # Default config for 64-bit Linux and Sedutil
 GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
 CACHEDIR="cache"
+TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
 BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
 echo "Building new PBA image: ${OUTPUTIMG}"
+
 BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz kexec-tools.tcz"
@@ -53,6 +39,22 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     ;;
 esac
 
+SSHBUILD=FALSE
+if [ "${1-default}" == "SSH" ]; then
+    SSHBUILD=TRUE
+    # check SSH build dependencies
+    if [ ! -f ./ssh/authorized_keys ]; then
+        echo "You have to create authorized_keys file in ssh folder"
+        exit
+    fi
+    if ! which dropbear; then
+        echo "Please install dropbear: apt install dropbear"
+        exit
+    fi
+fi
+
+trap cleanup EXIT
+
 # --- FORCE RE-DOWNLOAD LOGIC ---
 # Instead of checking if directories exist, we destroy them first.
 echo "Cleaning up previous build artifacts and caches..."
@@ -61,6 +63,7 @@ rm -rf "${TMPDIR}"
 rm -rf "mnt.*" "img.*" 
 
 # Re-initialize fresh folders
+mkdir -p "${TMPDIR}"/{fs/boot,core,img}
 mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted}
 mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
@@ -103,12 +106,6 @@ if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
     ./make-cert.sh
 fi
 
-# Create our working folders
-TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
-mkdir -p "${TMPDIR}"/{fs/boot,core,img}
-mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
-mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
-
 # Downloads a Tiny Core Linux asset, only if not already cached
 # Redefine the download function to bypass local file checks
 function cachetcfile() {
@@ -130,21 +127,18 @@ function cachetcfile() {
          { [[ "${local_dir}" == "dep" ]] && touch "${CACHEDIR}/${local_dir}/${filename}"; }
 }
 
-if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
     # Download the ISO
     cachetcfile "${INPUTISO}" iso release
     rm -rf "${CACHEDIR}/iso-extracting" && mkdir -p "${CACHEDIR}/iso-extracting"
     # Extract the contents of the ISO
     xorriso -osirrox on -indev "${CACHEDIR}/iso/${INPUTISO}" -extract / "${CACHEDIR}/iso-extracting"
     mv "${CACHEDIR}/iso-extracting" "${CACHEDIR}/iso-extracted"
-fi
 
-if [ ! -f "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" ]; then
     case "${SEDUTIL_FORK}" in
         "ChubbyAnt")
             # Download and Unpack Sedutil
             # Use bsdtar to auto-detect de-compression algorithm
-            wget -O - ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
+            curl -sL -H "Cache-Control: no-cache" ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
             chmod +x "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}"
         ;;
         *)
@@ -155,7 +149,6 @@ if [ ! -f "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" ]; then
             curl -sL -H "Cache-Control: no-cache" ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
         ;;
     esac
-fi
 
 # Copy the kernel
 cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
