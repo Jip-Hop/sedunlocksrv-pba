@@ -15,9 +15,9 @@ This fork has been refactored for enterprise-grade security and reliability, opt
 
 ---
 
+## 🛠️ Build Host Dependencies
 To prepare your build host (Proxmox, Debian, or Ubuntu) for generating the enhanced PBA image, follow this formatted summary of required tools and the Go upgrade process.
 
-#🛠️ Build Host Dependencies
 Run this command to install the base utilities required for ISO extraction, image creation, and C-compilation:
 bash
 sudo apt update && sudo apt install -y \
@@ -30,7 +30,7 @@ sudo apt update && sudo apt install -y \
     mtools
 
 
-#🐹 Go 1.22+ Upgrade (Required)
+## 🐹 Go 1.22+ Upgrade (Required)
 Since the new backend uses modern libraries (like slices), you must upgrade from the default apt version to the latest official Go binary:
 
 1. Remove old Go versions:
@@ -50,7 +50,7 @@ bash
 export PATH=$PATH:/usr/local/go/bin
 source ~/.bashrc
 
-#📋 Pre-Build Checklist
+## 📋 Pre-Build Checklist
 
 Before running ./build.sh, ensure these files are present in your repository:
    sedunlocksrv/server.crt & server.key: Your SSL certificates for the HTTPS interface.
@@ -58,7 +58,7 @@ Before running ./build.sh, ensure these files are present in your repository:
    tc/tc-config: The customized boot script with LACP/Network logic.
 
 
-#🚀 Execution
+## 🚀 Execution
 
 chmod +x build.sh
 ./build.sh
