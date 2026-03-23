@@ -23,36 +23,36 @@ opal_devices() {
 }
 
 opal_device_hide_mbr() {
-    local device="$1"
-    local password="$2"
+    _device="$1"
+    _password="$2"
     # hides the device's shadow MBR if one has been enabled, does nothing otherwise.
     # Returns 0 on success.
 
-    sedutil-cli --setMBRDone on "$password" "$device"
+    sedutil-cli --setMBRDone on "$_password" "$_device"
 }
 
 opal_device_unlock() {
-    local device="$1"
-    local password="$2"
+    _device="$1"
+    _password="$2"
     # attempts to unlock the device (locking range 0 spanning the entire disk) and hide the MBR, if any.
     # Returns 0 on success.
 
-    sedutil-cli --setLockingRange 0 RW "$password" "$device" && opal_device_hide_mbr "$device" "$password"
+    sedutil-cli --setLockingRange 0 RW "$_password" "$_device" && opal_device_hide_mbr "$_device" "$_password"
 }
 
 opal_device_change_password() {
-    local device="${1:?}"
-    local old_password="${2:?}"
-    local new_password="${3:?}"
+    _device="${1:?}"
+    _old_password="${2:?}"
+    _new_password="${3:?}"
     # sets a new Admin1 and SID password, returns 0 on success
 
-    sedutil-cli --setSIDPassword "$old_password" "$new_password" "$device" &&
-    sedutil-cli --setAdmin1Pwd "$old_password" "$new_password" "$device"
+    sedutil-cli --setSIDPassword "$_old_password" "$_new_password" "$_device" &&
+    sedutil-cli --setAdmin1Pwd "$_old_password" "$_new_password" "$_device"
 }
 
 opal_device_attributes() {
-    local device="${1:?}"
-    local result_variable_name="${2:?}"
+    _device="${1:?}"
+    _result_variable_name="${2:?}"
     # returns a script assigning the Opal device's attributes to a local associative array variable:
     #   model=..., firmware=..., serial=..., interface=...
     #   support=[yn], setup=[yn], locked=[yn], encrypted=[yn], mbr={visible,hidden,disabled},
@@ -61,11 +61,11 @@ opal_device_attributes() {
     #   source "$(opal_device_attributes "$device" attributes)"
     #   if [[ "${attributes[setup]}" == "y" ]]; then ...
 
-    local result_script="$(mktemp)"
+    _result_script="$(mktemp)"
 
     {
-        echo -n "local -A $result_variable_name=( "
-        sedutil-cli --query "$device" | awk '
+        echo -n "local -A $_result_variable_name=( "
+        sedutil-cli --query "$_device" | awk '
             /^\/dev\// {
                 gsub(/[$"]/, "*");  # strip characters interpreted by bash if part of a double-quoted string
                 sub(/^\/dev\/[^ ]+ +/, "");  # strip device field from $0
@@ -91,47 +91,47 @@ opal_device_attributes() {
                 printf("[mbr]=\"%s\" ", (raw_fields["MBREnabled"] == "Y" ? (raw_fields["MBRDone"] == "Y" ? "hidden" : "visible") : "disabled"));
             }
         '
-        echo -e ")\nrm \"$result_script\""
-    } > "$result_script"
-    echo "$result_script"
+        echo -e ")\nrm \"$_result_script\""
+    } > "$_result_script"
+    echo "$_result_script"
 }
 
 opal_device_attribute() {
-    local device="${1:?}"
-    local attribute_name="${2:?}"
+    _device="${1:?}"
+    _attribute_name="${2:?}"
     # prints the value of an Opal device attribute.
 
-    source "$(opal_device_attributes "$device" attributes)"
-    echo "${attributes[$attribute_name]}"
+    source "$(opal_device_attributes "$_device" attributes)"
+    echo "${attributes[$_attribute_name]}"
 }
 
 opal_device_identification() {
-    local device="${1:?}"
+    _device="${1:?}"
     # prints identification information for an Opal device.
 
-    echo "'$device' ($(opal_device_attribute "$device" "model"))"
+    echo "'$_device' ($(opal_device_attribute "$_device" "model"))"
 }
 
 opaladmin_changePW_action() {
     # changes the disk password.
 
-    local device
+    _device
 
-    for device in "${devices[@]}"; do
+    for _device in "${_devices[@]}"; do
 
-        if [[ "$(opal_device_attribute "$device" "setup")" == "y" ]]; then
+        if [[ "$(opal_device_attribute "$_device" "setup")" == "y" ]]; then
             echo "Changing disk password of device $(opal_device_identification "$device")..."
             
-            if opal_device_change_password "$device" "$password" "$new_password"; then
-                echo "Password changed on device $(opal_device_identification "$device")."
+            if opal_device_change_password "$_device" "$password" "$new_password"; then
+                echo "Password changed on device $(opal_device_identification "$_device")."
                 
             else
                 # Assume that the password for this disk did not fit, retry with a new one
-                echo "Could not change password on device $(opal_device_identification "$device")."
+                echo "Could not change password on device $(opal_device_identification "$_device")."
             fi
 
         else
-            echo "SKIPPING: Device $(opal_device_identification "$device") has not been setup, cannot change password."
+            echo "SKIPPING: Device $(opal_device_identification "$_device") has not been setup, cannot change password."
         fi
     done
     echo "Done"
