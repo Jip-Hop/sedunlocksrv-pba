@@ -181,7 +181,52 @@ echo "----------------------------------------------------"
 cd /usr/local/sbin/sedunlocksrv/
 ./sedunlocksrv
 
+# Boot OS when sedunlocksrv exits
+echo "----------------------------------------------------"
+echo "🔄 Preparing kexec jump to Proxmox"
+echo "----------------------------------------------------"
+
+# 1. Identify the Proxmox Boot Partition
+# Usually, Proxmox uses partition 2 for boot/EFI or partition 3 for LVM/Root.
+# We will scan the unlocked drive for a /boot directory.
+TARGET_DRIVE=$(sedutil-cli --scan | awk '$1 ~ /\/dev\// && $2 ~ /2/ {print $1; exit}')
+BOOT_PART="${TARGET_DRIVE}2" # Adjust if your boot is on a different partition
+
+mkdir -p /mnt/proxmox
+echo "Mounting $BOOT_PART..."
+mount -r "$BOOT_PART" /mnt/proxmox 2>/dev/null
+
+# 2. Automatically find the latest Kernel and Initrd
+# Proxmox kernels are named vmlinuz-<version>-pve
+PVE_KERNEL=$(ls -rv /mnt/proxmox/boot/vmlinuz-*-pve 2>/dev/null | head -n 1)
+PVE_INITRD=$(ls -rv /mnt/proxmox/boot/initrd.img-*-pve 2>/dev/null | head -n 1)
+
+if [ -n "$PVE_KERNEL" ] && [ -n "$PVE_INITRD" ]; then
+    echo "Found Kernel: $(basename "$PVE_KERNEL")"
+    echo "Found Initrd: $(basename "$PVE_INITRD")"
+
+    # 3. Load the kernel into memory
+    # --reuse-cmdline passes your current boot arguments (like console settings)
+    # root= specifies the Proxmox root partition (usually a Logical Volume)
+    kexec -l "$PVE_KERNEL" \
+        --initrd="$PVE_INITRD" \
+        --append="root=/dev/mapper/pve-root ro quiet"
+    
+    echo "✅ Kernel loaded. Jumping to Proxmox..."
+    umount /mnt/proxmox
+    
+    # 4. Execute the jump
+    kexec -e
+else
+    echo "❌ ERROR: Could not find Proxmox kernel/initrd on $BOOT_PART."
+    umount /mnt/proxmox 2>/dev/null
+    echo "Falling back to standard reboot..."
+    sleep 5
+    reboot -f
+fi
+
+
 # Reboot when sedunlocksrv exits
-echo "Rebooting..."
-sleep 3
-reboot -nf
+#echo "Rebooting..."
+#sleep 3
+#reboot -nf
