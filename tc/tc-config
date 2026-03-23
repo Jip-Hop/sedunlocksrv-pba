@@ -207,6 +207,40 @@ echo "----------------------------------------------------"
 cd /usr/local/sbin/sedunlocksrv/
 ./sedunlocksrv
 
+# New console unlock logic with asterisk feedback
+echo -n "🔑 Enter SED password: "
+
+# Set terminal to raw mode so we can read 1 char at a time without needing 'Enter'
+stty -echo -icanon min 1 time 0
+
+password=""
+while true; do
+    # Read one character
+    char=$(dd bs=1 count=1 2>/dev/null)
+    
+    # Check for Enter key (newline or carriage return)
+    if [ "$char" = "" ] || [ "$(printf '%d' "'$char")" -eq 10 ]; then
+        break
+    fi
+    
+    # Check for Backspace (hex 08 or 7F)
+    if [ "$(printf '%d' "'$char")" -eq 127 ] || [ "$(printf '%d' "'$char")" -eq 8 ]; then
+        if [ "${#password}" -gt 0 ]; then
+            # Move cursor back, overwrite with space, move cursor back again
+            echo -ne "\b \b"
+            password=$(echo "$password" | sed 's/.$//')
+        fi
+    else
+        # Echo the asterisk and append the character to the password
+        echo -n "*"
+        password="${password}${char}"
+    fi
+done
+
+# Reset terminal to normal mode
+stty sane
+echo "" # Final newline after the password entry
+
 # Boot OS when sedunlocksrv exits
 echo "----------------------------------------------------"
 echo "🔄 Preparing kexec jump to Proxmox"
