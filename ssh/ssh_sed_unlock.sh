@@ -1,20 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
-export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin"$PATH"
+# Ash uses standard POSIX pathing
+export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:$PATH
 
 trap '' 2
 
 reboot_function () {
-    # reboot
-    echo; echo
-    echo "Rebooting..."
+    echo -e "\n\nRebooting..."
     reboot -nf
 }
 
 shutdown_function () {
-    # shutdwn
-    echo; echo
-    echo "Shutting down..."
+    echo -e "\n\nShutting down..."
     poweroff -nf
 }
 
@@ -22,48 +19,54 @@ echo "Press ESC anytime to reboot."
 echo "Press CTRL-D anytime to shutdown."
 echo
 
-if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TCG Opal 2-compliant disks"
-    then
-        echo "Could not detect TCG Opal 2-compliant disks. Probably nothing to do here."
-        echo
+if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TCG Opal 2-compliant disks"; then
+    echo "Could not detect TCG Opal 2-compliant disks. Probably nothing to do here."
+    echo
 fi
 
-while [ true ] ; do
-
-    echo -n "🔑🔑🔑 Enter SED password: "
-
-    unset password;
-    while IFS= read -r -n1 -s char; do
+# Use ':' for a true loop in ash
+while :; do
+    echo -n "🔑 Enter SED password: "
+    
+    password=""
+    # Set terminal to raw mode to capture single keystrokes
+    stty -echo -icanon min 1 time 0
+    
+    while :; do
+        # Use dd to read exactly 1 byte (ash-friendly way to do read -n1)
+        char=$(dd bs=1 count=1 2>/dev/null)
+        
         case "$char" in
-        $'\004') # if input == CTRL-D key
-            shutdown_function
-            ;;
-        $'\e') # if input == ESC key
-            reboot_function
-            ;;
-        $'\0') # if input == ENTER key
-            break
-            ;;
-        $'\177') # if input == BACKSPACE key
-            if [ ${#password} -gt 0 ]; then
-                echo -ne "\b \b"
-                password=${password::-1}
-            fi
-            ;;
-        *)
-            echo -n '*'
-            password+="$char"
-            ;;
+            $(printf '\004')) # CTRL-D
+                stty sane
+                shutdown_function
+                ;;
+            $(printf '\033')) # ESC
+                stty sane
+                reboot_function
+                ;;
+            "") # ENTER
+                break
+                ;;
+            $(printf '\177')|$(printf '\010')) # BACKSPACE
+                if [ "${#password}" -gt 0 ]; then
+                    echo -ne "\b \b"
+                    # POSIX way to remove last character
+                    password=$(echo "$password" | sed 's/.$//')
+                fi
+                ;;
+            *)
+                echo -n '*'
+                password="${password}${char}"
+                ;;
         esac
     done
+    
+    # Reset terminal to normal mode
+    stty sane
     echo
 
-    # do not accept empty passwords
-    if [ -z "$password" ]
-    then
-        :
-    else
-        # attempt to unlock SED drive(s)
+    if [ -n "$password" ]; then
         /usr/local/sbin/sedunlocksrv/opal-functions.sh "$password"
         echo
     fi
