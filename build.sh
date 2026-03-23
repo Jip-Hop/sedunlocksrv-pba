@@ -212,11 +212,12 @@ if [ $SSHBUILD == "TRUE" ]; then
     mkdir -p "${TMPDIR}/core/usr/local/etc/dropbear/"
     cp ./ssh/dropbear* "${TMPDIR}/core/usr/local/etc/dropbear/"
     cp ./ssh/banner "${TMPDIR}/core/usr/local/etc/dropbear/"
-
+    
     # Copy tc user files to the image
     mkdir -p "${TMPDIR}/core/home/tc/.ssh"
     cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
-    cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
+    cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/usr/local/sbin/"
+    chmod +x "${TMPDIR}/core/usr/local/sbin/ssh_sed_unlock.sh"
     chown -R 1001 "${TMPDIR}/core/home/tc/"
     chmod 700 "${TMPDIR}/core/home/tc/.ssh"
     chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
