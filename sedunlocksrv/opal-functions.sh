@@ -1,6 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
-shopt -s nullglob extglob
+# Ash-compatible TCG Opal 2.0 helper functions
+# These functions wrap sedutil-cli for drive management
+
+# No shopt allowed in ash - pattern matching is standard POSIX here
+# Pattern matching extensions are not needed for these basic glob operations
+
+#shopt -s nullglob extglob
 
 password=$1
 new_password=$2
@@ -10,13 +16,13 @@ new_password2=$3
 # https://github.com/rear/rear/blob/6a3d0b4d5e73c69a62ce0bd209b2b38ffb462569/usr/share/rear/lib/opal-functions.sh
 # https://github.com/rear/rear/blob/6a3d0b4d5e73c69a62ce0bd209b2b38ffb462569/usr/share/rear/skel/default/etc/scripts/unlock-opal-disks
 
-function opal_devices() {
+opal_devices() {
     # prints a list of TCG Opal 2-compliant devices.
-
+    # We use awk for POSIX-compliant parsing of the scan output
     sedutil-cli --scan | awk '$1 ~ /\/dev\// && $2 ~ /2/ { print $1; }'
 }
 
-function opal_device_hide_mbr() {
+opal_device_hide_mbr() {
     local device="$1"
     local password="$2"
     # hides the device's shadow MBR if one has been enabled, does nothing otherwise.
@@ -25,7 +31,7 @@ function opal_device_hide_mbr() {
     sedutil-cli --setMBRDone on "$password" "$device"
 }
 
-function opal_device_unlock() {
+opal_device_unlock() {
     local device="$1"
     local password="$2"
     # attempts to unlock the device (locking range 0 spanning the entire disk) and hide the MBR, if any.
@@ -34,7 +40,7 @@ function opal_device_unlock() {
     sedutil-cli --setLockingRange 0 RW "$password" "$device" && opal_device_hide_mbr "$device" "$password"
 }
 
-function opal_device_change_password() {
+opal_device_change_password() {
     local device="${1:?}"
     local old_password="${2:?}"
     local new_password="${3:?}"
@@ -44,7 +50,7 @@ function opal_device_change_password() {
     sedutil-cli --setAdmin1Pwd "$old_password" "$new_password" "$device"
 }
 
-function opal_device_attributes() {
+opal_device_attributes() {
     local device="${1:?}"
     local result_variable_name="${2:?}"
     # returns a script assigning the Opal device's attributes to a local associative array variable:
@@ -90,7 +96,7 @@ function opal_device_attributes() {
     echo "$result_script"
 }
 
-function opal_device_attribute() {
+opal_device_attribute() {
     local device="${1:?}"
     local attribute_name="${2:?}"
     # prints the value of an Opal device attribute.
@@ -99,14 +105,14 @@ function opal_device_attribute() {
     echo "${attributes[$attribute_name]}"
 }
 
-function opal_device_identification() {
+opal_device_identification() {
     local device="${1:?}"
     # prints identification information for an Opal device.
 
     echo "'$device' ($(opal_device_attribute "$device" "model"))"
 }
 
-function opaladmin_changePW_action() {
+opaladmin_changePW_action() {
     # changes the disk password.
 
     local device
