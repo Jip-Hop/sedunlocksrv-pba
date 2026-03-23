@@ -54,6 +54,10 @@ else
     echo "ALREADY EXISTS (skipping creation)"
 fi
 
+# IMPORTANT: The bond interface must be DOWN before changing 
+# the bonding mode or LACP parameters via sysfs.
+ifconfig bond0 down 2>/dev/null
+
 # 3. Configure LACP Parameters
 echo "Step 3: Setting LACP (Mode 4) parameters..."
 echo 4 > /sys/class/net/bond0/bonding/mode
@@ -101,6 +105,7 @@ else
     echo "⚠️  ERROR: Gateway is unreachable."
     echo "--- Kernel Bond Status ---"
     [ -f /proc/net/bonding/bond0 ] && cat /proc/net/bonding/bond0 | grep -E 'Bonding Mode|MII Status|Slave Interface|Partner'
+
     echo "--------------------------"
 fi
 echo "----------------------------------------------------"
