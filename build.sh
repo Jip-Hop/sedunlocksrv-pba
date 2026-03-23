@@ -2,6 +2,9 @@
 
 set -euox pipefail
 
+# Ensure /usr/local/go/bin is in the PATH for the script
+export PATH=$PATH:/usr/local/go/bin
+
 function cleanup() {
     echo "Cleaning up..."
     # Use ${VAR-} syntax to tell bash: "If this is empty, just use nothing"
@@ -73,6 +76,16 @@ mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 (
     cd ./sedunlocksrv
     echo "--- Verifying Go Code ---"
+
+   # Verify Go version is at least 1.21
+    GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+    MAJOR=$(echo $GO_VERSION | cut -d. -f1)
+    MINOR=$(echo $GO_VERSION | cut -d. -f2)
+    
+    if [ "$MAJOR" -lt 1 ] || [ "$MINOR" -lt 21 ]; then
+        echo "❌ Error: Go 1.21 or higher is required (Found: $GO_VERSION)"
+        exit 1
+    fi
     
     # 1. Initialize and fetch dependencies
     [ -f go.mod ] || go mod init sedunlocksrv
@@ -151,12 +164,28 @@ function cachetcfile() {
             curl -sL -H "Cache-Control: no-cache" ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
         ;;
     esac
-
+    
+# Find and copy the kernel (CorePure64 usually uses /boot/vmlinuz64)
+KERNEL_PATH=$(find "${CACHEDIR}/iso-extracted" -name "vmlinuz64" | head -n 1)
+if [ -z "${KERNEL_PATH-}" ]; then
+    echo "❌ ERROR: Kernel (vmlinuz64) not found in ${CACHEDIR}/iso-extracted"
+    exit 1
+fi
+echo "✅ Found Kernel at: ${KERNEL_PATH}"
 # Copy the kernel
-cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
+cp "$KERNEL_PATH" "${TMPDIR}/fs/boot/vmlinuz64"
+
+# Find and Extract the Initrd (core)
+CORE_PATH=$(find "${CACHEDIR}/iso-extracted" -name "corepure64.gz" | head -n 1)
+
+if [ -z "${CORE_PATH-}" ]; then
+    echo "❌ ERROR: Initrd (corepure64.gz) not found in ${CACHEDIR}/iso-extracted"
+    exit 1
+fi
+echo "✅ Found Initrd at: ${CORE_PATH}"
 
 # Remaster the initrd
-(cd "${TMPDIR}/core" && zcat "../../${CACHEDIR}/iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d)
+(cd "${TMPDIR}/core" && zcat "${CORE_PATH}" | cpio -i -H newc -d)
 
 # We can only detect the kernel version after the intird is extracted.
 # We need the kernel version to install the right scsi driver 
