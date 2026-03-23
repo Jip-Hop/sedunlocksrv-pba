@@ -31,43 +31,70 @@ while [ ! -e /dev/rtc0 ]; do usleep 50000; done
 /sbin/ldconfig 2>/dev/null
 
 # --- LACP (802.3ad) via sysfs  ---
+echo "----------------------------------------------------"
+echo "🚀 Starting Network Configuration: LACP Bond0"
+echo "----------------------------------------------------"
 
 # requires the inclusion of the ipv6_netfilter package which includes the bonding driver
-modprobe bonding
+# 1. Load Driver
+echo -n "Step 1: Loading bonding kernel module... "
+modprobe bonding && echo "OK" || echo "FAILED"
 
-# 1. Create the bond0 interface via bonding_masters
-echo +bond0 > /sys/class/net/bonding_masters
+# 2. Create Interface
+echo -n "Step 2: Creating bond0 interface via sysfs... "
+echo +bond0 > /sys/class/net/bonding_masters && echo "OK" || echo "FAILED"
 
-# 2. Configure LACP parameters via sysfs before bringing it up
+# 3. Configure LACP Parameters
+echo "Step 3: Setting LACP (Mode 4) parameters..."
 echo 4 > /sys/class/net/bond0/bonding/mode
-echo 1 > /sys/class/net/bond0/bonding/miimon
+echo 100 > /sys/class/net/bond0/bonding/miimon
 echo 1 > /sys/class/net/bond0/bonding/lacp_rate
 echo 1 > /sys/class/net/bond0/bonding/xmit_hash_policy
+echo "   [✓] Mode: 802.3ad (LACP)"
+echo "   [✓] Rate: Fast (1s)"
+echo "   [✓] Hash: Layer2+3"
 
-# 3. Enslave physical interfaces
-for iface in /sys/class/net/e*; do
-    IFNAME=$(basename "$iface")
-    [ "$IFNAME" == "bond0" ] && continue
-    ip link set "$IFNAME" down
-    echo "+$IFNAME" > /sys/class/net/bond0/bonding/slaves
+# 4. Enslave eth0 and eth1
+echo "Step 4: Enslaving physical adapters..."
+for iface in eth0 eth1; do
+    if [ -d "/sys/class/net/$iface" ]; then
+        echo -n "   -> Enslaving $iface... "
+        ip link set "$iface" down
+        echo "+$iface" > /sys/class/net/bond0/bonding/slaves && echo "DONE"
+    else
+        echo "   [!] Skipping $iface: Device not found."
+    fi
 done
 
-# 4. Configure Networking using BusyBox's built-in commands
+# 5. Network Addressing
+echo "Step 5: Applying static network configuration..."
 ip addr add 192.168.10.230/24 dev bond0
 ip link set bond0 up
-ip route add default via 192.168.10.253 dev bond0
-echo "nameserver 192.168.10.252" > /etc/resolv.conf
+echo "   [✓] IP Address: 192.168.10.230/24"
 
-# 5. Ping Test (Gateway Check)
-echo "Waiting 10s for LACP negotiation..."
+ip route add default via 192.168.10.253 dev bond0
+echo "   [✓] Gateway:    192.168.10.253"
+
+echo "nameserver 192.168.10.252" > /etc/resolv.conf
+echo "   [✓] DNS Server: 192.168.10.252"
+
+# 6. Connectivity Test
+echo "----------------------------------------------------"
+echo "⏳ Waiting 10s for LACP Handshake with switch..."
 sleep 10
+
+echo -n "🔍 Testing connectivity to gateway... "
 if ping -c 3 -W 5 192.168.10.253 > /dev/null; then
-    echo "Network OK: Gateway reachable."
+    echo "SUCCESS!"
+    echo "✅ Network is ONLINE."
 else
-    echo "NETWORK ERROR: Gateway unreachable!"
-    # Debug: Show bond status from the kernel
-    cat /proc/net/bonding/bond0
+    echo "FAILED."
+    echo "⚠️  ERROR: Gateway is unreachable."
+    echo "--- Kernel Bond Status ---"
+    [ -f /proc/net/bonding/bond0 ] && cat /proc/net/bonding/bond0 | grep -E 'Bonding Mode|MII Status|Slave Interface|Partner'
+    echo "--------------------------"
 fi
+echo "----------------------------------------------------"
 
 # Fix to get the 64-bit binaries working
 if [ ! -d /lib64 ]; then
