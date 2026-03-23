@@ -32,7 +32,7 @@ INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS=""
+EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
