@@ -31,6 +31,7 @@ fi
 GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
 CACHEDIR="cache"
 TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
+KEXEC_VER="2.0.28"
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
 BUILD_DATE=$(date +%Y%m%d-%H%M)
@@ -39,7 +40,7 @@ echo "Building new PBA image: ${OUTPUTIMG}"
 
 BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="bash.tcz kexec-tools.tcz"
+EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
     EXTENSIONS="$EXTENSIONS dropbear.tcz"
 fi
@@ -59,6 +60,24 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
 esac
 
 trap cleanup EXIT
+
+# --- 2. BUILD HOST DEPENDENCY CHECK ---
+echo "--- Checking Build Dependencies ---"
+REQUIRED_TOOLS="gcc make curl tar xorriso bsdtar go"
+MISSING_TOOLS=""
+
+for tool in ${REQUIRED_TOOLS}; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        MISSING_TOOLS="${MISSING_TOOLS} $tool"
+    fi
+done
+
+if [ -n "$MISSING_TOOLS" ]; then
+    echo "❌ ERROR: Missing required build tools:$MISSING_TOOLS"
+    echo "Please install them: sudo apt update && sudo apt install -y build-essential curl xorriso bsdtar golang-go"
+    exit 1
+fi
+echo "✅ All build tools present."
 
 # --- FORCE RE-DOWNLOAD LOGIC ---
 # Instead of checking if directories exist, we destroy them first.
@@ -200,7 +219,34 @@ cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/u
 rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
 cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
 sed -i "s/::exclude_devices::/${EXCLUDE_NETDEV-}/" "${TMPDIR}/core/etc/init.d/tc-config"
-# cp ./tc/bootsync.sh "${TMPDIR}/core/opt/bootsync.sh"
+
+# --- Build kexec-tools from kernel.org source ---
+echo "--- Downloading and Building kexec-tools v${KEXEC_VER} ---"
+
+(
+    mkdir -p "${CACHEDIR}/src"
+    cd "${CACHEDIR}/src"
+    
+    # 1. Download the official source
+    if [ ! -f "kexec-tools-${KEXEC_VER}.tar.xz" ]; then
+        curl -OL "https://kernel.org{KEXEC_VER}.tar.xz"
+    fi
+    
+    # 2. Extract
+    tar -xf "kexec-tools-${KEXEC_VER}.tar.xz"
+    cd "kexec-tools-${KEXEC_VER}"
+    
+    # 3. Configure and Compile
+    # We use --prefix to define the final path and make to build the binary
+    ./configure --prefix=/usr/local
+    make -j$(nproc)
+    
+    # 4. Copy to the PBA filesystem
+    # We place it in /usr/local/sbin so the Go backend can find it
+    sudo mkdir -p "${TMPDIR}/core-root/usr/local/sbin"
+    sudo cp build/sbin/kexec "${TMPDIR}/core-root/usr/local/sbin/kexec"
+    sudo chmod +x "${TMPDIR}/core-root/usr/local/sbin/kexec"
+)
 
 # Install extensions and dependencies
 while [ -n "${EXTENSIONS}" ]; do
