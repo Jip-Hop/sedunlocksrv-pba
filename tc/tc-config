@@ -122,7 +122,61 @@ if [ -e /home/tc/keymap ]; then
     loadkmap < $keymapfile
 fi
 
-sedutil-cli --scan
+echo "----------------------------------------------------"
+echo "🔍 Validating TCG Opal 2.0 Hardware"
+echo "----------------------------------------------------"
+
+# 1. Verify Kernel Parameter for SATA/SAS
+TPM_PARAM=$(cat /sys/module/libata/parameters/allow_tpm 2>/dev/null)
+if [ "$TPM_PARAM" != "1" ]; then
+    echo "⚠️  WARNING: libata.allow_tpm is NOT 1. SATA drives may not unlock."
+else
+    echo "   [✓] Kernel: libata.allow_tpm=1 is active."
+fi
+
+# 2. Scan for compliant devices
+echo "Scanning for compliant devices..."
+# We extract the device paths (e.g., /dev/sda) for any row with '2' in the second column
+COMPLIANT_DEVICES=$(sedutil-cli --scan | awk '$1 ~ /\/dev\// && $2 ~ /2/ {print $1}')
+
+if [ -z "$COMPLIANT_DEVICES" ]; then
+    echo "----------------------------------------------------"
+    echo "❌ FATAL ERROR: No TCG Opal 2.0 compliant devices found!"
+    echo "Check hardware or kernel parameters (libata.allow_tpm=1)."
+    echo "----------------------------------------------------"
+    
+    # 30-second countdown for the user to read the screen
+    COUNTDOWN=30
+    while [ $COUNTDOWN -gt 0 ]; do
+        printf "\r🔄 No disks found. Rebooting in %2d seconds... (Press Ctrl+C to stop)" $COUNTDOWN
+        sleep 1
+        COUNTDOWN=$((COUNTDOWN - 1))
+    done
+    
+    echo -e "\nRebooting now..."
+    reboot -f
+else
+    for dev in $COMPLIANT_DEVICES; do
+        echo "   -> Found Device: $dev"
+        
+        # 3. Query the drive status
+        # We look for LockingEnabled and Locked status
+        QUERY=$(sedutil-cli --query "$dev" 2>/dev/null)
+        
+        if echo "$QUERY" | grep -iq "LockingEnabled = Y"; then
+            echo "      [!] Status: Managed & Locking Enabled"
+            if echo "$QUERY" | grep -iq "Locked = Y"; then
+                echo "      [!] State:  LOCKED (Authentication Required)"
+            else
+                echo "      [✓] State:  UNLOCKED"
+            fi
+        else
+            echo "      [i] Status: Unmanaged or Locking Disabled"
+        fi
+    done
+fi
+
+echo "----------------------------------------------------"
 
 cd /usr/local/sbin/sedunlocksrv/
 ./sedunlocksrv
