@@ -15,7 +15,7 @@
     <div class="bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md">
         <h1 class="text-2xl font-bold mb-6 text-center text-blue-400">🔑 SED Unlock Service</h1>
         
-        <!-- Tab Navigation -->
+        <!-- Tab Navigation - Remains visible after unlock -->
         <div class="flex mb-6 border-b border-gray-700">
             <button id="unlock-tab-btn" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none">
                 Unlock
@@ -25,6 +25,7 @@
             </button>
         </div>
 
+        <!-- Status Message Area -->
         <div id="message-area" class="hidden text-center p-3 rounded mb-4"></div>
 
         <!-- Unlock Tab Content -->
@@ -36,7 +37,6 @@
                            class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:border-blue-500 focus:outline-none transition text-white pass-field">
                 </div>
                 
-                <!-- Show Password Checkbox -->
                 <div class="flex items-center mb-2">
                     <input type="checkbox" id="show-pass-unlock" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
                     <label for="show-pass-unlock" class="ml-2 text-sm font-medium text-gray-400 cursor-pointer">Show Password</label>
@@ -44,18 +44,19 @@
 
                 <button type="submit" id="submit-btn" 
                         class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none shadow-md transition duration-200">
-                    Unlock Drive
+                    Unlock Drive(s)
                 </button>
             </form>
 
+            <!-- Boot OS Button -->
             <button id="boot-btn" 
-                    class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none shadow-md transition duration-200 mt-4">
+                    class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow-md transition duration-200 mt-4">
                 🚀 Boot Proxmox (kexec)
             </button>
 
-            <!-- Reboot Button - Updated to Orange -->
+            <!-- Reboot Button -->
             <button id="reboot-btn" 
-                    class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded focus:outline-none shadow-md transition duration-200 mt-4">
+                    class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded shadow-md transition duration-200 mt-4">
                 Reboot System
             </button>
         </div>
@@ -74,7 +75,6 @@
                            class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:border-blue-500 focus:outline-none transition text-white pass-field">
                 </div>
 
-                <!-- Show Password Checkbox -->
                 <div class="flex items-center mb-2">
                     <input type="checkbox" id="show-pass-change" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
                     <label for="show-pass-change" class="ml-2 text-sm font-medium text-gray-400 cursor-pointer">Show Passwords</label>
@@ -88,7 +88,7 @@
         </div>
 
         <p class="mt-6 text-xs text-center text-gray-500 italic">
-            This PBA will jump to Proxmox via kexec upon successful unlock.
+            Management functions are available until kexec jump.
         </p>
     </div>
 
@@ -97,7 +97,6 @@
         const changeTabBtn = document.getElementById('change-tab-btn');
         const unlockTab = document.getElementById('unlock-tab');
         const changeTab = document.getElementById('change-tab');
-        
         const unlockForm = document.getElementById('unlock-form');
         const changeForm = document.getElementById('change-form');
         const submitBtn = document.getElementById('submit-btn');
@@ -105,7 +104,6 @@
         const rebootBtn = document.getElementById('reboot-btn');
         const messageArea = document.getElementById('message-area');
 
-        // Show/Hide Password Logic
         function setupToggle(checkboxId, tabId) {
             document.getElementById(checkboxId).addEventListener('change', function() {
                 const type = this.checked ? 'text' : 'password';
@@ -115,9 +113,8 @@
         setupToggle('show-pass-unlock', 'unlock-tab');
         setupToggle('show-pass-change', 'change-tab');
 
-        // Tab Switching
         function showTab(tab) {
-            messageArea.className = "hidden";
+            // We don't hide the message area anymore so status persists
             if (tab === 'unlock') {
                 unlockTab.classList.remove('hidden');
                 changeTab.classList.add('hidden');
@@ -130,15 +127,13 @@
                 unlockTabBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive focus:outline-none";
             }
         }
-
         unlockTabBtn.addEventListener('click', () => showTab('unlock'));
         changeTabBtn.addEventListener('click', () => showTab('change'));
 
-        // Handle Unlock
         unlockForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             submitBtn.disabled = true;
-            submitBtn.innerText = "⌛ Unlocking...";
+            submitBtn.innerText = "⌛ Processing...";
             const password = document.getElementById('password').value;
 
             try {
@@ -148,64 +143,78 @@
                     body: JSON.stringify({ password })
                 });
                 const data = await response.json();
+
                 if (response.ok) {
-                    messageArea.innerText = "✅ " + (data.message || "Unlocked");
-                    messageArea.className = "block text-green-400 font-bold bg-green-900/30 p-2 rounded mb-4";
-                    unlockForm.classList.add('hidden');
-                    bootBtn.classList.remove('hidden');
+                    let statusHtml = `<div class="text-green-400 font-bold mb-2">✅ Unlock Attempt Completed</div>`;
+                    statusHtml += `<ul class="text-xs text-left space-y-1">`;
+                    
+                    let atLeastOneUnlocked = false;
+                    data.drives.forEach(drive => {
+                        const icon = drive.locked ? "❌" : "✅";
+                        const label = drive.locked ? "LOCKED" : "UNLOCKED";
+                        statusHtml += `<li>${icon} ${drive.device}: ${label}</li>`;
+                        if (!drive.locked) atLeastOneUnlocked = true;
+                    });
+                    statusHtml += `</ul>`;
+
+                    messageArea.innerHTML = statusHtml;
+                    messageArea.className = "block bg-gray-900/50 p-3 rounded mb-4 border border-gray-700";
+
+                    if (atLeastOneUnlocked) {
+                        // HIDE ONLY THE FORM, NOT THE TAB CONTENT
+                        unlockForm.classList.add('hidden');
+                        bootBtn.classList.remove('hidden');
+                    } else {
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = "Unlock Drive(s)";
+                    }
                 } else {
-                    messageArea.innerText = "❌ " + (data.error || "Failed");
+                    messageArea.innerText = "❌ " + (data.error || "Request Failed");
                     messageArea.className = "block text-red-400 font-bold bg-red-900/30 p-2 rounded mb-4";
                     submitBtn.disabled = false;
-                    submitBtn.innerText = "Unlock Drive";
+                    submitBtn.innerText = "Unlock Drive(s)";
                 }
             } catch (err) {
-                messageArea.innerText = "❌ Connection Error";
+                messageArea.innerText = "❌ Network Error";
                 messageArea.className = "block text-red-400 font-bold bg-red-900/30 p-2 rounded mb-4";
                 submitBtn.disabled = false;
             }
         });
 
-        // Handle Boot
         bootBtn.addEventListener('click', async () => {
-            if (!confirm("Start Proxmox? Network connection will close.")) return;
+            if (!confirm("Initiate kexec jump? Web connection will terminate.")) return;
             bootBtn.disabled = true;
-            bootBtn.innerText = "⌛ Loading Kernel...";
+            bootBtn.innerText = "⌛ Jumping...";
             try {
                 await fetch('/boot', { method: 'POST' });
-                messageArea.innerText = "🚀 Jumping to OS...";
-                messageArea.className = "block text-blue-400 font-bold bg-blue-900/30 p-2 rounded mb-4";
             } catch (err) {
-                messageArea.innerText = "ℹ️ Connection lost. System is booting.";
-                messageArea.className = "block text-blue-400 p-2 rounded mb-4";
+                messageArea.innerHTML = `<div class="text-blue-400">🚀 Connection lost. System is transitioning.</div>`;
             }
         });
 
-        // Handle Change Password
         changeForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const currentPassword = document.getElementById('current-password').value;
             const newPassword = document.getElementById('new-password').value;
             try {
-                const response = await fetch('/change-password', {
+                const res = await fetch('/change-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ currentPassword, newPassword })
                 });
-                const data = await response.json();
-                messageArea.innerText = response.ok ? "✅ Password Updated" : "❌ " + data.error;
-                messageArea.className = response.ok ? "block text-green-400 bg-green-900/30 p-2 rounded mb-4" : "block text-red-400 bg-red-900/30 p-2 rounded mb-4";
+                const data = await res.json();
+                messageArea.innerText = res.ok ? "✅ Password Successfully Changed" : "❌ " + data.error;
+                messageArea.className = res.ok ? "block text-green-400 bg-green-900/30 p-2 rounded mb-4" : "block text-red-400 bg-red-900/30 p-2 rounded mb-4";
             } catch (err) {
-                messageArea.innerText = "❌ Error connecting to server";
+                messageArea.innerText = "❌ Communication Error";
                 messageArea.className = "block text-red-400 bg-red-900/30 p-2 rounded mb-4";
             }
         });
 
-        // Handle Reboot
         rebootBtn.addEventListener('click', async () => {
             await fetch('/reboot', { method: 'POST' });
-            messageArea.innerText = "🔄 Rebooting...";
-            messageArea.className = "block text-blue-400 p-2 rounded mb-4";
+            messageArea.innerText = "🔄 Initializing Reboot...";
+            messageArea.className = "block text-orange-400 bg-orange-900/20 p-2 rounded mb-4";
         });
     </script>
 </body>
