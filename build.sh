@@ -229,7 +229,7 @@ echo "--- Downloading and Building kexec-tools v${KEXEC_VER} ---"
     
     # 1. Download the official source
     if [ ! -f "kexec-tools-${KEXEC_VER}.tar.xz" ]; then
-        curl -OL "https://kernel.org{KEXEC_VER}.tar.xz"
+        curl -OL "https://www.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-{KEXEC_VER}.tar.xz"
     fi
     
     # 2. Extract
