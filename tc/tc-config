@@ -91,22 +91,48 @@ echo "   [✓] Gateway:    192.168.10.253"
 echo "nameserver 192.168.10.252" > /etc/resolv.conf
 echo "   [✓] DNS Server: 192.168.10.252"
 
-# 6. Connectivity Test
+# 6. Connectivity & Link Synchronization
 echo "----------------------------------------------------"
-echo "⏳ Waiting 10s for LACP Handshake with switch..."
-sleep 10
+echo "⏳ Synchronizing LACP Link (up to 30s)..."
 
-echo -n "🔍 Testing connectivity to gateway... "
-if ping -c 3 -W 5 192.168.10.253 > /dev/null; then
-    echo "SUCCESS!"
-    echo "✅ Network is ONLINE."
+MAX_RETRIES=30
+COUNT=0
+LINK_UP=false
+
+while [ $COUNT -lt $MAX_RETRIES ]; do
+    # Check if bond0 is operationally 'up'
+    if [ "$(cat /sys/class/net/bond0/operstate 2>/dev/null)" = "up" ]; then
+        echo "✅ Link is UP (Negotiated in ${COUNT}s)"
+        LINK_UP=true
+        break
+    fi
+    
+    # Visual feedback for the user
+    printf "\r   Waiting for switch handshake... [%2ds/%2ds]" $COUNT $MAX_RETRIES
+    sleep 1
+    COUNT=$((COUNT + 1))
+done
+
+echo "" # New line after printf
+
+if [ "$LINK_UP" = "true" ]; then
+    echo -n "🔍 Testing connectivity to gateway... "
+    # Brief sub-second sleep to let the ARP table settle
+    sleep 1
+    if ping -c 3 -W 5 192.168.10.253 > /dev/null; then
+        echo "SUCCESS!"
+        echo "✅ Network is ONLINE."
+    else
+        echo "FAILED."
+        echo "⚠️  ERROR: Gateway unreachable. Check VLAN/Switch config."
+    fi
 else
-    echo "FAILED."
-    echo "⚠️  ERROR: Gateway is unreachable."
-    echo "--- Kernel Bond Status ---"
-    [ -f /proc/net/bonding/bond0 ] && cat /proc/net/bonding/bond0 | grep -E 'Bonding Mode|MII Status|Slave Interface|Partner'
+    echo "❌ TIMEOUT: LACP failed to negotiate. Check cables/Switch."
+    echo "--- Debugging: Last Kernel Status ---"
+    [ -f /proc/net/bonding/bond0 ] && grep -E 'MII Status|Partner' /proc/net/bonding/bond0
+fi
+echo "----------------------------------------------------"
 
-    echo "--------------------------"
 fi
 echo "----------------------------------------------------"
 
