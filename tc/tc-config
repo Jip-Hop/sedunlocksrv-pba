@@ -2,6 +2,9 @@
 
 # Custom Tiny Core Linux RC Script
 
+# Set kernel logging level to 3 (errors only) to hide non-critical hardware warnings
+dmesg -n 3
+
 # Hide cursor
 echo -e "\e[?1c"
 # Disable showing keyboard input
@@ -30,6 +33,9 @@ while [ ! -e /dev/rtc0 ]; do usleep 50000; done
 # Creates the necessary links and cache to the most recent shared libraries
 /sbin/ldconfig 2>/dev/null
 
+# This waits until all devices have registered
+/sbin/udevadm settle --timeout=5
+
 # --- LACP (802.3ad) via sysfs  ---
 echo "----------------------------------------------------"
 echo "🚀 Starting Network Configuration: LACP Bond0"
@@ -40,9 +46,13 @@ echo "----------------------------------------------------"
 echo -n "Step 1: Loading bonding kernel module... "
 modprobe bonding && echo "OK" || echo "FAILED"
 
-# 2. Create Interface
-echo -n "Step 2: Creating bond0 interface via sysfs... "
-echo +bond0 > /sys/class/net/bonding_masters && echo "OK" || echo "FAILED"
+# 2. Create Interface (only if it doesn't already exist)
+echo -n "Step 2: Ensuring bond0 interface exists... "
+if [ ! -d "/sys/class/net/bond0" ]; then
+    echo +bond0 > /sys/class/net/bonding_masters && echo "CREATED"
+else
+    echo "ALREADY EXISTS (skipping creation)"
+fi
 
 # 3. Configure LACP Parameters
 echo "Step 3: Setting LACP (Mode 4) parameters..."
@@ -59,7 +69,7 @@ echo "Step 4: Enslaving physical adapters..."
 for iface in eth0 eth1; do
     if [ -d "/sys/class/net/$iface" ]; then
         echo -n "   -> Enslaving $iface... "
-        ip link set "$iface" down
+        ifconfig "$iface" down  # <-- Changed from 'ip link set'
         echo "+$iface" > /sys/class/net/bond0/bonding/slaves && echo "DONE"
     else
         echo "   [!] Skipping $iface: Device not found."
@@ -68,11 +78,10 @@ done
 
 # 5. Network Addressing
 echo "Step 5: Applying static network configuration..."
-ip addr add 192.168.10.230/24 dev bond0
-ip link set bond0 up
+ifconfig bond0 192.168.10.230 netmask 255.255.255.0 up  # <-- Changed from 'ip addr'
 echo "   [✓] IP Address: 192.168.10.230/24"
 
-ip route add default via 192.168.10.253 dev bond0
+route add default gw 192.168.10.253 bond0  # <-- Changed from 'ip route'
 echo "   [✓] Gateway:    192.168.10.253"
 
 echo "nameserver 192.168.10.252" > /etc/resolv.conf
