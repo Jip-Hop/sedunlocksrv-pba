@@ -34,24 +34,24 @@ sudo apt update && sudo apt install -y \
 Since the new backend uses modern libraries (like slices), you must upgrade from the default apt version to the latest official Go binary:
 
 * 1. Remove old Go versions:
-   ** sudo apt remove golang-go && sudo apt autoremove
+   - sudo apt remove golang-go && sudo apt autoremove
 
 * 2. Install Go 1.26.1:
-   ** curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
-   ** sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
-   ** rm go1.26.1.linux-amd64.tar.gz
+   - curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
+   - sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
+   - rm go1.26.1.linux-amd64.tar.gz
 
 * 3. Update your Environment:
 Add this to the end of your ~/.bashrc to ensure the go command is available:
-   ** export PATH=$PATH:/usr/local/go/bin
-   ** source ~/.bashrc
+   - export PATH=$PATH:/usr/local/go/bin
+   - source ~/.bashrc
 
 ## 📋 Pre-Build Checklist
 
 * Before running ./build.sh, ensure these files are present in your repository:
-   ** sedunlocksrv/server.crt & server.key: Your SSL certificates for the HTTPS interface.
-   ** ssh/authorized_keys: Your public SSH keys for remote management.
-   ** tc/tc-config: The customized boot script with LACP/Network logic.
+   - sedunlocksrv/server.crt & server.key: Your SSL certificates for the HTTPS interface.
+   - ssh/authorized_keys: Your public SSH keys for remote management.
+   - tc/tc-config: The customized boot script with LACP/Network logic.
 
 
 ## 🚀 Execution
