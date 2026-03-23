@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+BUILD_DATE=$(date +%Y%m%d-%H%M)
+OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
+echo "Building new PBA image: ${OUTPUTIMG}"
+
+
 set -euox pipefail
 
 function cleanup() {
@@ -7,6 +12,17 @@ function cleanup() {
     losetup -d "${LOOP_DEVICE_HDD}" || true
     rm -rf "${TMPDIR}"
 }
+
+# --- FORCE RE-DOWNLOAD LOGIC ---
+# Instead of checking if directories exist, we destroy them first.
+echo "Cleaning up previous build artifacts and caches..."
+rm -rf "${CACHEDIR}"
+rm -rf "${TMPDIR}"
+rm -rf "mnt.*" "img.*" 
+
+# Re-initialize fresh folders
+mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted}
+mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
 SSHBUILD=FALSE
 if [ "${1-default}" == "SSH" ]; then
@@ -29,7 +45,7 @@ GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this nu
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/16.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
-OUTPUTIMG="sedunlocksrv-pba.img"
+#OUTPUTIMG="sedunlocksrv-pba.img"
 BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz"
@@ -66,9 +82,24 @@ mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
 mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
 # Downloads a Tiny Core Linux asset, only if not already cached
+# Redefine the download function to bypass local file checks
 function cachetcfile() {
-    [ -f "${CACHEDIR}/${2}/${1}" ] || curl -f "${TCURL}/${3}/${1}" -o "${CACHEDIR}/${2}/${1}" ||
-        [[ ${2} == dep ]] && touch "${CACHEDIR}/${2}/${1}"
+    # Argument 1: Filename (e.g., bash.tcz)
+    # Argument 2: Local Subdir (e.g., tcz)
+    # Argument 3: Remote Path Type (e.g., tcz)
+    
+    local filename="$1"
+    local local_dir="$2"
+    local remote_type="$3"
+
+    echo "Fetching fresh: ${filename} from ${TCURL}/${remote_type}/"
+    
+    # We remove the [ -f ] check entirely. 
+    # Added -L to follow redirects and -H to bypass CDN caching.
+    curl -fL -H "Cache-Control: no-cache" \
+         "${TCURL}/${remote_type}/${filename}" \
+         -o "${CACHEDIR}/${local_dir}/${filename}" || \
+         { [[ "${local_dir}" == "dep" ]] && touch "${CACHEDIR}/${local_dir}/${filename}"; }
 }
 
 if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
@@ -93,7 +124,7 @@ if [ ! -f "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" ]; then
             LEVELSDEEP="${#SLASHESONLY}"
             # Download and Unpack Sedutil
             # Use bsdtar to auto-detect de-compression algorithm
-            curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
+            curl -sL -H "Cache-Control: no-cache" ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
         ;;
     esac
 fi
@@ -243,4 +274,8 @@ losetup -d "${LOOP_DEVICE_HDD}"
 # Make sure the image is readable
 chmod ugo+r "${OUTPUTIMG}"
 
-echo "DONE"
+# Update the symlink so external scripts always find the newest build
+echo "Updating symlink: ${LATEST_LINK} -> ${OUTPUTIMG}"
+ln -sf "${OUTPUTIMG}" "${LATEST_LINK}"
+
+echo "Build complete: ${OUTPUTIMG}"
