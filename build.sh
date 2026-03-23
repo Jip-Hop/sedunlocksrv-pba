@@ -3,9 +3,11 @@
 set -euox pipefail
 
 function cleanup() {
-    umount "${TMPDIR}/img" || true
-    losetup -d "${LOOP_DEVICE_HDD}" || true
-    rm -rf "${TMPDIR}"
+    echo "Cleaning up..."
+    # Use ${VAR-} syntax to tell bash: "If this is empty, just use nothing"
+    sudo umount "${TMPDIR-}/img" 2>/dev/null || true
+    [ -n "${LOOP_DEVICE_HDD-}" ] && sudo losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
+    rm -rf "${TMPDIR-}"
 }
 
 SSHBUILD=FALSE
