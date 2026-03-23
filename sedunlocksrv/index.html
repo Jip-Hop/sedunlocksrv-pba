@@ -15,207 +15,160 @@
     <div class="bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md">
         <h1 class="text-2xl font-bold mb-6 text-center text-blue-400">🔑 SED Unlock Service</h1>
         
-        <!-- Tab Navigation - Remains visible after unlock -->
+        <!-- Tab Navigation -->
         <div class="flex mb-6 border-b border-gray-700">
-            <button id="unlock-tab-btn" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none">
+            <button id="unlock-tab-btn" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none transition-all">
                 Unlock
             </button>
-            <button id="change-tab-btn" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive hover:text-gray-200 focus:outline-none">
+            <button id="change-tab-btn" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive hover:text-gray-200 focus:outline-none transition-all">
                 Change Password
             </button>
         </div>
 
-        <!-- Status Message Area -->
         <div id="message-area" class="hidden text-center p-3 rounded mb-4"></div>
 
         <!-- Unlock Tab Content -->
-        <div id="unlock-tab">
+        <div id="unlock-container">
             <form id="unlock-form" class="space-y-4">
                 <div>
                     <label for="password" class="block text-sm font-medium text-gray-400 mb-1">Disk Password</label>
-                    <input type="password" id="password" name="password" required 
+                    <input type="password" id="password" required 
                            class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:border-blue-500 focus:outline-none transition text-white pass-field">
                 </div>
-                
                 <div class="flex items-center mb-2">
-                    <input type="checkbox" id="show-pass-unlock" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
+                    <input type="checkbox" id="show-pass-unlock" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded">
                     <label for="show-pass-unlock" class="ml-2 text-sm font-medium text-gray-400 cursor-pointer">Show Password</label>
                 </div>
-
-                <button type="submit" id="submit-btn" 
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none shadow-md transition duration-200">
+                <button type="submit" id="submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition">
                     Unlock Drive(s)
                 </button>
             </form>
 
-            <!-- Boot OS Button -->
-            <button id="boot-btn" 
-                    class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow-md transition duration-200 mt-4">
+            <button id="boot-btn" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded mt-4 transition">
                 🚀 Boot Proxmox (kexec)
             </button>
 
-            <!-- Reboot Button -->
-            <button id="reboot-btn" 
-                    class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded shadow-md transition duration-200 mt-4">
+            <button id="reboot-btn" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 px-4 rounded mt-4 transition">
                 Reboot System
             </button>
         </div>
 
         <!-- Change Password Tab Content -->
-        <div id="change-tab" class="hidden">
+        <div id="change-container" class="hidden">
             <form id="change-form" class="space-y-4">
                 <div>
                     <label for="current-password" class="block text-sm font-medium text-gray-400 mb-1">Current Password</label>
-                    <input type="password" id="current-password" required 
-                           class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:border-blue-500 focus:outline-none transition text-white pass-field">
+                    <input type="password" id="current-password" required class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 text-white pass-field">
                 </div>
                 <div>
                     <label for="new-password" class="block text-sm font-medium text-gray-400 mb-1">New Password</label>
-                    <input type="password" id="new-password" required 
-                           class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:border-blue-500 focus:outline-none transition text-white pass-field">
+                    <input type="password" id="new-password" required class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 text-white pass-field">
                 </div>
-
                 <div class="flex items-center mb-2">
-                    <input type="checkbox" id="show-pass-change" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500">
+                    <input type="checkbox" id="show-pass-change" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded">
                     <label for="show-pass-change" class="ml-2 text-sm font-medium text-gray-400 cursor-pointer">Show Passwords</label>
                 </div>
-
-                <button type="submit" id="change-btn" 
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none shadow-md transition duration-200">
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
                     Update Password
                 </button>
             </form>
         </div>
 
-        <p class="mt-6 text-xs text-center text-gray-500 italic">
-            Management functions are available until kexec jump.
-        </p>
+        <p class="mt-6 text-xs text-center text-gray-500 italic">Management functions are available until kexec jump.</p>
     </div>
 
     <script>
-        const unlockTabBtn = document.getElementById('unlock-tab-btn');
-        const changeTabBtn = document.getElementById('change-tab-btn');
-        const unlockTab = document.getElementById('unlock-tab');
-        const changeTab = document.getElementById('change-tab');
-        const unlockForm = document.getElementById('unlock-form');
-        const changeForm = document.getElementById('change-form');
-        const submitBtn = document.getElementById('submit-btn');
-        const bootBtn = document.getElementById('boot-btn');
-        const rebootBtn = document.getElementById('reboot-btn');
-        const messageArea = document.getElementById('message-area');
+        const unlockBtn = document.getElementById('unlock-tab-btn');
+        const changeBtn = document.getElementById('change-tab-btn');
+        const unlockCont = document.getElementById('unlock-container');
+        const changeCont = document.getElementById('change-container');
+        const msgArea = document.getElementById('message-area');
 
-        function setupToggle(checkboxId, tabId) {
-            document.getElementById(checkboxId).addEventListener('change', function() {
-                const type = this.checked ? 'text' : 'password';
-                document.querySelectorAll(`#${tabId} .pass-field`).forEach(el => el.type = type);
-            });
-        }
-        setupToggle('show-pass-unlock', 'unlock-tab');
-        setupToggle('show-pass-change', 'change-tab');
-
-        function showTab(tab) {
-            // We don't hide the message area anymore so status persists
-            if (tab === 'unlock') {
-                unlockTab.classList.remove('hidden');
-                changeTab.classList.add('hidden');
-                unlockTabBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none";
-                changeTabBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive focus:outline-none";
+        // TAB SWITCHING LOGIC
+        function switchTab(target) {
+            if (target === 'unlock') {
+                unlockCont.classList.remove('hidden');
+                changeCont.classList.add('hidden');
+                unlockBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none";
+                changeBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive focus:outline-none";
             } else {
-                changeTab.classList.remove('hidden');
-                unlockTab.classList.add('hidden');
-                changeTabBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none";
-                unlockTabBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive focus:outline-none";
+                changeCont.classList.remove('hidden');
+                unlockCont.classList.add('hidden');
+                changeBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active focus:outline-none";
+                unlockBtn.className = "w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive focus:outline-none";
             }
         }
-        unlockTabBtn.addEventListener('click', () => showTab('unlock'));
-        changeTabBtn.addEventListener('click', () => showTab('change'));
+
+        unlockBtn.addEventListener('click', () => switchTab('unlock'));
+        changeBtn.addEventListener('click', () => switchTab('change'));
+
+        // SHOW/HIDE PASSWORD
+        document.getElementById('show-pass-unlock').addEventListener('change', function() {
+            document.getElementById('password').type = this.checked ? 'text' : 'password';
+        });
+        document.getElementById('show-pass-change').addEventListener('change', function() {
+            document.getElementById('current-password').type = this.checked ? 'text' : 'password';
+            document.getElementById('new-password').type = this.checked ? 'text' : 'password';
+        });
+
+        // UNLOCK FORM
+        const unlockForm = document.getElementById('unlock-form');
+        const bootBtn = document.getElementById('boot-btn');
+        const submitBtn = document.getElementById('submit-btn');
+
+        // Expose function globally so the "Try again" link can call it
+        window.resetUnlockForm = function() {
+            unlockForm.classList.remove('hidden');
+            document.getElementById('password').value = '';
+            submitBtn.disabled = false;
+            submitBtn.innerText = "Unlock Drive(s)";
+        };
 
         unlockForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             submitBtn.disabled = true;
             submitBtn.innerText = "⌛ Processing...";
-            const password = document.getElementById('password').value;
 
             try {
                 const response = await fetch('/unlock', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password })
+                    body: JSON.stringify({ password: document.getElementById('password').value })
                 });
                 const data = await response.json();
 
                 if (response.ok) {
-                    let statusHtml = `<div class="text-green-400 font-bold mb-2">✅ Unlock Attempt Completed</div>`;
-                    statusHtml += `<ul class="text-xs text-left space-y-1">`;
+                    let statusHtml = `<div class="text-green-400 font-bold mb-2">✅ Unlock Attempt Completed</div><ul class="text-xs text-left space-y-1">`;
+                    let anySuccess = false, allDone = true;
                     
-                    let atLeastOneUnlocked = false;
-                    data.drives.forEach(drive => {
-                        const icon = drive.locked ? "❌" : "✅";
-                        const label = drive.locked ? "LOCKED" : "UNLOCKED";
-                        statusHtml += `<li>${icon} ${drive.device}: ${label}</li>`;
-                        if (!drive.locked) atLeastOneUnlocked = true;
+                    data.drives.forEach(d => {
+                        statusHtml += `<li>${d.locked ? '❌' : '✅'} ${d.device}: ${d.locked ? 'LOCKED' : 'UNLOCKED'}</li>`;
+                        if (!d.locked) anySuccess = true;
+                        if (d.locked) allDone = false;
                     });
-                    statusHtml += `</ul>`;
 
-                    messageArea.innerHTML = statusHtml;
-                    messageArea.className = "block bg-gray-900/50 p-3 rounded mb-4 border border-gray-700";
+                    if (!allDone) {
+                        statusHtml += `</ul><button onclick="resetUnlockForm()" class="mt-3 text-blue-400 text-xs hover:underline block w-full">🔓 Try another password for remaining drives?</button>`;
+                    } else { statusHtml += `</ul>`; }
 
-                    if (atLeastOneUnlocked) {
-                        // HIDE ONLY THE FORM, NOT THE TAB CONTENT
+                    msgArea.innerHTML = statusHtml;
+                    msgArea.className = "block bg-gray-900/50 p-3 rounded mb-4 border border-gray-700";
+
+                    if (anySuccess) {
                         unlockForm.classList.add('hidden');
                         bootBtn.classList.remove('hidden');
-                    } else {
-                        submitBtn.disabled = false;
-                        submitBtn.innerText = "Unlock Drive(s)";
                     }
-                } else {
-                    messageArea.innerText = "❌ " + (data.error || "Request Failed");
-                    messageArea.className = "block text-red-400 font-bold bg-red-900/30 p-2 rounded mb-4";
-                    submitBtn.disabled = false;
-                    submitBtn.innerText = "Unlock Drive(s)";
                 }
             } catch (err) {
-                messageArea.innerText = "❌ Network Error";
-                messageArea.className = "block text-red-400 font-bold bg-red-900/30 p-2 rounded mb-4";
-                submitBtn.disabled = false;
+                msgArea.innerText = "❌ Network Error";
+                msgArea.className = "block text-red-400 font-bold bg-red-900/30 p-2 rounded mb-4";
+                resetUnlockForm();
             }
         });
 
-        bootBtn.addEventListener('click', async () => {
-            if (!confirm("Initiate kexec jump? Web connection will terminate.")) return;
-            bootBtn.disabled = true;
-            bootBtn.innerText = "⌛ Jumping...";
-            try {
-                await fetch('/boot', { method: 'POST' });
-            } catch (err) {
-                messageArea.innerHTML = `<div class="text-blue-400">🚀 Connection lost. System is transitioning.</div>`;
-            }
-        });
-
-        changeForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const currentPassword = document.getElementById('current-password').value;
-            const newPassword = document.getElementById('new-password').value;
-            try {
-                const res = await fetch('/change-password', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ currentPassword, newPassword })
-                });
-                const data = await res.json();
-                messageArea.innerText = res.ok ? "✅ Password Successfully Changed" : "❌ " + data.error;
-                messageArea.className = res.ok ? "block text-green-400 bg-green-900/30 p-2 rounded mb-4" : "block text-red-400 bg-red-900/30 p-2 rounded mb-4";
-            } catch (err) {
-                messageArea.innerText = "❌ Communication Error";
-                messageArea.className = "block text-red-400 bg-red-900/30 p-2 rounded mb-4";
-            }
-        });
-
-        rebootBtn.addEventListener('click', async () => {
-            await fetch('/reboot', { method: 'POST' });
-            messageArea.innerText = "🔄 Initializing Reboot...";
-            messageArea.className = "block text-orange-400 bg-orange-900/20 p-2 rounded mb-4";
-        });
+        // REBOOT & BOOT
+        document.getElementById('reboot-btn').addEventListener('click', () => fetch('/reboot', { method: 'POST' }));
+        bootBtn.addEventListener('click', () => { if(confirm("Jump to OS?")) fetch('/boot', { method: 'POST' }); });
     </script>
 </body>
 </html>
