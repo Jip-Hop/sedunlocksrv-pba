@@ -30,7 +30,7 @@ CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/16.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
 OUTPUTIMG="sedunlocksrv-pba.img"
-BOOTARGS="quiet libata.allow_tpm=1"
+BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
