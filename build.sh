@@ -108,13 +108,7 @@ cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
 # We need the kernel version to install the right scsi driver 
 TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
 EXTENSIONS="$EXTENSIONS scsi-${TC_KERNEL_VERSION}.tcz"
-
-# add this extension if the bond driver is needed
-if [ 
-
 EXTENSIONS="$EXTENSIONS ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
-
-
 
 mkdir -p "${TMPDIR}/core/usr/local/sbin/"
 
