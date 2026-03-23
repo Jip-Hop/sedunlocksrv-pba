@@ -1,73 +1,69 @@
 #!/bin/sh
+# SSH Wrapper for SED Unlock Service - Conditional Menu
 
-# Ash uses standard POSIX pathing
-export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:$PATH
+API="https://localhost:443"
+CURL_OPTS="-s -k"
 
-trap '' 2
-
-reboot_function () {
-    echo -e "\n\nRebooting..."
-    reboot -nf
-}
-
-shutdown_function () {
-    echo -e "\n\nShutting down..."
-    poweroff -nf
-}
-
-echo "Press ESC anytime to reboot."
-echo "Press CTRL-D anytime to shutdown."
-echo
-
-if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TCG Opal 2-compliant disks"; then
-    echo "Could not detect TCG Opal 2-compliant disks. Probably nothing to do here."
-    echo
-fi
-
-# Use ':' for a true loop in ash
-while :; do
-    echo -n "🔑 Enter SED password: "
+while true; do
+    clear
+    echo "🔑 SED UNLOCK SERVICE - REMOTE SSH"
     
-    password=""
-    # Set terminal to raw mode to capture single keystrokes
-    stty -echo -icanon min 1 time 0
+    # 1. Fetch status and check if ANY drive is unlocked
+    STATUS_JSON=$(curl $CURL_OPTS "$API/status")
     
-    while :; do
-        # Use dd to read exactly 1 byte (ash-friendly way to do read -n1)
-        char=$(dd bs=1 count=1 2>/dev/null)
-        
-        case "$char" in
-            $(printf '\004')) # CTRL-D
-                stty sane
-                shutdown_function
-                ;;
-            $(printf '\033')) # ESC
-                stty sane
-                reboot_function
-                ;;
-            "") # ENTER
-                break
-                ;;
-            $(printf '\177')|$(printf '\010')) # BACKSPACE
-                if [ "${#password}" -gt 0 ]; then
-                    echo -ne "\b \b"
-                    # POSIX way to remove last character
-                    password=$(echo "$password" | sed 's/.$//')
-                fi
-                ;;
-            *)
-                echo -n '*'
-                password="${password}${char}"
-                ;;
-        esac
-    done
-    
-    # Reset terminal to normal mode
-    stty sane
-    echo
+    # Simple check for unlocked state in JSON
+    IS_UNLOCKED=$(echo "$STATUS_JSON" | grep -q '"locked":false' && echo "true" || echo "false")
 
-    if [ -n "$password" ]; then
-        /usr/local/sbin/sedunlocksrv/opal-functions.sh "$password"
-        echo
+    printf "\n--- Drive Status ---\n"
+    echo "$STATUS_JSON" | tr ',' '\n' | sed 's/[{}"]//g' | awk -F: '
+        /device/ { dev=$2 }
+        /locked/ { 
+            status = ($2 == "false") ? "✅ UNLOCKED" : "❌ LOCKED"
+            printf "  %s: %s\n", dev, status
+        }
+    '
+
+    echo ""
+    # 2. Conditional Menu Display
+    MENU="[U] Unlock Drive(s)  "
+    if [ "$IS_UNLOCKED" = "true" ]; then
+        MENU="${MENU}[B] Boot OS (kexec)  "
     fi
+    MENU="${MENU}[R] Reboot  [S] Shutdown  [Q] Quit"
+    
+    echo "$MENU"
+    echo -n "Selection: "
+    read -r choice
+
+    case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
+        U)
+            echo -n "Enter SED Password: "
+            stty -echo; read -r pass; stty sane
+            echo ""
+            curl $CURL_OPTS -X POST -d "{\"password\":\"$pass\"}" "$API/unlock"
+            sleep 2
+            ;;
+        B)
+            if [ "$IS_UNLOCKED" = "true" ]; then
+                echo -n "Confirm Boot to Proxmox? (y/n): "
+                read -r conf
+                if [ "$conf" = "y" ]; then
+                    echo "🚀 Jumping to OS..."
+                    curl $CURL_OPTS -X POST "$API/boot"
+                    exit 0
+                fi
+            fi
+            ;;
+        R)
+            echo -n "Confirm Reboot? (y/n): "
+            read -r conf
+            [ "$conf" = "y" ] && curl $CURL_OPTS -X POST "$API/reboot" && exit 0
+            ;;
+        S)
+            echo -n "Confirm Shutdown? (y/n): "
+            read -r conf
+            [ "$conf" = "y" ] && poweroff -nf
+            ;;
+        Q) exit 0 ;;
+    esac
 done
