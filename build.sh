@@ -36,8 +36,7 @@ TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
 BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
-echo "Building new PBA image: ${OUTPUTIMG}"
-
+LATEST_LINK="sedunlocksrv-pba-latest.img"
 BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz"
@@ -378,4 +377,4 @@ chmod ugo+r "${OUTPUTIMG}"
 echo "Updating symlink: ${LATEST_LINK} -> ${OUTPUTIMG}"
 ln -sf "${OUTPUTIMG}" "${LATEST_LINK}"
 
-echo "Build complete: ${OUTPUTIMG}"
+echo "✅ Build Complete: ${OUTPUTIMG}!"
