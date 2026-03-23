@@ -168,24 +168,25 @@ function cachetcfile() {
 # Find and copy the kernel (CorePure64 usually uses /boot/vmlinuz64)
 KERNEL_PATH=$(find "${CACHEDIR}/iso-extracted" -name "vmlinuz64" | head -n 1)
 if [ -z "${KERNEL_PATH-}" ]; then
-    echo "❌ ERROR: Kernel (vmlinuz64) not found in ${CACHEDIR}/iso-extracted"
+    echo "❌ ERROR: Kernel (vmlinuz64) not found!"
     exit 1
 fi
-echo "✅ Found Kernel at: ${KERNEL_PATH}"
+ABS_KERNEL_PATH=$(realpath "$KERNEL_PATH")
+echo "✅ Copying Kernel from: ${ABS_KERNEL_PATH}"
 # Copy the kernel
-cp "$KERNEL_PATH" "${TMPDIR}/fs/boot/vmlinuz64"
+cp "$ABS_KERNEL_PATH" "${TMPDIR}/fs/boot/vmlinuz64"
 
 # Find and Extract the Initrd (core)
 CORE_PATH=$(find "${CACHEDIR}/iso-extracted" -name "corepure64.gz" | head -n 1)
-
 if [ -z "${CORE_PATH-}" ]; then
-    echo "❌ ERROR: Initrd (corepure64.gz) not found in ${CACHEDIR}/iso-extracted"
+    echo "❌ ERROR: Initrd (corepure64.gz) not found!"
     exit 1
 fi
-echo "✅ Found Initrd at: ${CORE_PATH}"
+ABS_CORE_PATH=$(realpath "$CORE_PATH")
+echo "✅ Extracting Initrd from: ${ABS_CORE_PATH}"
 
 # Remaster the initrd
-(cd "${TMPDIR}/core" && zcat "${CORE_PATH}" | cpio -i -H newc -d)
+(cd "${TMPDIR}/core" && zcat "${ABS_CORE_PATH}" | cpio -i -H newc -d)
 
 # We can only detect the kernel version after the intird is extracted.
 # We need the kernel version to install the right scsi driver 
