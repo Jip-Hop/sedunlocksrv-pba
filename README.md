@@ -1,3 +1,17 @@
+🚀 Enhanced TCG Opal 2.0 PBA (Proxmox Edition)
+This fork has been refactored for enterprise-grade security and reliability. Key enhancements include:
+Integrated Go Backend: A single, high-performance Go binary manages the Web UI (80/443) and Interactive Console simultaneously.
+kexec Boot: Transitions directly into the Proxmox kernel after unlocking, bypassing BIOS POST for faster, more reliable "warm" boots that maintain drive authorization.
+LACP Networking: Native 802.3ad (Mode 4) bonding via sysfs with a 30-second synchronization loop to ensure connectivity with enterprise switches before service start.
+Hardened Security:
+Strict password complexity (12+ chars, Upper/Lower/Numeric/Special).
+HTTPS-enforced web interface with automatic Port 80 redirection.
+SSH management restricted via authorized_keys command execution.
+Modern Console UI: Interactive dashboard with real-time drive status, masked password entry, and a 30-second privacy timeout.
+Optimized Build: Fully automated, "no-cache" build process using TinyCore 15.x and optimized Go binaries (-ldflags="-s -w").
+
+
+
 # sedunlocksrv-pba
 Conveniently unlock your Self Encrypting Drive on startup (via HTTPS or SSH) without the need to attach monitor and keyboard.
 
