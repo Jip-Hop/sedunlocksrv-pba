@@ -41,7 +41,6 @@ for part_suffix in p2 p3 p1; do
         # For ZFS: root=ZFS=rpool/ROOT/pve-1
         kexec -l "$PVE_KERNEL" \
             --initrd="$PVE_INITRD" \
-            --reuse-cmdline \
             --append="root=/dev/mapper/pve-root ro quiet"
 
         echo "🚀 Jumping to OS now..."
