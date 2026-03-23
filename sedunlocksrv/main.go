@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/term" // Required for masked console input
 )
 
 type DriveStatus struct {
@@ -27,117 +30,97 @@ type PasswordRequest struct {
 	NewPassword     string `json:"newPassword"`
 }
 
+// Global channel to signal a successful unlock to all listeners
+var unlockDone = make(chan bool)
+
 func scanDrives() []DriveStatus {
 	var statuses []DriveStatus
 	out, err := exec.Command("sh", "-c", "sedutil-cli --scan | awk '$1 ~ /\\/dev\\// && $2 ~ /2/ {print $1}'").Output()
 	if err != nil {
 		return statuses
 	}
-
 	devices := strings.Fields(string(out))
 	for _, dev := range devices {
 		queryOut, _ := exec.Command("sedutil-cli", "--query", dev).Output()
 		isLocked := strings.Contains(string(queryOut), "Locked = Y")
-		statuses = append(statuses, DriveStatus{
-			Device: dev,
-			Locked: isLocked,
-		})
+		statuses = append(statuses, DriveStatus{Device: dev, Locked: isLocked})
 	}
 	return statuses
 }
 
+func attemptUnlock(password string) bool {
+	drives := scanDrives()
+	success := false
+	for _, drive := range drives {
+		if drive.Locked {
+			// Unlock and reveal partitions
+			exec.Command("sedutil-cli", "--setlockingrange", "0", "rw", password, drive.Device).Run()
+			exec.Command("sedutil-cli", "--setmbrdone", "on", password, drive.Device).Run()
+			success = true
+		}
+	}
+	return success
+}
+
+func consoleListener() {
+	for {
+		fmt.Print("\n🔑 Enter SED password (Console): ")
+		
+		// term.ReadPassword provides secure input without echoing to screen
+		// Note: Most standard Linux terminals don't show '*' for ReadPassword
+		// To show '*' manually requires a custom byte-by-byte loop (similar to ash)
+		bytePassword, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			log.Println("Console read error:", err)
+			continue
+		}
+		
+		password := string(bytePassword)
+		if attemptUnlock(password) {
+			fmt.Println("\n✅ Drive(s) unlocked via Console!")
+			unlockDone <- true
+			return
+		}
+		fmt.Println("\n❌ Invalid password. Try again.")
+	}
+}
+
 func main() {
-	fs := http.FileServer(http.Dir("."))
-	http.Handle("/", fs)
+	// 1. Start the Console Listener in the background
+	go consoleListener()
+
+	// 2. HTTP to HTTPS Redirect (Port 80)
+	go func() {
+		log.Println("HTTP redirect server on :80...")
+		http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
+		}))
+	}()
+
+	// 3. Main Handlers (Port 443)
+	http.Handle("/", http.FileServer(http.Dir(".")))
 
 	http.HandleFunc("/unlock", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
 		var req PasswordRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		json.NewDecoder(r.Body).Decode(&req)
+		if attemptUnlock(req.Password) {
+			unlockDone <- true
 		}
-		drivesBefore := scanDrives()
-		for _, drive := range drivesBefore {
-			if drive.Locked {
-				exec.Command("sedutil-cli", "--setlockingrange", "0", "rw", req.Password, drive.Device).Run()
-				exec.Command("sedutil-cli", "--setmbrdone", "on", req.Password, drive.Device).Run()
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(UnlockResponse{
-			Message: "Unlock attempt processed",
-			Drives:  scanDrives(),
-		})
-	})
-
-	http.HandleFunc("/change-password", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req PasswordRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		devices := scanDrives()
-		successCount := 0
-		for _, dev := range devices {
-			cmd := exec.Command("sedutil-cli", "--setsidpassword", req.CurrentPassword, req.NewPassword, dev.Device)
-			if err := cmd.Run(); err == nil {
-				exec.Command("sedutil-cli", "--setadmin1password", req.CurrentPassword, req.NewPassword, dev.Device).Run()
-				successCount++
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if successCount > 0 {
-			json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("Password updated on %d drive(s)", successCount)})
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update password on any drives"})
-		}
+		json.NewEncoder(w).Encode(UnlockResponse{Message: "Processed", Drives: scanDrives()})
 	})
 
 	http.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		log.Println("Boot command received. Triggering kexec...")
-		go func() {
-			cmd := exec.Command("/bin/sh", "/usr/local/sbin/sedunlocksrv/kexec-boot.sh")
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
-		}()
+		log.Println("Triggering kexec...")
+		go exec.Command("/bin/sh", "/usr/local/sbin/sedunlocksrv/kexec-boot.sh").Run()
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "Boot sequence initiated")
 	})
 
 	http.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Rebooting...")
-		w.WriteHeader(http.StatusOK)
 		go exec.Command("reboot", "-nf").Run()
+		w.WriteHeader(http.StatusOK)
 	})
 
-	// --- START HTTP REDIRECT SERVER ---
-	go func() {
-		log.Println("HTTP redirect server starting on :80...")
-		err := http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Redirect any HTTP request to the HTTPS equivalent
-			target := "https://" + r.Host + r.URL.String()
-			http.Redirect(w, r, target, http.StatusMovedPermanently)
-		}))
-		if err != nil {
-			log.Fatalf("HTTP redirect server failed: %v", err)
-		}
-	}()
-
-	// --- START HTTPS SERVER ---
-	log.Println("HTTPS server starting on :443...")
+	// 4. Start HTTPS Server
+	log.Println("HTTPS server on :443...")
 	log.Fatal(http.ListenAndServeTLS(":443", "server.crt", "server.key", nil))
 }
