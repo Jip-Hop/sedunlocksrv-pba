@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 
-BUILD_DATE=$(date +%Y%m%d-%H%M)
-OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
-echo "Building new PBA image: ${OUTPUTIMG}"
-
-
 set -euox pipefail
 
 function cleanup() {
@@ -12,17 +7,6 @@ function cleanup() {
     losetup -d "${LOOP_DEVICE_HDD}" || true
     rm -rf "${TMPDIR}"
 }
-
-# --- FORCE RE-DOWNLOAD LOGIC ---
-# Instead of checking if directories exist, we destroy them first.
-echo "Cleaning up previous build artifacts and caches..."
-rm -rf "${CACHEDIR}"
-rm -rf "${TMPDIR}"
-rm -rf "mnt.*" "img.*" 
-
-# Re-initialize fresh folders
-mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted}
-mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
 SSHBUILD=FALSE
 if [ "${1-default}" == "SSH" ]; then
@@ -45,7 +29,9 @@ GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this nu
 CACHEDIR="cache"
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
-#OUTPUTIMG="sedunlocksrv-pba.img"
+BUILD_DATE=$(date +%Y%m%d-%H%M)
+OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
+echo "Building new PBA image: ${OUTPUTIMG}"
 BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz kexec-tools.tcz"
@@ -66,6 +52,17 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
         SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
     ;;
 esac
+
+# --- FORCE RE-DOWNLOAD LOGIC ---
+# Instead of checking if directories exist, we destroy them first.
+echo "Cleaning up previous build artifacts and caches..."
+rm -rf "${CACHEDIR}"
+rm -rf "${TMPDIR}"
+rm -rf "mnt.*" "img.*" 
+
+# Re-initialize fresh folders
+mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted}
+mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 
 # Build sedunlocksrv binary with Go
 (
