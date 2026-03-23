@@ -8,6 +8,20 @@ function cleanup() {
     rm -rf "${TMPDIR}"
 }
 
+SSHBUILD=FALSE
+if [ "${1-default}" == "SSH" ]; then
+    SSHBUILD=TRUE
+    # check SSH build dependencies
+    if [ ! -f ./ssh/authorized_keys ]; then
+        echo "You have to create authorized_keys file in ssh folder"
+        exit
+    fi
+    if ! which dropbear; then
+        echo "Please install dropbear: apt install dropbear"
+        exit
+    fi
+fi
+
 # Default config for 64-bit Linux and Sedutil
 GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
 CACHEDIR="cache"
@@ -38,20 +52,6 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
         SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
     ;;
 esac
-
-SSHBUILD=FALSE
-if [ "${1-default}" == "SSH" ]; then
-    SSHBUILD=TRUE
-    # check SSH build dependencies
-    if [ ! -f ./ssh/authorized_keys ]; then
-        echo "You have to create authorized_keys file in ssh folder"
-        exit
-    fi
-    if ! which dropbear; then
-        echo "Please install dropbear: apt install dropbear"
-        exit
-    fi
-fi
 
 trap cleanup EXIT
 
