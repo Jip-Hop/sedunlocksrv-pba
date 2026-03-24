@@ -1,179 +1,93 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SED Unlock Service</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #1a202c; color: #e2e8f0; }
-        .tab-active { border-color: #60a5fa; color: #60a5fa; }
-        .tab-inactive { border-color: transparent; color: #94a3b8; }
-        .met { color: #4ade80; font-weight: bold; }
-        .unmet { color: #f87171; }
-        input:focus { outline: none; border-color: #60a5fa; }
-    </style>
+<meta charset="UTF-8">
+<title>SED Unlock</title>
+
+<style>
+body { background:#111; color:#ddd; font-family:monospace; text-align:center; }
+.box { border:1px solid #444; padding:10px; margin:10px auto; width:320px; }
+.btn { display:block; width:100%; margin:5px 0; padding:8px; background:#333; color:#fff; border:none; }
+.btn:hover { background:#555; }
+input { width:100%; padding:6px; background:#222; color:#fff; border:1px solid #444; }
+.ok { color:#4ade80; }
+.bad { color:#f87171; }
+</style>
+
 </head>
-<body class="flex items-center justify-center h-screen">
-    <div class="bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md">
-        <h1 class="text-2xl font-bold mb-6 text-center text-blue-400">🔑 SED Unlock Service</h1>
-        
-        <!-- Tab Navigation -->
-        <div class="flex mb-6 border-b border-gray-700">
-            <button id="utab" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-active transition-all">Unlock</button>
-            <button id="ctab" class="w-1/2 py-2 text-sm font-medium text-center border-b-2 tab-inactive hover:text-gray-200 transition-all">Change Password</button>
-        </div>
+<body>
 
-        <!-- Global Message Area -->
-        <div id="msg" class="hidden text-center p-3 rounded mb-4 text-sm font-medium"></div>
+<h2>🔑 SED UNLOCK</h2>
 
-        <!-- UNLOCK TAB -->
-        <div id="ucont">
-            <form id="uform" class="space-y-4">
-                <div>
-                    <label class="block text-xs text-gray-400 mb-1">Disk Password</label>
-                    <input type="password" id="upass" placeholder="Enter Password" required 
-                           class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 text-white pass-field transition-all">
-                </div>
-                <div class="flex items-center text-xs justify-between">
-                    <label class="flex items-center cursor-pointer select-none">
-                        <input type="checkbox" id="ushow" class="mr-2 w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600"> 
-                        Show Password
-                    </label>
-                    <button type="button" id="fbtn" class="text-blue-400 hover:text-blue-300 transition">🔄 Refresh Status</button>
-                </div>
-                <button type="submit" id="usub" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded shadow-md transition">Unlock Drive(s)</button>
-            </form>
+<div class="box">
+<b>Status</b>
+<div id="status"></div>
+</div>
 
-            <button id="bbtn" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 rounded shadow-md mt-4 transition">🚀 Boot Proxmox (kexec)</button>
-            <button id="rbtn" class="w-full bg-orange-600 hover:bg-orange-700 text-white font-bold py-2 rounded shadow-md mt-4 transition">Reboot System</button>
-        </div>
+<div class="box">
+<input id="pw" type="password" placeholder="Password">
+<button class="btn" onclick="unlock()">Unlock</button>
+<button class="btn" onclick="boot()">Boot</button>
+<button class="btn" onclick="reboot()">Reboot</button>
+</div>
 
-        <!-- CHANGE PASSWORD TAB -->
-        <div id="ccont" class="hidden">
-            <form id="cform" class="space-y-4">
-                <input type="password" id="curp" placeholder="Current Password" required class="w-full px-4 py-2 rounded bg-gray-700 border-gray-600 text-white pass-field">
-                
-                <div>
-                    <input type="password" id="newp" placeholder="New Password" required class="w-full px-4 py-2 rounded bg-gray-700 border-gray-600 text-white pass-field">
-                    <ul id="meter" class="text-[10px] mt-2 grid grid-cols-2 gap-1 italic">
-                        <li id="r-len" class="unmet">✖ 12+ Chars</li>
-                        <li id="r-up" class="unmet">✖ Upper Case</li>
-                        <li id="r-lo" class="unmet">✖ Lower Case</li>
-                        <li id="r-num" class="unmet">✖ Number</li>
-                        <li id="r-sp" class="unmet">✖ Special Char</li>
-                    </ul>
-                </div>
+<div class="box">
+<b>Results</b>
+<div id="results"></div>
+</div>
 
-                <div>
-                    <div class="flex justify-between items-center mb-1">
-                        <label class="text-xs text-gray-400">Confirm New Password</label>
-                        <span id="match-status" class="text-[10px] font-bold opacity-0 transition-opacity"></span>
-                    </div>
-                    <input type="password" id="confp" placeholder="Re-type New Password" required 
-                           class="w-full px-4 py-2 rounded bg-gray-700 border border-gray-600 text-white pass-field transition-all">
-                </div>
+<script>
+async function refresh() {
+    try {
+        let r = await fetch("/status")
+        let j = await r.json()
 
-                <div class="flex items-center text-xs"><input type="checkbox" id="cshow" class="mr-2 w-4 h-4">Show Passwords</div>
-                <button type="submit" id="csub" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded transition">Update Password</button>
-            </form>
-        </div>
+        let out = ""
+        let allUnlocked = true
 
-        <p class="mt-6 text-[10px] text-center text-gray-500 italic">Management interface active. Session will terminate on kexec jump.</p>
-    </div>
+        j.drives.forEach(d => {
+            if (d.locked) allUnlocked = false
+            out += `<div class="${d.locked?'bad':'ok'}">
+                ${d.device} ${d.locked?'LOCKED':'UNLOCKED'}
+            </div>`
+        })
 
-    <script>
-        const $ = id => document.getElementById(id);
-        
-        // --- STRENGTH METER & MATCH LOGIC ---
-        const reqs = {
-            len: /.{12,}/, up: /[A-Z]/, lo: /[a-z]/, num: /[0-9]/, sp: /[!@#$%^&*(),.?":{}|<>]/
-        };
+        document.getElementById("status").innerHTML = out
 
-        const validateInputs = () => {
-            const val = $('newp').value;
-            const conf = $('confp').value;
-            
-            // Check Strength
-            Object.keys(reqs).forEach(k => {
-                const met = reqs[k].test(val);
-                const el = $('r-' + k);
-                el.className = met ? 'met' : 'unmet';
-                el.innerText = (met ? '✔ ' : '✖ ') + el.innerText.substring(2);
-            });
+    } catch {
+        document.getElementById("status").innerText = "ERROR"
+    }
+}
 
-            // Check Match
-            if (conf.length > 0) {
-                $('match-status').style.opacity = "1";
-                const isMatch = val === conf && val.length > 0;
-                $('match-status').innerText = isMatch ? "MATCHED" : "MISMATCH";
-                $('match-status').className = `text-[10px] font-bold ${isMatch ? 'text-green-400' : 'text-red-400'}`;
-                $('confp').style.borderColor = isMatch ? "#4ade80" : "#f87171";
-            } else {
-                $('match-status').style.opacity = "0";
-                $('confp').style.borderColor = "#4b5563";
-            }
-        };
+async function unlock() {
+    let pw = document.getElementById("pw").value
 
-        $('newp').addEventListener('input', validateInputs);
-        $('confp').addEventListener('input', validateInputs);
+    let r = await fetch("/unlock", {
+        method:"POST",
+        body: JSON.stringify({password: pw})
+    })
 
-        // --- TAB SWITCHING ---
-        $('utab').onclick = () => {
-            $('ucont').classList.remove('hidden'); $('ccont').classList.add('hidden');
-            $('utab').className="w-1/2 py-2 border-b-2 tab-active"; $('ctab').className="w-1/2 py-2 border-b-2 tab-inactive";
-        };
-        $('ctab').onclick = () => {
-            $('ccont').classList.remove('hidden'); $('ucont').classList.add('hidden');
-            $('ctab').className="w-1/2 py-2 border-b-2 tab-active"; $('utab').className="w-1/2 py-2 border-b-2 tab-inactive";
-        };
+    let j = await r.json()
 
-        // --- SHOW PASSWORD TOGGLES ---
-        $('ushow').onchange = e => document.querySelectorAll('#ucont .pass-field').forEach(i => i.type = e.target.checked ? 'text' : 'password');
-        $('cshow').onchange = e => document.querySelectorAll('#ccont .pass-field').forEach(i => i.type = e.target.checked ? 'text' : 'password');
+    let out = ""
+    j.results.forEach(x => {
+        out += `<div class="${x.success?'ok':'bad'}">
+            ${x.device} ${x.success?'OK':'FAIL'}
+        </div>`
+    })
 
-        // --- NETWORK ACTIONS ---
-        const refreshStatus = async () => {
-            try {
-                const res = await fetch('/status');
-                const data = await res.json();
-                let html = `<div class="text-blue-400 font-bold mb-2">Drive Status</div><ul class="text-xs text-left space-y-1">`;
-                data.drives.forEach(d => html += `<li>${d.locked ? '❌' : '✅'} ${d.device}: ${d.locked ? 'LOCKED' : 'READY'}</li>`);
-                $('msg').innerHTML = html + "</ul>";
-                $('msg').className = "block bg-gray-900/50 border border-gray-700 p-3 rounded mb-4";
-                if (data.drives.some(d => !d.locked)) {
-                    $('uform').classList.add('hidden');
-                    $('bbtn').classList.remove('hidden');
-                }
-            } catch (e) {}
-        };
+    document.getElementById("results").innerHTML = out
+    document.getElementById("pw").value = ""
 
-        $('fbtn').onclick = refreshStatus;
-        setInterval(refreshStatus, 30000); // 30s Auto-refresh
+    refresh()
+}
 
-        $('uform').onsubmit = async e => {
-            e.preventDefault();
-            $('usub').disabled = true; $('usub').innerText = "Processing...";
-            const res = await fetch('/unlock', { method: 'POST', body: JSON.stringify({ password: $('upass').value }) });
-            const data = await res.json();
-            refreshStatus();
-            $('upass').value = ""; $('usub').disabled = false; $('usub').innerText = "Unlock Drive(s)";
-        };
+function boot(){ fetch("/boot",{method:"POST"}) }
+function reboot(){ fetch("/reboot",{method:"POST"}) }
 
-        $('cform').onsubmit = async e => {
-            e.preventDefault();
-            if ($('newp').value !== $('confp').value) return;
-            const res = await fetch('/change-password', { 
-                method: 'POST', 
-                body: JSON.stringify({ currentPassword: $('curp').value, newPassword: $('newp').value }) 
-            });
-            const data = await res.json();
-            $('msg').innerText = res.ok ? "✅ Password Updated" : "❌ " + data.error;
-            $('msg').className = `block p-2 rounded mb-4 ${res.ok ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`;
-        };
+refresh()
+setInterval(refresh, 30000)
+</script>
 
-        $('bbtn').onclick = () => confirm("Confirm jump to Proxmox?") && fetch('/boot', { method: 'POST' });
-        $('rbtn').onclick = () => confirm("Reboot system?") && fetch('/reboot', { method: 'POST' });
-    </script>
 </body>
 </html>
