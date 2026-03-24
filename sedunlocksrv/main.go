@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,22 +50,54 @@ type BootResult struct {
 	FullyUnlocked bool          `json:"fullyUnlocked"`
 }
 
-// ---------------- SECURITY STATE ----------------
+type PasswordPolicy struct {
+	MinLength      int  `json:"minLength"`
+	RequireUpper   bool `json:"requireUpper"`
+	RequireLower   bool `json:"requireLower"`
+	RequireNumber  bool `json:"requireNumber"`
+	RequireSpecial bool `json:"requireSpecial"`
+}
 
 var (
 	failedAttempts int
 	maxAttempts    = 5
 	mu             sync.Mutex
+
+	passwordPolicy = loadPolicy()
 )
 
-// ---------------- PASSWORD VALIDATION ----------------
+func loadPolicy() PasswordPolicy {
+	getBool := func(k string, def bool) bool {
+		v := os.Getenv(k)
+		if v == "" {
+			return def
+		}
+		return v == "true"
+	}
+
+	getInt := func(k string, def int) int {
+		v := os.Getenv(k)
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+		return def
+	}
+
+	return PasswordPolicy{
+		MinLength:      getInt("MIN_PASSWORD_LENGTH", 12),
+		RequireUpper:   getBool("REQUIRE_UPPER", true),
+		RequireLower:   getBool("REQUIRE_LOWER", true),
+		RequireNumber:  getBool("REQUIRE_NUMBER", true),
+		RequireSpecial: getBool("REQUIRE_SPECIAL", true),
+	}
+}
 
 func validatePassword(password string) error {
-	var hasUpper, hasLower, hasNumber, hasSpecial bool
-
-	if len(password) < 12 {
-		return fmt.Errorf("at least 12 characters required")
+	if len(password) < passwordPolicy.MinLength {
+		return fmt.Errorf("minimum length %d", passwordPolicy.MinLength)
 	}
+
+	var hasUpper, hasLower, hasNumber, hasSpecial bool
 
 	for _, c := range password {
 		switch {
@@ -74,19 +107,28 @@ func validatePassword(password string) error {
 			hasLower = true
 		case unicode.IsNumber(c):
 			hasNumber = true
-		case strings.ContainsRune("!@#$%^&*(),.?\":{}|<>", c):
+		case !unicode.IsLetter(c) && !unicode.IsNumber(c):
 			hasSpecial = true
 		}
 	}
 
-	if !hasUpper || !hasLower || !hasNumber || !hasSpecial {
-		return fmt.Errorf("missing complexity requirements")
+	if passwordPolicy.RequireUpper && !hasUpper {
+		return fmt.Errorf("missing uppercase")
+	}
+	if passwordPolicy.RequireLower && !hasLower {
+		return fmt.Errorf("missing lowercase")
+	}
+	if passwordPolicy.RequireNumber && !hasNumber {
+		return fmt.Errorf("missing number")
+	}
+	if passwordPolicy.RequireSpecial && !hasSpecial {
+		return fmt.Errorf("missing special character")
 	}
 
 	return nil
 }
 
-// ---------------- DRIVE LOGIC ----------------
+// ---------------- DRIVE ----------------
 
 func scanDrives() []DriveStatus {
 	var statuses []DriveStatus
@@ -118,7 +160,7 @@ func scanDrives() []DriveStatus {
 	return statuses
 }
 
-// ---------------- UNLOCK LOGIC ----------------
+// ---------------- UNLOCK ----------------
 
 func attemptUnlock(password string) ([]UnlockResult, error) {
 	var results []UnlockResult
@@ -147,7 +189,6 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 		})
 	}
 
-	// ----------- SECURITY CONTROL -----------
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -160,7 +201,7 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 		if failedAttempts >= maxAttempts {
 			log.Println("Max failed attempts reached. Powering off.")
 			go exec.Command("poweroff", "-nf").Run()
-			return results, fmt.Errorf("maximum failed attempts reached; system powering off")
+			return results, fmt.Errorf("maximum failed attempts reached")
 		}
 	}
 
@@ -201,9 +242,7 @@ func changePassword(current, new string) []PasswordChangeResult {
 func BootSystem() (*BootResult, error) {
 	drives := scanDrives()
 
-	var unlocked []string
-	var locked []string
-
+	var unlocked, locked []string
 	for _, d := range drives {
 		if d.Locked {
 			locked = append(locked, d.Device)
@@ -213,15 +252,14 @@ func BootSystem() (*BootResult, error) {
 	}
 
 	if len(unlocked) == 0 {
-		return nil, fmt.Errorf("no unlocked drives available")
+		return nil, fmt.Errorf("no unlocked drives")
 	}
 
 	fullyUnlocked := len(locked) == 0
 
 	var warning string
 	if !fullyUnlocked {
-		warning = fmt.Sprintf("WARNING: %d drive(s) still locked: %s",
-			len(locked), strings.Join(locked, ", "))
+		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
 	}
 
 	bootDrive := unlocked[0]
@@ -238,7 +276,7 @@ func BootSystem() (*BootResult, error) {
 	for _, p := range parts[1:] {
 		part := "/dev/" + p
 
-		if err := exec.Command("mount", "-r", part, mountPoint).Run(); err != nil {
+		if exec.Command("mount", "-r", part, mountPoint).Run() != nil {
 			continue
 		}
 
@@ -254,14 +292,12 @@ func BootSystem() (*BootResult, error) {
 
 			exec.Command("umount", mountPoint).Run()
 
-			err := exec.Command("kexec",
+			if err := exec.Command("kexec",
 				"-l", kernel,
 				"--initrd="+initrd,
 				"--append="+cmdline,
-			).Run()
-
-			if err != nil {
-				return nil, fmt.Errorf("kexec load failed: %v", err)
+			).Run(); err != nil {
+				return nil, err
 			}
 
 			go exec.Command("kexec", "-e").Run()
@@ -279,7 +315,7 @@ func BootSystem() (*BootResult, error) {
 		exec.Command("umount", mountPoint).Run()
 	}
 
-	return nil, fmt.Errorf("no bootable partition found")
+	return nil, fmt.Errorf("no bootable partition")
 }
 
 // ---------------- TUI ----------------
@@ -365,6 +401,12 @@ func activeMenu(fd int) {
 				break
 			}
 
+			if err := validatePassword(string(newP)); err != nil {
+				fmt.Println("\n❌", err)
+				time.Sleep(2 * time.Second)
+				break
+			}
+
 			changePassword(string(curr), string(newP))
 
 		case "R":
@@ -391,6 +433,10 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"drives": scanDrives(),
 		})
+	})
+
+	http.HandleFunc("/password-policy", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(passwordPolicy)
 	})
 
 	http.HandleFunc("/unlock", func(w http.ResponseWriter, r *http.Request) {
