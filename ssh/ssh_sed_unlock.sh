@@ -1,152 +1,73 @@
 #!/bin/sh
-# SSH Wrapper for SED Unlock Service (jq version)
+# Minimal SSH UI for SED Unlock Service
 
 export TMOUT=300
 
-API="https://127.0.0.1:443"
-CURL_OPTS="-s -k --fail"
+API="https://localhost:443"
+CURL="curl -s -k"
 
-# ---------------------------------------------------------
-# Retry helper (handles transient failures)
-# ---------------------------------------------------------
-retry() {
-    for i in 1 2 3; do
-        curl "$@" && return 0
-        sleep 1
-    done
-    return 1
-}
-
-# ---------------------------------------------------------
-# Fetch drive status safely
-# ---------------------------------------------------------
-get_status() {
-    retry $CURL_OPTS "$API/status" 2>/dev/null
-}
-
-# ---------------------------------------------------------
-# Render drive status using jq
-# ---------------------------------------------------------
-print_status() {
-    echo "$1" | jq -r '
-        .drives[] |
-        "  \(.device): " +
-        (if .locked then "❌ LOCKED" else "✅ UNLOCKED" end)
-    '
-}
-
-# ---------------------------------------------------------
-# Check if ALL drives are unlocked
-# ---------------------------------------------------------
-all_unlocked() {
-    echo "$1" | jq -e '[.drives[].locked] | any | not' >/dev/null 2>&1
-}
-
-# ---------------------------------------------------------
-# Unlock drives
-# ---------------------------------------------------------
-unlock_drives() {
-    echo -n "Enter SED Password: "
-    stty -echo
-    read -r pass
-    stty sane
-    echo ""
-
-    RESP=$(printf '{"password":"%s"}' "$pass" | \
-        curl $CURL_OPTS -X POST \
-        -H "Content-Type: application/json" \
-        --data-binary @- \
-        "$API/unlock")
-
-    unset pass
-
-    echo ""
-    echo "--- Unlock Results ---"
-
-    echo "$RESP" | jq -r '
-        .results[] |
-        "  \(.device): " +
-        (if .success then "✅ SUCCESS" else "❌ FAILED" end)
-    '
-
-    sleep 2
-}
-
-# ---------------------------------------------------------
-# MAIN LOOP
-# ---------------------------------------------------------
 while true; do
     clear
-    echo "🔑 SED UNLOCK SERVICE - REMOTE SSH"
-    echo "Status refreshes every 30s | Auto-logout: 5m"
-    echo "API: $API"
+    echo "🔑 SED UNLOCK (SSH)"
+    echo "Auto logout: 5m | Refresh: 10s"
+    echo
 
-    STATUS_JSON=$(get_status)
+    STATUS_JSON=$($CURL "$API/status")
 
-    if [ -z "$STATUS_JSON" ]; then
-        echo "❌ Cannot reach API"
-        sleep 2
+    echo "$STATUS_JSON" | tr ',' '\n' | sed 's/[{}"]//g' | awk -F: '
+        /device/ { dev=$2 }
+        /locked/ {
+            if ($2=="false")
+                printf "  ✅ %s\n", dev;
+            else
+                printf "  ❌ %s\n", dev;
+        }
+    '
+
+    echo
+    echo "[U] Unlock  [B] Boot  [R] Reboot  [S] Shutdown  [Q] Quit"
+    echo -n "Choice: "
+
+    if ! read -t 10 choice; then
         continue
     fi
 
-    echo ""
-    echo "--- Drive Status ---"
-    print_status "$STATUS_JSON"
+    case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
 
-    echo ""
+        U)
+            echo -n "Password: "
+            stty -echo
+            read -r pass
+            stty sane
+            echo
 
-    if all_unlocked "$STATUS_JSON"; then
-        IS_UNLOCKED=true
-    else
-        IS_UNLOCKED=false
-    fi
+            RESP=$($CURL -X POST -d "{\"password\":\"$pass\"}" "$API/unlock")
 
-    MENU="[U] Unlock Drive(s)  "
-    [ "$IS_UNLOCKED" = true ] && MENU="${MENU}[B] Boot OS  "
-    MENU="${MENU}[R] Reboot  [S] Shutdown  [Q] Quit"
+            echo "$RESP" | grep -q error && echo "❌ Failed"
+            sleep 2
+            ;;
 
-    echo "$MENU"
-    echo -n "Selection (Auto-refresh in 30s): "
+        B)
+            echo -n "Boot OS? (y/n): "
+            read -r c
+            [ "$c" = "y" ] && $CURL -X POST "$API/boot" && exit 0
+            ;;
 
-    if read -t 30 -r choice; then
-        [ -z "$choice" ] && continue
+        R)
+            echo -n "Reboot? (y/n): "
+            read -r c
+            [ "$c" = "y" ] && $CURL -X POST "$API/reboot" && exit 0
+            ;;
 
-        case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
-            U)
-                unlock_drives
-                ;;
-            B)
-                if [ "$IS_UNLOCKED" = true ]; then
-                    echo -n "Confirm Boot? (y/n): "
-                    read -r conf
-                    if [ "$conf" = "y" ]; then
-                        curl $CURL_OPTS -X POST "$API/boot"
-                        exit 0
-                    fi
-                fi
-                ;;
-            R)
-                echo -n "Confirm Reboot? (y/n): "
-                read -r conf
-                if [ "$conf" = "y" ]; then
-                    curl $CURL_OPTS -X POST "$API/reboot"
-                    exit 0
-                fi
-                ;;
-            S)
-                echo -n "Confirm Shutdown? (y/n): "
-                read -r conf
-                if [ "$conf" = "y" ]; then
-                    poweroff -nf
-                fi
-                ;;
-            Q)
-                exit 0
-                ;;
-            *)
-                echo "Invalid selection."
-                sleep 1
-                ;;
-        esac
-    fi
+        S)
+            echo -n "Shutdown? (y/n): "
+            read -r c
+            [ "$c" = "y" ] && $CURL -X POST "$API/poweroff" && exit 0
+            ;;
+
+        Q)
+            exit 0
+            ;;
+
+    esac
 done
