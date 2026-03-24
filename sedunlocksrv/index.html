@@ -1,92 +1,133 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <title>SED Unlock</title>
-
 <style>
-body { background:#111; color:#ddd; font-family:monospace; text-align:center; }
-.box { border:1px solid #444; padding:10px; margin:10px auto; width:320px; }
-.btn { display:block; width:100%; margin:5px 0; padding:8px; background:#333; color:#fff; border:none; }
-.btn:hover { background:#555; }
-input { width:100%; padding:6px; background:#222; color:#fff; border:1px solid #444; }
-.ok { color:#4ade80; }
-.bad { color:#f87171; }
+body { background:#111; color:#eee; font-family:monospace; text-align:center; }
+.box { max-width:420px; margin:auto; padding:10px; }
+button,input { width:100%; margin:5px 0; padding:6px; font-size:14px; }
+.ok { color:#0f0; }
+.bad { color:#f55; }
+.warn { color:#ff0; }
 </style>
-
 </head>
 <body>
+<div class="box">
 
 <h2>🔑 SED UNLOCK</h2>
 
-<div class="box">
-<b>Status</b>
 <div id="status"></div>
-</div>
 
-<div class="box">
 <input id="pw" type="password" placeholder="Password">
-<button class="btn" onclick="unlock()">Unlock</button>
-<button class="btn" onclick="boot()">Boot</button>
-<button class="btn" onclick="reboot()">Reboot</button>
-</div>
+<button onclick="unlock()">Unlock</button>
 
-<div class="box">
-<b>Results</b>
-<div id="results"></div>
+<hr>
+
+<input id="cur" type="password" placeholder="Current Password">
+<input id="new" type="password" placeholder="New Password">
+<input id="conf" type="password" placeholder="Confirm Password">
+<button onclick="changePw()">Change Password</button>
+
+<hr>
+
+<button onclick="boot()">Boot</button>
+<button onclick="reboot()">Reboot</button>
+<button onclick="shutdown()">Shutdown</button>
+
 </div>
 
 <script>
-async function refresh() {
+async function refresh(){
     try {
-        let r = await fetch("/status")
-        let j = await r.json()
+        let r = await fetch("/status");
+        let j = await r.json();
 
-        let out = ""
-        let allUnlocked = true
+        let html = "";
+        let unlocked = false;
 
-        j.drives.forEach(d => {
-            if (d.locked) allUnlocked = false
-            out += `<div class="${d.locked?'bad':'ok'}">
-                ${d.device} ${d.locked?'LOCKED':'UNLOCKED'}
-            </div>`
-        })
+        j.drives.forEach(d=>{
+            if(d.locked){
+                html += `<div class="bad">❌ ${d.device}</div>`;
+            } else {
+                html += `<div class="ok">✅ ${d.device}</div>`;
+                unlocked = true;
+            }
+        });
 
-        document.getElementById("status").innerHTML = out
+        if(unlocked){
+            html += `<div class="warn">⚠ Some drives may still be locked</div>`;
+        }
 
-    } catch {
-        document.getElementById("status").innerText = "ERROR"
-    }
+        document.getElementById("status").innerHTML = html;
+    } catch(e){}
 }
 
-async function unlock() {
-    let pw = document.getElementById("pw").value
+async function unlock(){
+    let pw = document.getElementById("pw").value;
 
     let r = await fetch("/unlock", {
         method:"POST",
-        body: JSON.stringify({password: pw})
-    })
+        body: JSON.stringify({password:pw})
+    });
 
-    let j = await r.json()
+    let j = await r.json();
 
-    let out = ""
-    j.results.forEach(x => {
-        out += `<div class="${x.success?'ok':'bad'}">
-            ${x.device} ${x.success?'OK':'FAIL'}
-        </div>`
-    })
+    if(j.error){
+        alert(j.error);
+    }
 
-    document.getElementById("results").innerHTML = out
-    document.getElementById("pw").value = ""
-
-    refresh()
+    document.getElementById("pw").value="";
+    refresh();
 }
 
-function boot(){ fetch("/boot",{method:"POST"}) }
-function reboot(){ fetch("/reboot",{method:"POST"}) }
+async function changePw(){
+    let cur = document.getElementById("cur").value;
+    let nw  = document.getElementById("new").value;
+    let cf  = document.getElementById("conf").value;
 
-refresh()
-setInterval(refresh, 30000)
+    if(nw !== cf){
+        alert("Password mismatch");
+        return;
+    }
+
+    let r = await fetch("/change-password", {
+        method:"POST",
+        body: JSON.stringify({
+            currentPassword:cur,
+            newPassword:nw
+        })
+    });
+
+    let j = await r.json();
+
+    if(j.error){
+        alert(j.error);
+    } else {
+        alert("Password updated");
+    }
+}
+
+function boot(){
+    if(confirm("Boot OS?")){
+        fetch("/boot",{method:"POST"});
+    }
+}
+
+function reboot(){
+    if(confirm("Reboot system?")){
+        fetch("/reboot",{method:"POST"});
+    }
+}
+
+function shutdown(){
+    if(confirm("Shutdown system?")){
+        fetch("/poweroff",{method:"POST"});
+    }
+}
+
+setInterval(refresh, 5000);
+refresh();
 </script>
 
 </body>
