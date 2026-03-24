@@ -3,92 +3,212 @@
 <head>
 <meta charset="utf-8">
 <title>SED Unlock</title>
+
 <style>
-body { background:#111; color:#eee; font-family:monospace; text-align:center; }
-.box { max-width:420px; margin:auto; padding:10px; }
-button,input { width:100%; margin:5px 0; padding:6px; font-size:14px; }
-.ok { color:#0f0; }
-.bad { color:#f55; }
-.warn { color:#ff0; }
+body {
+    background:#111;
+    color:#eee;
+    font-family: monospace;
+    max-width: 420px;
+    margin: auto;
+    padding: 10px;
+}
+
+h2 { text-align:center; }
+
+.box {
+    border:1px solid #444;
+    padding:10px;
+    margin-bottom:10px;
+}
+
+button {
+    background:#222;
+    color:#eee;
+    border:1px solid #555;
+    padding:6px;
+    margin-top:5px;
+}
+
+button:hover { background:#333; }
+
+.hidden { display:none; }
+
+.ok { color:#4ade80; }
+.bad { color:#f87171; }
+.warn { color:#facc15; }
+
+input {
+    width:100%;
+    padding:5px;
+    margin-top:5px;
+    background:#000;
+    color:#eee;
+    border:1px solid #555;
+}
+
+.tab {
+    display:flex;
+    margin-bottom:10px;
+}
+
+.tab button {
+    flex:1;
+    margin:0;
+}
+
+.active { background:#333; }
+
+.small { font-size:11px; color:#aaa; }
+
+.checkbox-row {
+    display:flex;
+    align-items:center;
+    margin-top:5px;
+    font-size:11px;
+    color:#aaa;
+}
+.checkbox-row input {
+    width:auto;
+    margin-right:6px;
+}
+
+/* Button rows */
+.row {
+    display:flex;
+    gap:5px;
+}
+.row button {
+    flex:1;
+}
 </style>
 </head>
+
 <body>
+
+<h2>🔑 SED Unlock</h2>
+
+<div class="tab">
+    <button id="tabUnlock" class="active">Unlock</button>
+    <button id="tabChange">Change Password</button>
+</div>
+
+<!-- STATUS -->
 <div class="box">
+    <div id="status"></div>
+</div>
 
-<h2>🔑 SED UNLOCK</h2>
+<!-- UNLOCK TAB -->
+<div id="unlockTab">
 
-<div id="status"></div>
+    <div class="box">
+        <input id="pw" type="password" placeholder="Disk Password">
 
-<input id="pw" type="password" placeholder="Password">
-<button onclick="unlock()">Unlock</button>
+        <label class="checkbox-row">
+            <input type="checkbox" id="showUnlock"> Show Password
+        </label>
 
-<hr>
+        <div class="row">
+            <button onclick="unlock()">Unlock</button>
+            <button id="bootBtn" class="hidden" onclick="boot()">Boot</button>
+        </div>
+    </div>
 
-<input id="cur" type="password" placeholder="Current Password">
-<input id="new" type="password" placeholder="New Password">
-<input id="conf" type="password" placeholder="Confirm Password">
-<button onclick="changePw()">Change Password</button>
+    <div class="row">
+        <button onclick="reboot()">Reboot</button>
+        <button onclick="shutdown()">Shutdown</button>
+    </div>
 
-<hr>
+</div>
 
-<button onclick="boot()">Boot</button>
-<button onclick="reboot()">Reboot</button>
-<button onclick="shutdown()">Shutdown</button>
+<!-- CHANGE PASSWORD TAB -->
+<div id="changeTab" class="hidden">
+
+    <div class="box">
+        <input id="cur" type="password" placeholder="Current Password">
+        <input id="new" type="password" placeholder="New Password">
+        <input id="conf" type="password" placeholder="Confirm Password">
+
+        <label class="checkbox-row">
+            <input type="checkbox" id="showChange"> Show Passwords
+        </label>
+
+        <div id="policy" class="small"></div>
+
+        <button onclick="changePw()">Update Password</button>
+    </div>
 
 </div>
 
 <script>
-async function refresh(){
-    try {
-        let r = await fetch("/status");
-        let j = await r.json();
+const $ = id => document.getElementById(id)
 
-        let html = "";
-        let unlocked = false;
+let policy = {}
 
-        j.drives.forEach(d=>{
-            if(d.locked){
-                html += `<div class="bad">❌ ${d.device}</div>`;
-            } else {
-                html += `<div class="ok">✅ ${d.device}</div>`;
-                unlocked = true;
-            }
-        });
+// -------- PASSWORD POLICY --------
 
-        if(unlocked){
-            html += `<div class="warn">⚠ Some drives may still be locked</div>`;
-        }
+async function loadPolicy(){
+    let r = await fetch("/password-policy")
+    policy = await r.json()
 
-        document.getElementById("status").innerHTML = html;
-    } catch(e){}
+    $("policy").innerText =
+        "Min " + policy.minLength +
+        " | Upper:" + policy.requireUpper +
+        " Lower:" + policy.requireLower +
+        " Num:" + policy.requireNumber +
+        " Special:" + policy.requireSpecial
 }
 
-async function unlock(){
-    let pw = document.getElementById("pw").value;
+// -------- STATUS --------
 
-    let r = await fetch("/unlock", {
+async function refresh(){
+    let r = await fetch("/status")
+    let j = await r.json()
+
+    let html = ""
+    let unlocked = false
+
+    j.drives.forEach(d => {
+        let icon = d.locked ? "❌" : "✅"
+        let state = d.locked ? "LOCKED" : "UNLOCKED"
+
+        let opalLabel = d.opal ? "🔐 OPAL" : "⚠ NON-OPAL"
+        let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
+
+        if (!d.locked) unlocked = true
+
+        html += `<div class="${color}">
+            ${icon} ${d.device} — ${state} — ${opalLabel}
+        </div>`
+    })
+
+    $("status").innerHTML = html
+
+    $("bootBtn").classList.toggle("hidden", !unlocked)
+}
+
+// -------- ACTIONS --------
+
+async function unlock(){
+    let pw = $("pw").value
+
+    await fetch("/unlock", {
         method:"POST",
         body: JSON.stringify({password:pw})
-    });
+    })
 
-    let j = await r.json();
-
-    if(j.error){
-        alert(j.error);
-    }
-
-    document.getElementById("pw").value="";
-    refresh();
+    $("pw").value=""
+    refresh()
 }
 
 async function changePw(){
-    let cur = document.getElementById("cur").value;
-    let nw  = document.getElementById("new").value;
-    let cf  = document.getElementById("conf").value;
+    let cur = $("cur").value
+    let nw = $("new").value
+    let cf = $("conf").value
 
     if(nw !== cf){
-        alert("Password mismatch");
-        return;
+        alert("Password mismatch")
+        return
     }
 
     let r = await fetch("/change-password", {
@@ -97,37 +217,52 @@ async function changePw(){
             currentPassword:cur,
             newPassword:nw
         })
-    });
+    })
 
-    let j = await r.json();
+    let j = await r.json()
 
-    if(j.error){
-        alert(j.error);
-    } else {
-        alert("Password updated");
-    }
+    if(j.error) alert(j.error)
+    else alert("Password updated")
 }
 
-function boot(){
-    if(confirm("Boot OS?")){
-        fetch("/boot",{method:"POST"});
-    }
+function boot(){ fetch("/boot",{method:"POST"}) }
+function reboot(){ fetch("/reboot",{method:"POST"}) }
+function shutdown(){ fetch("/poweroff",{method:"POST"}) }
+
+// -------- TABS --------
+
+$("tabUnlock").onclick = () => {
+    $("unlockTab").classList.remove("hidden")
+    $("changeTab").classList.add("hidden")
+    $("tabUnlock").classList.add("active")
+    $("tabChange").classList.remove("active")
 }
 
-function reboot(){
-    if(confirm("Reboot system?")){
-        fetch("/reboot",{method:"POST"});
-    }
+$("tabChange").onclick = () => {
+    $("changeTab").classList.remove("hidden")
+    $("unlockTab").classList.add("hidden")
+    $("tabChange").classList.add("active")
+    $("tabUnlock").classList.remove("active")
 }
 
-function shutdown(){
-    if(confirm("Shutdown system?")){
-        fetch("/poweroff",{method:"POST"});
-    }
+// -------- SHOW PASSWORD --------
+
+$("showUnlock").onchange = e => {
+    $("pw").type = e.target.checked ? "text" : "password"
 }
 
-setInterval(refresh, 5000);
-refresh();
+$("showChange").onchange = e => {
+    ["cur","new","conf"].forEach(id=>{
+        $(id).type = e.target.checked ? "text" : "password"
+    })
+}
+
+// -------- INIT --------
+
+loadPolicy()
+refresh()
+setInterval(refresh,5000)
+
 </script>
 
 </body>
