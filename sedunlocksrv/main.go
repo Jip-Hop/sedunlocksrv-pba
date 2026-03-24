@@ -20,6 +20,7 @@ import (
 type DriveStatus struct {
 	Device string `json:"device"`
 	Locked bool   `json:"locked"`
+	Opal   bool   `json:"opal"`
 }
 
 type UnlockResult struct {
@@ -142,11 +143,21 @@ func scanDrives() []DriveStatus {
 
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) == 0 || !strings.HasPrefix(fields[0], "/dev/") {
+		if len(fields) < 2 {
 			continue
 		}
 
 		dev := fields[0]
+
+		if !strings.HasPrefix(dev, "/dev/") {
+			continue
+		}
+
+		// Detect OPAL support
+		opal := false
+		if len(fields) > 1 && strings.Contains(fields[1], "2") {
+			opal = true
+		}
 
 		query, _ := exec.Command("sedutil-cli", "--query", dev).Output()
 		locked := strings.Contains(string(query), "Locked = Y")
@@ -154,6 +165,7 @@ func scanDrives() []DriveStatus {
 		statuses = append(statuses, DriveStatus{
 			Device: dev,
 			Locked: locked,
+			Opal:   opal,
 		})
 	}
 
