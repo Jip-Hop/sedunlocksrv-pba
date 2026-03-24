@@ -1,24 +1,36 @@
 #!/bin/sh
-# SSH Wrapper for SED Unlock Service - 30s Refresh & 5m Timeout
 
-# Global Timeout (5 minutes of total inactivity closes SSH)
 export TMOUT=300
-API="https://localhost:443"
-CURL_OPTS="-s -k" # -k bypasses certificate name mismatch on localhost
+API="https://127.0.0.1:443"
+CURL_OPTS="-s -k --fail"
+
+retry() {
+    for i in 1 2 3; do
+        curl "$@" && return 0
+        sleep 1
+    done
+    return 1
+}
 
 while true; do
     clear
     echo "🔑 SED UNLOCK SERVICE - REMOTE SSH"
     echo "Status refreshes every 30s | Auto-logout: 5m"
-    
-    # 1. Fetch status and check unlock state
-    STATUS_JSON=$(curl $CURL_OPTS "$API/status")
+    echo "API: $API"
+
+    STATUS_JSON=$(retry $CURL_OPTS "$API/status" 2>/dev/null) || {
+        echo "❌ Cannot reach API"
+        sleep 2
+        continue
+    }
+
     IS_UNLOCKED=$(echo "$STATUS_JSON" | grep -q '"locked":false' && echo "true" || echo "false")
 
     printf "\n--- Drive Status ---\n"
-    echo "$STATUS_JSON" | tr ',' '\n' | sed 's/[{}"]//g' | awk -F: '
-        /device/ { dev=$2 }
-        /locked/ { 
+    echo "$STATUS_JSON" | grep -oE '"device":"[^"]+"|"locked":[^,]+' | \
+    awk -F: '
+        /device/ { gsub(/"/, "", $2); dev=$2 }
+        /locked/ {
             status = ($2 == "false") ? "✅ UNLOCKED" : "❌ LOCKED"
             printf "  %s: %s\n", dev, status
         }
@@ -28,17 +40,33 @@ while true; do
     MENU="[U] Unlock Drive(s)  "
     [ "$IS_UNLOCKED" = "true" ] && MENU="${MENU}[B] Boot OS  "
     MENU="${MENU}[R] Reboot  [S] Shutdown  [Q] Quit"
-    
+
     echo "$MENU"
     echo -n "Selection (Auto-refresh in 30s): "
-    
-    # -t 30 waits 30 seconds for input. If it times out, it returns non-zero.
+
     if read -t 30 -r choice; then
+        [ -z "$choice" ] && continue
+
         case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
             U)
                 echo -n "Enter SED Password: "
                 stty -echo; read -r pass; stty sane; echo ""
-                curl $CURL_OPTS -X POST -d "{\"password\":\"$pass\"}" "$API/unlock"
+
+                RESP=$(printf '{"password":"%s"}' "$pass" | \
+                    curl $CURL_OPTS -X POST -H "Content-Type: application/json" \
+                    --data-binary @- "$API/unlock")
+
+                unset pass
+
+                echo "$RESP" | grep -oE '"device":"[^"]+"|"success":[^,]+' | \
+                awk -F: '
+                    /device/ { gsub(/"/, "", $2); dev=$2 }
+                    /success/ {
+                        status = ($2 == "true") ? "✅ SUCCESS" : "❌ FAILED"
+                        printf "  %s: %s\n", dev, status
+                    }
+                '
+
                 sleep 2
                 ;;
             B)
@@ -61,8 +89,5 @@ while true; do
             Q) exit 0 ;;
             *) echo "Invalid selection."; sleep 1 ;;
         esac
-    else
-        # read -t 30 timed out, loop restarts and refreshes status automatically
-        continue
     fi
 done
