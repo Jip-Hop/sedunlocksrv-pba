@@ -1,43 +1,20 @@
 #!/usr/bin/env bash
-
 set -euox pipefail
 
-# Ensure /usr/local/go/bin is in the PATH for the script
+# Ensure Go is in PATH
 export PATH=$PATH:/usr/local/go/bin
 
-function cleanup() {
-    echo "Cleaning up..."
-    # Use ${VAR-} syntax to tell bash: "If this is empty, just use nothing"
-    sudo umount "${TMPDIR-}/img" 2>/dev/null || true
-    [ -n "${LOOP_DEVICE_HDD-}" ] && sudo losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
-    rm -rf "${TMPDIR-}"
-}
-
-SSHBUILD=FALSE
-if [ "${1-default}" == "SSH" ]; then
-    SSHBUILD=TRUE
-    # check SSH build dependencies
-    if [ ! -f ./ssh/authorized_keys ]; then
-        echo "You have to create authorized_keys file in ssh folder"
-        exit
-    fi
-    if ! which dropbear; then
-        echo "Please install dropbear: apt install dropbear"
-        exit
-    fi
-fi
-
-# Default config for 64-bit Linux and Sedutil
-GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
+# --- 1. GLOBAL CONFIGURATION ---
 CACHEDIR="cache"
-TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
-KEXEC_VER="2.0.28"
-TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
-INPUTISO="TinyCorePure64-current.iso"
+TMPDIR="img.tmp" # Consistent temp dir name
 BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
 LATEST_LINK="sedunlocksrv-pba-latest.img"
-BOOTARGS="quiet libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
+GRUBSIZE=25 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
+KEXEC_VER="2.0.28"
+TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
+INPUTISO="TinyCorePure64-current.iso"
+BOOTARGS="libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="bash.tcz"
 if [ $SSHBUILD == "TRUE" ]; then
@@ -58,6 +35,29 @@ case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
     ;;
 esac
 
+# --- 2. ARGUMENT PARSING ---
+CLEAN_MODE=false
+SSHBUILD=false
+
+for arg in "$@"; do
+    case $arg in
+        --clean) CLEAN_MODE=true ;;
+        SSH)     SSHBUILD=true ;;
+    esac
+done
+
+if [ "$CLEAN_MODE" = true ]; then
+    echo "🧹 Cleaning up build environment and cache..."
+    rm -rf "${CACHEDIR}" "${TMPDIR}"
+    # Continue to build after clean
+fi
+
+function cleanup() {
+    echo "Cleaning up..."
+    sudo umount "${TMPDIR-}/img" 2>/dev/null || true
+    [ -n "${LOOP_DEVICE_HDD-}" ] && sudo losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
+    rm -rf "${TMPDIR-}"
+}
 trap cleanup EXIT
 
 # --- 2. BUILD HOST DEPENDENCY CHECK ---
@@ -77,13 +77,6 @@ if [ -n "$MISSING_TOOLS" ]; then
     exit 1
 fi
 echo "✅ All build tools present."
-
-# --- FORCE RE-DOWNLOAD LOGIC ---
-# Instead of checking if directories exist, we destroy them first.
-echo "Cleaning up previous build artifacts and caches..."
-rm -rf "${CACHEDIR}"
-rm -rf "${TMPDIR}"
-rm -rf "mnt.*" "img.*" 
 
 # Re-initialize fresh folders
 mkdir -p "${TMPDIR}"/{fs/boot,core,img}
@@ -126,6 +119,7 @@ mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
     echo "--- Compiling Optimized Binary ---"
     if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o sedunlocksrv; then
         echo "✅ Go build successful: sedunlocksrv created."
+        chown 1001:50 sedunlocksrv
         chmod +x sedunlocksrv
     else
         echo "❌ Final build failed."
@@ -139,25 +133,20 @@ if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
     ./make-cert.sh
 fi
 
-# Downloads a Tiny Core Linux asset, only if not already cached
-# Redefine the download function to bypass local file checks
 function cachetcfile() {
-    # Argument 1: Filename (e.g., bash.tcz)
-    # Argument 2: Local Subdir (e.g., tcz)
-    # Argument 3: Remote Path Type (e.g., tcz)
-    
     local filename="$1"
     local local_dir="$2"
     local remote_type="$3"
+    local local_path="${CACHEDIR}/${local_dir}/${filename}"
 
-    echo "Fetching fresh: ${filename} from ${TCURL}/${remote_type}/"
-    
-    # We remove the [ -f ] check entirely. 
-    # Added -L to follow redirects and -H to bypass CDN caching.
-    curl -fL -H "Cache-Control: no-cache" \
-         "${TCURL}/${remote_type}/${filename}" \
-         -o "${CACHEDIR}/${local_dir}/${filename}" || \
-         { [[ "${local_dir}" == "dep" ]] && touch "${CACHEDIR}/${local_dir}/${filename}"; }
+    # Check if file exists and has a size greater than zero
+    if [ -s "$local_path" ]; then
+        echo "📦 Using cached: ${filename}"
+    else
+        echo "Fetching: ${filename}..."
+        curl -fL "${TCURL}/${remote_type}/${filename}" -o "$local_path" || \
+             { [[ "${local_dir}" == "dep" ]] && touch "$local_path"; }
+    fi
 }
 
     # Download the ISO
@@ -204,7 +193,7 @@ ABS_CORE_PATH=$(realpath "$CORE_PATH")
 echo "✅ Extracting Initrd from: ${ABS_CORE_PATH}"
 
 # Remaster the initrd
-(cd "${TMPDIR}/core" && zcat "${ABS_CORE_PATH}" | cpio -i -H newc -d)
+(cd "${TMPDIR}/core" && zcat "${ABS_CORE_PATH}" | cpio -id -H newc )
 
 # We can only detect the kernel version after the intird is extracted.
 # We need the kernel version to install the right scsi driver 
@@ -305,8 +294,8 @@ chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
 FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
 
 # Make the image
-# Add 1 MiB extra to account for FSSIZE rounding errors
-dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE +1))
+# Add 2 MiB extra to account for FSSIZE rounding errors
+dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE +2))
 
 # Attaching hard disk image file to loop device.
 LOOP_DEVICE_HDD=$(losetup --find --show --partscan ${OUTPUTIMG})
