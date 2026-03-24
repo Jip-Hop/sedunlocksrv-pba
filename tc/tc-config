@@ -1,15 +1,19 @@
 #!/bin/busybox ash
 
-# Custom Tiny Core Linux RC Script
+# ----------------------------------------------------
+# Custom Tiny Core Linux RC Script (Improved)
+# ----------------------------------------------------
 
-# Set kernel logging level to 3 (errors only) to hide non-critical hardware warnings
+# Ensure terminal is restored on exit
+trap "stty sane; echo; echo '[!] Terminal restored';" EXIT
+
+# Reduce kernel log noise
 dmesg -n 3
 
 # Hide cursor
-echo -e "\e[?1c"
-# Disable showing keyboard input
-stty -echo
-# Disable input buffering
+echo -e "\e[?25l"
+
+# Minimal input mode (safer than full no-echo globally)
 stty cbreak min 1
 
 # ANSI COLORS
@@ -19,198 +23,159 @@ NORMAL="$(echo -e '\033[0;39m')"
 
 export PATH=/usr/local/sbin:/usr/local/bin:"$PATH"
 
-# Start Udev to populate /dev and handle hotplug events
-/sbin/udevd --daemon 2>&1 >/dev/null
-/sbin/udevadm trigger --action=add 2>&1 >/dev/null &
+# ----------------------------------------------------
+# UDEV + CLOCK
+# ----------------------------------------------------
+/sbin/udevd --daemon >/dev/null 2>&1
+/sbin/udevadm trigger --action=add >/dev/null 2>&1 &
 
-# Setup clock
 while [ ! -e /dev/rtc0 ]; do usleep 50000; done
 /sbin/hwclock -u -s &
 
 /sbin/ifconfig lo 127.0.0.1 up
-/sbin/route add 127.0.0.1 lo &
+/sbin/route add 127.0.0.1 lo >/dev/null 2>&1 &
 
-# Creates the necessary links and cache to the most recent shared libraries
 /sbin/ldconfig 2>/dev/null
-
-# This waits until all devices have registered
 /sbin/udevadm settle --timeout=5
 
-# --- LACP (802.3ad) via sysfs  ---
+# ----------------------------------------------------
+# NETWORK: LACP BONDING
+# ----------------------------------------------------
 echo "----------------------------------------------------"
 echo "🚀 Starting Network Configuration: LACP Bond0"
 echo "----------------------------------------------------"
 
-# requires the inclusion of the ipv6_netfilter package which includes the bonding driver
-# 1. Load Driver
-echo -n "Step 1: Loading bonding kernel module... "
-modprobe bonding && echo "OK" || echo "FAILED"
+echo -n "Step 1: Loading bonding module... "
+if modprobe bonding; then
+    echo "OK"
+else
+    echo "FAILED"
+    echo "❌ Bonding unavailable. Network disabled."
+fi
 
-# 2. Create Interface (only if it doesn't already exist)
-echo -n "Step 2: Ensuring bond0 interface exists... "
+echo -n "Step 2: Ensuring bond0 exists... "
 if [ ! -d "/sys/class/net/bond0" ]; then
     echo +bond0 > /sys/class/net/bonding_masters && echo "CREATED"
 else
-    echo "ALREADY EXISTS (skipping creation)"
+    echo "EXISTS"
 fi
 
-# IMPORTANT: The bond interface must be DOWN before changing 
-# the bonding mode or LACP parameters via sysfs.
 ifconfig bond0 down 2>/dev/null
 
-# 3. Configure LACP Parameters
-echo "Step 3: Setting LACP (Mode 4) parameters..."
-echo 4 > /sys/class/net/bond0/bonding/mode
+echo "Step 3: Configuring LACP..."
+echo 4   > /sys/class/net/bond0/bonding/mode
 echo 100 > /sys/class/net/bond0/bonding/miimon
-echo 1 > /sys/class/net/bond0/bonding/lacp_rate
-echo 1 > /sys/class/net/bond0/bonding/xmit_hash_policy
-echo "   [✓] Mode: 802.3ad (LACP)"
-echo "   [✓] Rate: Fast (1s)"
-echo "   [✓] Hash: Layer2+3"
+echo 1   > /sys/class/net/bond0/bonding/lacp_rate
+echo 1   > /sys/class/net/bond0/bonding/xmit_hash_policy
 
-# 4. Enslave eth0 and eth1
-echo "Step 4: Enslaving physical adapters..."
-for iface in eth0 eth1; do
-    if [ -d "/sys/class/net/$iface" ]; then
-        echo -n "   -> Enslaving $iface... "
-        ifconfig "$iface" down  # <-- Changed from 'ip link set'
-        echo "+$iface" > /sys/class/net/bond0/bonding/slaves && echo "DONE"
-    else
-        echo "   [!] Skipping $iface: Device not found."
+# Auto-detect interfaces
+echo "Step 4: Detecting interfaces..."
+PHYS_IFACES=$(ls /sys/class/net | grep -E '^e')
+
+for iface in $PHYS_IFACES; do
+    if [ "$iface" != "bond0" ]; then
+        echo "   -> Enslaving $iface"
+        ifconfig "$iface" down
+        echo "+$iface" > /sys/class/net/bond0/bonding/slaves
     fi
 done
 
-# 5. Network Addressing
-echo "Step 5: Applying static network configuration..."
-ifconfig bond0 192.168.10.230 netmask 255.255.255.0 up  # <-- Changed from 'ip addr'
-echo "   [✓] IP Address: 192.168.10.230/24"
-
-route add default gw 192.168.10.253 bond0  # <-- Changed from 'ip route'
-echo "   [✓] Gateway:    192.168.10.253"
-
+echo "Step 5: Static network config..."
+ifconfig bond0 192.168.10.230 netmask 255.255.255.0 up
+route add default gw 192.168.10.253 bond0
 echo "nameserver 192.168.10.252" > /etc/resolv.conf
-echo "   [✓] DNS Server: 192.168.10.252"
 
-# 6. Connectivity & Link Synchronization
+# ----------------------------------------------------
+# LACP SYNC
+# ----------------------------------------------------
 echo "----------------------------------------------------"
-echo "⏳ Synchronizing LACP Link (up to 30s)..."
+echo "⏳ Synchronizing LACP Link..."
 
-MAX_RETRIES=30
 COUNT=0
+MAX=30
 LINK_UP=false
 
-while [ $COUNT -lt $MAX_RETRIES ]; do
-    # Check if bond0 is operationally 'up'
+while [ $COUNT -lt $MAX ]; do
     if [ "$(cat /sys/class/net/bond0/operstate 2>/dev/null)" = "up" ]; then
-        echo "✅ Link is UP (Negotiated in ${COUNT}s)"
+        echo "✅ Link UP (${COUNT}s)"
         LINK_UP=true
         break
     fi
-    
-    # Visual feedback for the user
-    printf "\r   Waiting for switch handshake... [%2ds/%2ds]" $COUNT $MAX_RETRIES
+    printf "\rWaiting... %ds/%ds" $COUNT $MAX
     sleep 1
-    COUNT=$((COUNT + 1))
+    COUNT=$((COUNT+1))
 done
-
-echo "" # New line after printf
+echo ""
 
 if [ "$LINK_UP" = "true" ]; then
-    echo -n "🔍 Testing connectivity to gateway... "
-    # Brief sub-second sleep to let the ARP table settle
+    echo -n "🔍 Testing connectivity... "
     sleep 1
-    if ping -c 3 -W 5 192.168.10.253 > /dev/null; then
-        echo "SUCCESS!"
-        echo "✅ Network is ONLINE."
+    if ping -c 3 -W 5 192.168.10.253 >/dev/null; then
+        echo "OK"
     else
-        echo "FAILED."
-        echo "⚠️  ERROR: Gateway unreachable. Check VLAN/Switch config."
+        echo "FAILED"
     fi
 else
-    echo "❌ TIMEOUT: LACP failed to negotiate. Check cables/Switch."
-    echo "--- Debugging: Last Kernel Status ---"
-    [ -f /proc/net/bonding/bond0 ] && grep -E 'MII Status|Partner' /proc/net/bonding/bond0
+    echo "❌ LACP failed"
 fi
+
 echo "----------------------------------------------------"
 
-fi
-echo "----------------------------------------------------"
+# ----------------------------------------------------
+# SYSTEM FIXES
+# ----------------------------------------------------
+[ ! -d /lib64 ] && ln -s /lib /lib64
 
-# Fix to get the 64-bit binaries working
-if [ ! -d /lib64 ]; then
-    ln -s /lib /lib64
-fi
-
+# Keymap
 if [ -e /home/tc/keymap ]; then
     KEYMAP=$(cat /home/tc/keymap)
     keymapfile=$(find /usr/share/kmap/ -name "${KEYMAP}.kmap")
-    echo "Loading keymapfile $keymapfile"
-    loadkmap < $keymapfile
+    loadkmap < "$keymapfile"
 fi
 
+# ----------------------------------------------------
+# OPAL DETECTION
+# ----------------------------------------------------
 echo "----------------------------------------------------"
 echo "🔍 Validating TCG Opal 2.0 Hardware"
 echo "----------------------------------------------------"
 
-# 1. Verify Kernel Parameter for SATA/SAS
 TPM_PARAM=$(cat /sys/module/libata/parameters/allow_tpm 2>/dev/null)
-if [ "$TPM_PARAM" != "1" ]; then
-    echo "⚠️  WARNING: libata.allow_tpm is NOT 1. SATA drives may not unlock."
-else
-    echo "   [✓] Kernel: libata.allow_tpm=1 is active."
-fi
+[ "$TPM_PARAM" != "1" ] && echo "⚠️ libata.allow_tpm NOT set"
 
-# 2. Scan for compliant devices
-echo "Scanning for compliant devices..."
-# We extract the device paths (e.g., /dev/sda) for any row with '2' in the second column
 COMPLIANT_DEVICES=$(sedutil-cli --scan | awk '$1 ~ /\/dev\// && $2 ~ /2/ {print $1}')
 
 if [ -z "$COMPLIANT_DEVICES" ]; then
-    echo "----------------------------------------------------"
-    echo "❌ FATAL ERROR: No TCG Opal 2.0 compliant devices found!"
-    echo "Check hardware or kernel parameters (libata.allow_tpm=1)."
-    echo "----------------------------------------------------"
-    
-    # 30-second countdown for the user to read the screen
-    COUNTDOWN=30
-    while [ $COUNTDOWN -gt 0 ]; do
-        printf "\r🔄 No disks found. Rebooting in %2d seconds... (Press Ctrl+C to stop)" $COUNTDOWN
+    echo "❌ No OPAL drives found"
+
+    COUNT=30
+    while [ $COUNT -gt 0 ]; do
+        printf "\rRebooting in %ds..." $COUNT
         sleep 1
-        COUNTDOWN=$((COUNTDOWN - 1))
+        COUNT=$((COUNT-1))
     done
-    
-    echo -e "\nRebooting now..."
+
     reboot -f
-else
-    for dev in $COMPLIANT_DEVICES; do
-        echo "   -> Found Device: $dev"
-        
-        # 3. Query the drive status
-        # We look for LockingEnabled and Locked status
-        QUERY=$(sedutil-cli --query "$dev" 2>/dev/null)
-        
-        if echo "$QUERY" | grep -iq "LockingEnabled = Y"; then
-            echo "      [!] Status: Managed & Locking Enabled"
-            if echo "$QUERY" | grep -iq "Locked = Y"; then
-                echo "      [!] State:  LOCKED (Authentication Required)"
-            else
-                echo "      [✓] State:  UNLOCKED"
-            fi
-        else
-            echo "      [i] Status: Unmanaged or Locking Disabled"
-        fi
-    done
 fi
 
+for dev in $COMPLIANT_DEVICES; do
+    echo " -> $dev"
+done
+
 echo "----------------------------------------------------"
 
+# ----------------------------------------------------
+# START SERVICE
+# ----------------------------------------------------
 cd /usr/local/sbin/sedunlocksrv/
-./sedunlocksrv
 
-# Reset terminal to normal mode
-stty sane
+echo "🚀 Starting sedunlocksrv..."
+exec ./sedunlocksrv
 
-# Boot OS when sedunlocksrv exits
-echo "----------------------------------------------------"
-echo "🔄 Preparing kexec jump to Proxmox"
-echo "----------------------------------------------------"
+# ----------------------------------------------------
+# FALLBACK (only if exec fails)
+# ----------------------------------------------------
+echo "❌ sedunlocksrv exited unexpectedly"
+
+sleep 5
+reboot -f
