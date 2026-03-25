@@ -186,3 +186,72 @@ func TestParseKernelCmdlineFile(t *testing.T) {
 		t.Fatalf("cmdline = %q, want %q", got, want)
 	}
 }
+
+func TestSplitBootPrefersCatalogOverWeakFallback(t *testing.T) {
+	efiMount := t.TempDir()
+	rootMount := t.TempDir()
+
+	grubCfg := filepath.Join(efiMount, "EFI", "proxmox", "grub.cfg")
+	kernel := filepath.Join(rootMount, "boot", "vmlinuz-6.17.4-2-pve")
+	initrd := filepath.Join(rootMount, "boot", "initrd.img-6.17.4-2-pve")
+	grubDefaults := filepath.Join(rootMount, "etc", "default", "grub")
+
+	for _, path := range []string{grubCfg, kernel, initrd, grubDefaults} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", path, err)
+		}
+	}
+
+	cfg := "menuentry 'Proxmox VE GNU/Linux' {\n" +
+		"    linux /boot/vmlinuz-6.17.4-2-pve root=/dev/mapper/pve-root ro quiet iommu=pt\n" +
+		"    initrd /boot/initrd.img-6.17.4-2-pve\n" +
+		"}\n"
+	if err := os.WriteFile(grubCfg, []byte(cfg), 0o644); err != nil {
+		t.Fatalf("WriteFile(grubCfg): %v", err)
+	}
+	if err := os.WriteFile(kernel, []byte("kernel"), 0o644); err != nil {
+		t.Fatalf("WriteFile(kernel): %v", err)
+	}
+	if err := os.WriteFile(initrd, []byte("initrd"), 0o644); err != nil {
+		t.Fatalf("WriteFile(initrd): %v", err)
+	}
+	if err := os.WriteFile(grubDefaults, []byte("GRUB_CMDLINE_LINUX_DEFAULT='quiet'\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(grubDefaults): %v", err)
+	}
+
+	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(rootMount)
+	if !ok {
+		t.Fatal("findBootArtifacts() did not find root boot artifacts")
+	}
+	if gotKernel != kernel || gotInitrd != initrd {
+		t.Fatalf("artifacts = (%q, %q), want (%q, %q)", gotKernel, gotInitrd, kernel, initrd)
+	}
+	if gotCmdline != "quiet" {
+		t.Fatalf("weak fallback cmdline = %q, want %q", gotCmdline, "quiet")
+	}
+
+	entries := collectBootCatalog(efiMount)
+	matchedCmdline, _, ok := matchBootEntryCmdline(entries, gotKernel, gotInitrd)
+	if !ok {
+		t.Fatal("matchBootEntryCmdline() did not find a matching EFI catalog entry")
+	}
+	want := "root=/dev/mapper/pve-root ro quiet iommu=pt"
+	if matchedCmdline != want {
+		t.Fatalf("matched cmdline = %q, want %q", matchedCmdline, want)
+	}
+}
+
+func TestLooksWeakCmdline(t *testing.T) {
+	if !looksWeakCmdline("quiet") {
+		t.Fatal("looksWeakCmdline(\"quiet\") = false, want true")
+	}
+	if !looksWeakCmdline("quiet splash iommu=pt") {
+		t.Fatal("looksWeakCmdline() treated cosmetic-only cmdline as strong")
+	}
+	if looksWeakCmdline("root=/dev/mapper/pve-root ro quiet") {
+		t.Fatal("looksWeakCmdline() treated root-based cmdline as weak")
+	}
+	if looksWeakCmdline("root=ZFS=rpool/ROOT/pve-1 boot=zfs quiet") {
+		t.Fatal("looksWeakCmdline() treated ZFS cmdline as weak")
+	}
+}

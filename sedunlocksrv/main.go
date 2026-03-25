@@ -1239,6 +1239,45 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 	return "", "", false
 }
 
+func looksWeakCmdline(cmdline string) bool {
+	fields := strings.Fields(strings.TrimSpace(cmdline))
+	if len(fields) == 0 {
+		return true
+	}
+	meaningfulPrefixes := []string{
+		"root=",
+		"rootfstype=",
+		"rootflags=",
+		"boot=",
+		"resume=",
+		"cryptdevice=",
+		"rd.luks",
+		"rd.lvm",
+		"zfs=",
+		"root=ZFS=",
+	}
+	for _, field := range fields {
+		for _, prefix := range meaningfulPrefixes {
+			if strings.HasPrefix(field, prefix) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func summarizeBootEntry(entry BootEntry) string {
+	initrds := strings.Join(entry.InitrdBases, "|")
+	if initrds == "" {
+		initrds = "-"
+	}
+	cmdline := strings.TrimSpace(entry.Cmdline)
+	if cmdline == "" {
+		cmdline = "<empty>"
+	}
+	return fmt.Sprintf("kernel=%s initrd=%s source=%s cmdline=%s", entry.KernelBase, initrds, trimMountPrefix("/mnt/proxmox", entry.Source), cmdline)
+}
+
 func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
 	if len(files) == 0 {
 		return "", "", "", false
@@ -1477,6 +1516,13 @@ func BootSystem() (*BootResult, error) {
 		if len(entries) > 0 {
 			bootCatalog = append(bootCatalog, entries...)
 			appendBootDebug(&debug, "Cataloged %d boot entries from %s", len(entries), dev)
+			for i, entry := range entries {
+				if i >= 4 {
+					appendBootDebug(&debug, "Additional boot entries on %s omitted: %d", dev, len(entries)-i)
+					break
+				}
+				appendBootDebug(&debug, "Boot entry %d on %s: %s", i+1, dev, summarizeBootEntry(entry))
+			}
 		}
 
 		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
@@ -1494,6 +1540,14 @@ func BootSystem() (*BootResult, error) {
 				unmount()
 				return nil, BootAttemptError{
 					Message: "unable to determine kernel command line for boot target",
+					Debug:   debug,
+				}
+			}
+			if looksWeakCmdline(cmdline) {
+				appendBootDebug(&debug, "Refusing to kexec with a weak kernel command line: %s", cmdline)
+				unmount()
+				return nil, BootAttemptError{
+					Message: "kernel command line looks incomplete for boot target",
 					Debug:   debug,
 				}
 			}
