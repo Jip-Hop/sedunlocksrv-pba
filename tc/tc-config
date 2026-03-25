@@ -213,10 +213,23 @@ configure_individual_ifaces() {
 }
 
 create_bond() {
-    local bond_ifaces="$1" bond_mode="$2" iface
+    local bond_ifaces="$1" bond_mode="$2" iface bonding_module_path
 
-    if ! modprobe bonding >/dev/null 2>&1; then
-        echo "[net] bonding module unavailable"
+    bonding_module_path="$(find /lib/modules -type f -name 'bonding.ko*' | head -n1)"
+    if [ -n "${bonding_module_path}" ]; then
+        echo "[net] bonding module file: ${bonding_module_path}"
+    else
+        echo "[net] bonding module file not found under /lib/modules"
+    fi
+
+    if ! have_command modprobe && [ ! -x /sbin/modprobe ]; then
+        echo "[net] modprobe command not available"
+        return 1
+    fi
+
+    if ! /sbin/modprobe bonding >/dev/null 2>&1; then
+        echo "[net] bonding module unavailable or failed to load"
+        dmesg 2>/dev/null | grep -Ei 'bonding|module|unknown symbol|invalid module|disagrees about version' | tail -n10 | sed 's/^/[net] dmesg: /'
         return 1
     fi
 
