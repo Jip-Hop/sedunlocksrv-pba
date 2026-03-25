@@ -402,6 +402,23 @@ cachetcfile() {
     }
 }
 
+expand_tcz_name() {
+    local name="$1"
+    if [ -n "${TC_KERNEL_VERSION}" ]; then
+        name="${name//KERNEL/${TC_KERNEL_VERSION}}"
+    fi
+    printf '%s\n' "${name}"
+}
+
+normalize_dep_list() {
+    local ext normalized=""
+    for ext in "$@"; do
+        [ -n "${ext}" ] || continue
+        normalized="$(printf '%s\n%s\n' "${normalized}" "$(expand_tcz_name "${ext}")")"
+    done
+    printf '%s\n' "${normalized}" | sed '/^$/d' | sort -u
+}
+
 cleanup_mount_dir() {
     local mount_dir="$1"
     umount "${mount_dir}" 2>/dev/null || true
@@ -636,6 +653,7 @@ install_tcz_extensions() {
 
         deps=""
         for ext in ${EXTENSIONS}; do
+            ext="$(expand_tcz_name "${ext}")"
             # Skip extensions already installed.
             case " ${visited} " in
                 *" ${ext} "*) continue ;;
@@ -648,7 +666,7 @@ install_tcz_extensions() {
             mount -o loop "${CACHEDIR}/tcz/${ext}" "${mount_dir}"
             cp -r "${mount_dir}/"* "${BUILD_TMPDIR}/core/"
             cleanup_mount_dir "${mount_dir}"
-            deps=$(echo "${deps}" | cat - "${CACHEDIR}/dep/${ext}.dep" | sort -u)
+            deps="$(normalize_dep_list ${deps} $(cat "${CACHEDIR}/dep/${ext}.dep"))"
         done
         EXTENSIONS="${deps}"
     done
