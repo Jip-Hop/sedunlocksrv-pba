@@ -564,6 +564,7 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 		success := err1 == nil && err2 == nil
 		if success {
 			successAny = true
+			rescanBlockDeviceLayout(d.Device)
 		}
 		results = append(results, UnlockResult{Device: d.Device, Success: success})
 	}
@@ -706,6 +707,74 @@ func listDevicePartitions(device string) ([]string, error) {
 
 	sort.Strings(partitions)
 	return partitions, nil
+}
+
+func listDeviceNodes(device string) ([]string, error) {
+	base := filepath.Base(device)
+	nodes := []string{"/dev/" + base}
+
+	allEntries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{"/dev/" + base: {}}
+	for _, entry := range allEntries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, base+"n") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+			continue
+		}
+		dev := "/dev/" + name
+		if _, ok := seen[dev]; ok {
+			continue
+		}
+		seen[dev] = struct{}{}
+		nodes = append(nodes, dev)
+	}
+
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func rescanBlockDeviceLayout(device string) {
+	nodes, err := listDeviceNodes(device)
+	if err != nil {
+		return
+	}
+
+	for _, node := range nodes {
+		if haveRuntimeCommand("blockdev") {
+			_ = exec.Command("blockdev", "--rereadpt", node).Run()
+		}
+		if haveRuntimeCommand("partprobe") {
+			_ = exec.Command("partprobe", node).Run()
+		}
+		if haveRuntimeCommand("partx") {
+			_ = exec.Command("partx", "-u", node).Run()
+		}
+	}
+
+	if haveRuntimeCommand("udevadm") {
+		_ = exec.Command("udevadm", "settle").Run()
+	}
+
+	time.Sleep(300 * time.Millisecond)
+}
+
+func availableRescanTools() []string {
+	tools := make([]string, 0, 4)
+	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
+		if haveRuntimeCommand(name) {
+			tools = append(tools, name)
+		}
+	}
+	return tools
 }
 
 func haveRuntimeCommand(name string) bool {
@@ -1088,6 +1157,17 @@ func BootSystem() (*BootResult, error) {
 
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
+
+	tools := availableRescanTools()
+	if len(tools) == 0 {
+		appendBootDebug(&debug, "Partition rescan tools available: none")
+	} else {
+		appendBootDebug(&debug, "Partition rescan tools available: %s", strings.Join(tools, ", "))
+	}
+	appendBootDebug(&debug, "Refreshing partition tables for boot candidates.")
+	for _, bootDrive := range bootCandidates {
+		rescanBlockDeviceLayout(bootDrive)
+	}
 
 	searchDevices, err := buildBootSearchDevices(bootCandidates)
 	if err != nil {
