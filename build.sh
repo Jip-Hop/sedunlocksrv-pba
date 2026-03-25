@@ -465,7 +465,7 @@ fetch_sedutil_cli() {
 # Kernel + initrd from ISO
 # -----------------------------------------------------------------------------
 stage_kernel_and_initrd() {
-    local kernel_path core_path
+    local kernel_path core_path core_path_abs
     kernel_path=$(find "${CACHEDIR}/iso-extracted" -type f -name "vmlinuz64" | head -n1 || true)
     if [ -z "${kernel_path}" ] || [ ! -f "${kernel_path}" ]; then
         echo "❌ vmlinuz64 not found in ISO extract"; exit 1
@@ -477,8 +477,9 @@ stage_kernel_and_initrd() {
     if [ -z "${core_path}" ] || [ ! -f "${core_path}" ]; then
         echo "❌ corepure64.gz not found in ISO extract"; exit 1
     fi
+    core_path_abs="$(cd "$(dirname "${core_path}")" && pwd)/$(basename "${core_path}")"
     echo "✅ Initrd: ${core_path}"
-    if ! (cd "${BUILD_TMPDIR}/core" && zcat "${core_path}" | cpio -id -H newc); then
+    if ! (cd "${BUILD_TMPDIR}/core" && zcat "${core_path_abs}" | cpio -id -H newc); then
         echo "❌ Failed to extract initrd from: ${core_path}" >&2
         exit 1
     fi
