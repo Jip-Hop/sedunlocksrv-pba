@@ -406,6 +406,23 @@ func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func anyUnlockedDrive() bool {
+	for _, d := range scanDrives() {
+		if !d.Locked {
+			return true
+		}
+	}
+	return false
+}
+
+func requireSessionTokenOrUnlockedDrive(w http.ResponseWriter, r *http.Request) bool {
+	if validSessionToken(r.Header.Get("X-Auth-Token")) || anyUnlockedDrive() {
+		return false
+	}
+	jsonResponse(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
+	return true
+}
+
 func validExpertToken(token string) bool {
 	if token == "" {
 		return false
@@ -611,6 +628,217 @@ func listDevicePartitions(device string) ([]string, error) {
 	return partitions, nil
 }
 
+func resolveBootPath(mountPoint, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	ref = strings.Trim(ref, `"'`)
+	ref = strings.TrimPrefix(ref, "(")
+	if idx := strings.Index(ref, ")"); idx >= 0 {
+		ref = ref[idx+1:]
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if !strings.HasPrefix(ref, "/") {
+		ref = "/" + ref
+	}
+	path := filepath.Clean(filepath.Join(mountPoint, filepath.FromSlash(ref)))
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func splitKernelLine(line string) (string, string, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 {
+		return "", "", false
+	}
+	if len(fields) == 2 {
+		return fields[1], "", true
+	}
+	return fields[1], strings.Join(fields[2:], " "), true
+}
+
+func splitInitrdLine(line string) []string {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 {
+		return nil
+	}
+	return fields[1:]
+}
+
+func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
+	files, err := filepath.Glob(filepath.Join(mountPoint, "loader", "entries", "*.conf"))
+	if err != nil || len(files) == 0 {
+		return "", "", "", false
+	}
+	sort.Strings(files)
+	for i := len(files) - 1; i >= 0; i-- {
+		data, err := os.ReadFile(files[i])
+		if err != nil {
+			continue
+		}
+		var kernelPath, cmdline string
+		var initrdRefs []string
+		for _, line := range strings.Split(string(data), "\n") {
+			t := strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(t, "linux "):
+				kernelRef, options, ok := splitKernelLine(t)
+				if !ok {
+					continue
+				}
+				kernelPath = resolveBootPath(mountPoint, kernelRef)
+				cmdline = options
+			case strings.HasPrefix(t, "initrd "):
+				initrdRefs = append(initrdRefs, splitInitrdLine(t)...)
+			case strings.HasPrefix(t, "options "):
+				cmdline = strings.TrimSpace(strings.TrimPrefix(t, "options "))
+			}
+		}
+		if kernelPath == "" {
+			continue
+		}
+		for _, initrdRef := range initrdRefs {
+			if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
+				return kernelPath, initrdPath, cmdline, true
+			}
+		}
+	}
+	return "", "", "", false
+}
+
+func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
+	data, err := os.ReadFile(grubPath)
+	if err != nil {
+		return "", "", "", false
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for i := 0; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
+			continue
+		}
+		kernelRef, cmdline, ok := splitKernelLine(t)
+		if !ok {
+			continue
+		}
+		kernelPath := resolveBootPath(mountPoint, kernelRef)
+		if kernelPath == "" {
+			continue
+		}
+
+		for j := i + 1; j < len(lines); j++ {
+			next := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(next, "linux ") || strings.HasPrefix(next, "linuxefi ") || strings.HasPrefix(next, "menuentry ") {
+				break
+			}
+			if strings.HasPrefix(next, "initrd ") || strings.HasPrefix(next, "initrdefi ") {
+				for _, initrdRef := range splitInitrdLine(next) {
+					if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
+						return kernelPath, initrdPath, cmdline, true
+					}
+				}
+			}
+		}
+	}
+
+	return "", "", "", false
+}
+
+func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
+	initrdBySuffix := make(map[string]string, len(initrds))
+	for _, initrd := range initrds {
+		base := filepath.Base(initrd)
+		switch {
+		case strings.HasPrefix(base, "initrd.img-"):
+			initrdBySuffix[strings.TrimPrefix(base, "initrd.img-")] = initrd
+		case strings.HasPrefix(base, "initramfs-"):
+			suffix := strings.TrimPrefix(base, "initramfs-")
+			suffix = strings.TrimSuffix(suffix, ".img")
+			suffix = strings.TrimSuffix(suffix, ".gz")
+			suffix = strings.TrimSuffix(suffix, ".xz")
+			initrdBySuffix[suffix] = initrd
+		}
+	}
+
+	sort.Strings(kernels)
+	for i := len(kernels) - 1; i >= 0; i-- {
+		kernel := kernels[i]
+		base := filepath.Base(kernel)
+		var suffix string
+		switch {
+		case strings.HasPrefix(base, "vmlinuz-"):
+			suffix = strings.TrimPrefix(base, "vmlinuz-")
+		case strings.HasPrefix(base, "linux-"):
+			suffix = strings.TrimPrefix(base, "linux-")
+		default:
+			continue
+		}
+		if initrd, ok := initrdBySuffix[suffix]; ok {
+			return kernel, initrd, true
+		}
+	}
+	return "", "", false
+}
+
+func findBootArtifacts(mountPoint string) (string, string, string, bool) {
+	if kernel, initrd, cmdline, ok := findBootFromLoaderEntries(mountPoint); ok {
+		return kernel, initrd, cmdline, true
+	}
+	grubConfigs := []string{
+		filepath.Join(mountPoint, "boot", "grub", "grub.cfg"),
+		filepath.Join(mountPoint, "grub", "grub.cfg"),
+		filepath.Join(mountPoint, "EFI", "BOOT", "grub.cfg"),
+	}
+	for _, grubPath := range grubConfigs {
+		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
+			return kernel, initrd, cmdline, true
+		}
+	}
+
+	kernelPatterns := []string{
+		filepath.Join(mountPoint, "boot", "vmlinuz-*"),
+		filepath.Join(mountPoint, "boot", "linux-*"),
+		filepath.Join(mountPoint, "vmlinuz-*"),
+		filepath.Join(mountPoint, "EFI", "*", "*", "vmlinuz-*"),
+		filepath.Join(mountPoint, "EFI", "*", "*", "linux-*"),
+	}
+	initrdPatterns := []string{
+		filepath.Join(mountPoint, "boot", "initrd.img-*"),
+		filepath.Join(mountPoint, "boot", "initramfs-*"),
+		filepath.Join(mountPoint, "initrd.img-*"),
+		filepath.Join(mountPoint, "initramfs-*"),
+		filepath.Join(mountPoint, "EFI", "*", "*", "initrd.img-*"),
+		filepath.Join(mountPoint, "EFI", "*", "*", "initramfs-*"),
+	}
+
+	var kernels []string
+	var initrds []string
+	for _, pattern := range kernelPatterns {
+		matches, _ := filepath.Glob(pattern)
+		kernels = append(kernels, matches...)
+	}
+	for _, pattern := range initrdPatterns {
+		matches, _ := filepath.Glob(pattern)
+		initrds = append(initrds, matches...)
+	}
+
+	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
+		cmdline, err := findBootCmdline(mountPoint, kernel)
+		if err == nil {
+			return kernel, initrd, cmdline, true
+		}
+		return kernel, initrd, "", true
+	}
+	return "", "", "", false
+}
+
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
 func BootSystem() (*BootResult, error) {
@@ -653,18 +881,7 @@ func BootSystem() (*BootResult, error) {
 		}
 		unmount := func() { exec.Command("umount", mountPoint).Run() }
 
-		kernels, _ := filepath.Glob(mountPoint + "/boot/vmlinuz-*-pve")
-		initrds, _ := filepath.Glob(mountPoint + "/boot/initrd.img-*-pve")
-
-		if len(kernels) > 0 && len(initrds) > 0 {
-			kernel := kernels[len(kernels)-1]
-			initrd := initrds[len(initrds)-1]
-
-			cmdline, err := findBootCmdline(mountPoint, kernel)
-			if err != nil {
-				unmount()
-				return nil, err
-			}
+		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
 			unmount()
 
 			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
@@ -710,6 +927,7 @@ func extractLinuxCmdline(line string) (string, bool) {
 // rather than three separate named functions, halving the boilerplate. (Size #2)
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
+	efiGrubConfigs, _ := filepath.Glob(filepath.Join(mountPoint, "EFI", "*", "*", "grub.cfg"))
 
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
@@ -749,6 +967,12 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			// GRUB config at /grub/grub.cfg (some EFI layouts)
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
 		},
+	}
+	for _, grubPath := range efiGrubConfigs {
+		path := grubPath
+		candidates = append(candidates, func() (string, bool, error) {
+			return parseGrubCfg(path, kernelBase)
+		})
 	}
 
 	for _, try := range candidates {
@@ -1255,7 +1479,7 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
-		if requireSessionToken(w, r) {
+		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
 		res, err := BootSystem()
