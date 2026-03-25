@@ -1,10 +1,29 @@
 <!DOCTYPE html>
+<!--
+    index.html — SED Unlock Web UI
+    
+    This page is served by the Go server (sedunlocksrv) at GET /
+    over HTTPS on port 443. Port 80 redirects here automatically.
+    
+    It communicates with the server's JSON API using fetch(). The same
+    API is used by the SSH script (ssh_sed_unlock.sh), so all three
+    interfaces (web, SSH, console TUI) share the same lock state and
+    rate limiting.
+    
+    The page has two tabs:
+      Unlock         — enter password, unlock drives, boot/reboot/shutdown
+      Change Password — change the drive password with policy enforcement
+    
+    Drive status is polled every 5 seconds and reflected live in the UI.
+    The Boot button is shown only when at least one drive is unlocked.
+-->
 <html>
 <head>
 <meta charset="utf-8">
 <title>SED Unlock</title>
 
 <style>
+/* Dark terminal aesthetic — matches the console TUI and SSH interface. */
 body {
     background:#111;
     color:#eee;
@@ -16,6 +35,7 @@ body {
 
 h2 { text-align:center; }
 
+/* Generic bordered container used for grouping related controls. */
 .box {
     border:1px solid #444;
     padding:10px;
@@ -32,11 +52,13 @@ button {
 
 button:hover { background:#333; }
 
+/* Used to hide the Change Password tab and the Boot button when not needed. */
 .hidden { display:none; }
 
-.ok { color:#4ade80; }
-.bad { color:#f87171; }
-.warn { color:#facc15; }
+/* Status indicator colors — mirror the ✅/❌/⚠ icons in the console TUI. */
+.ok   { color:#4ade80; } /* green  — unlocked OPAL drive */
+.bad  { color:#f87171; } /* red    — locked OPAL drive */
+.warn { color:#facc15; } /* yellow — non-OPAL drive */
 
 input {
     width:100%;
@@ -47,20 +69,23 @@ input {
     border:1px solid #555;
 }
 
+/* Tab strip at the top of the page. */
 .tab {
     display:flex;
     margin-bottom:10px;
 }
-
 .tab button {
     flex:1;
     margin:0;
 }
 
+/* Highlight the currently active tab button. */
 .active { background:#333; }
 
+/* Used for the password policy display and show-password checkbox labels. */
 .small { font-size:11px; color:#aaa; }
 
+/* Inline checkbox label row (e.g. "Show Password"). */
 .checkbox-row {
     display:flex;
     align-items:center;
@@ -73,7 +98,7 @@ input {
     margin-right:6px;
 }
 
-/* Button rows */
+/* Side-by-side button layout (Unlock/Boot, Reboot/Shutdown). */
 .row {
     display:flex;
     gap:5px;
@@ -88,32 +113,51 @@ input {
 
 <h2>🔑 SED Unlock</h2>
 
+<!-- Tab strip: switches between the Unlock and Change Password views. -->
 <div class="tab">
     <button id="tabUnlock" class="active">Unlock</button>
     <button id="tabChange">Change Password</button>
 </div>
 
-<!-- STATUS -->
+<!-- STATUS BOX
+     Populated by refresh() via GET /status every 5 seconds.
+     Shows one line per drive with lock state and OPAL support indicator.
+     The Boot button (below) is shown/hidden based on this data. -->
 <div class="box">
     <div id="status"></div>
 </div>
 
-<!-- UNLOCK TAB -->
+<!-- ============================================================
+     UNLOCK TAB (default visible tab)
+     ============================================================ -->
 <div id="unlockTab">
 
     <div class="box">
+        <!-- Password input for the unlock operation.
+             Cleared after each unlock attempt regardless of success. -->
         <input id="pw" type="password" placeholder="Disk Password">
 
+        <!-- Show/hide password toggle. Switches the input between
+             type="password" (masked) and type="text" (visible). -->
         <label class="checkbox-row">
             <input type="checkbox" id="showUnlock"> Show Password
         </label>
 
         <div class="row">
+            <!-- Unlock: POSTs to /unlock with the password.
+                 The Go server runs sedutil-cli against all locked drives. -->
             <button onclick="unlock()">Unlock</button>
+
+            <!-- Boot: only visible when at least one drive reports unlocked.
+                 Shown/hidden by refresh() based on GET /status response.
+                 POSTs to /boot which triggers kexec into the Proxmox kernel. -->
             <button id="bootBtn" class="hidden" onclick="boot()">Boot</button>
         </div>
     </div>
 
+    <!-- Reboot and Shutdown are outside the password box since they don't
+         require a password — just direct POST requests to /reboot and /poweroff.
+         Note: Reboot does a cold reboot (re-locks drives), unlike Boot (kexec). -->
     <div class="row">
         <button onclick="reboot()">Reboot</button>
         <button onclick="shutdown()">Shutdown</button>
@@ -121,36 +165,54 @@ input {
 
 </div>
 
-<!-- CHANGE PASSWORD TAB -->
+<!-- ============================================================
+     CHANGE PASSWORD TAB (hidden by default)
+     ============================================================ -->
 <div id="changeTab" class="hidden">
 
     <div class="box">
-        <input id="cur" type="password" placeholder="Current Password">
-        <input id="new" type="password" placeholder="New Password">
+        <input id="cur"  type="password" placeholder="Current Password">
+        <input id="new"  type="password" placeholder="New Password">
         <input id="conf" type="password" placeholder="Confirm Password">
 
+        <!-- Show/hide toggle for all three password fields simultaneously. -->
         <label class="checkbox-row">
             <input type="checkbox" id="showChange"> Show Passwords
         </label>
 
+        <!-- Populated by loadPolicy() via GET /password-policy at page load.
+             Displays the active complexity requirements so the user knows
+             what the new password must satisfy before submitting. -->
         <div id="policy" class="small"></div>
 
+        <!-- Submits to /change-password. The Go server validates the new
+             password against the policy before calling sedutil-cli. -->
         <button onclick="changePw()">Update Password</button>
     </div>
 
 </div>
 
 <script>
+// Shorthand for document.getElementById — used throughout.
 const $ = id => document.getElementById(id)
 
+// Cached policy object from GET /password-policy.
+// Displayed in the Change Password tab and used for any client-side hints.
 let policy = {}
 
-// -------- PASSWORD POLICY --------
+// ======================================================
+// PASSWORD POLICY
+// Fetched once at page load. The server enforces this policy server-side;
+// this display is informational only — the real validation is in main.go's
+// validatePassword().
+// ======================================================
 
 async function loadPolicy(){
     let r = await fetch("/password-policy")
     policy = await r.json()
 
+    // Display a compact summary of the active requirements under the
+    // password inputs in the Change Password tab.
     $("policy").innerText =
         "Min " + policy.minLength +
         " | Upper:" + policy.requireUpper +
@@ -159,21 +221,28 @@ async function loadPolicy(){
         " Special:" + policy.requireSpecial
 }
 
-// -------- STATUS --------
+// ======================================================
+// STATUS POLLING
+// Called on load and then every 5 seconds via setInterval.
+// Reflects the current state of all drives in the status box and
+// controls the visibility of the Boot button.
+// ======================================================
 
 async function refresh(){
     let r = await fetch("/status")
     let j = await r.json()
 
     let html = ""
-    let unlocked = false
+    let unlocked = false  // becomes true if any drive is unlocked
 
     j.drives.forEach(d => {
-        let icon = d.locked ? "❌" : "✅"
+        let icon  = d.locked ? "❌" : "✅"
         let state = d.locked ? "LOCKED" : "UNLOCKED"
 
+        // Non-OPAL drives can't be unlocked by this tool — flag them with
+        // a warning color and a different icon.
         let opalLabel = d.opal ? "🔐 OPAL" : "⚠ NON-OPAL"
-        let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
+        let color     = d.opal ? (d.locked ? "bad" : "ok") : "warn"
 
         if (!d.locked) unlocked = true
 
@@ -184,33 +253,48 @@ async function refresh(){
 
     $("status").innerHTML = html
 
+    // Show the Boot button only when at least one drive is unlocked.
+    // Mirroring the console TUI's B option, which also only makes sense
+    // once there's something to boot from.
     $("bootBtn").classList.toggle("hidden", !unlocked)
 }
 
-// -------- ACTIONS --------
+// ======================================================
+// ACTIONS — all POST requests to the Go server's API
+// ======================================================
 
 async function unlock(){
     let pw = $("pw").value
 
+    // POST /unlock — the Go server will:
+    //   1. reject blank passwords immediately
+    //   2. check the rate limit (powers off after maxAttempts failures)
+    //   3. run sedutil-cli against all locked drives
     await fetch("/unlock", {
         method:"POST",
         body: JSON.stringify({password:pw})
     })
 
+    // Clear the password field after every attempt, success or failure,
+    // so it isn't accidentally re-submitted or left visible.
     $("pw").value=""
-    refresh()
+    refresh()  // update drive status immediately after the attempt
 }
 
 async function changePw(){
     let cur = $("cur").value
-    let nw = $("new").value
-    let cf = $("conf").value
+    let nw  = $("new").value
+    let cf  = $("conf").value
 
+    // Client-side confirmation check — the server does not receive "conf",
+    // so mismatches must be caught here before the request is sent.
     if(nw !== cf){
         alert("Password mismatch")
         return
     }
 
+    // POST /change-password — the Go server validates the new password
+    // against the policy (validatePassword) before calling sedutil-cli.
     let r = await fetch("/change-password", {
         method:"POST",
         body: JSON.stringify({
@@ -221,15 +305,29 @@ async function changePw(){
 
     let j = await r.json()
 
+    // The server returns {"error":"..."} for policy violations (HTTP 400)
+    // or {"results":[...]} on success. Display a simple alert in both cases.
     if(j.error) alert(j.error)
     else alert("Password updated")
 }
 
+// POST /boot — triggers kexec into the Proxmox kernel.
+// The Go server responds before kexec fires (500ms delay), so the fetch
+// completes. The page becomes unreachable once kexec succeeds.
 function boot(){ fetch("/boot",{method:"POST"}) }
+
+// POST /reboot — cold reboot. Re-locks drives; PBA will start again.
 function reboot(){ fetch("/reboot",{method:"POST"}) }
+
+// POST /poweroff — shuts the system down completely.
 function shutdown(){ fetch("/poweroff",{method:"POST"}) }
 
-// -------- TABS --------
+// ======================================================
+// TABS
+// Switches between the Unlock and Change Password views by toggling
+// the .hidden class on the tab content divs and the .active class
+// on the tab buttons.
+// ======================================================
 
 $("tabUnlock").onclick = () => {
     $("unlockTab").classList.remove("hidden")
@@ -245,23 +343,32 @@ $("tabChange").onclick = () => {
     $("tabUnlock").classList.remove("active")
 }
 
-// -------- SHOW PASSWORD --------
+// ======================================================
+// SHOW PASSWORD TOGGLES
+// Each toggle controls a separate set of inputs to avoid accidentally
+// revealing passwords in the wrong tab.
+// ======================================================
 
+// Unlock tab: toggles only the single password input.
 $("showUnlock").onchange = e => {
     $("pw").type = e.target.checked ? "text" : "password"
 }
 
+// Change Password tab: toggles all three password inputs simultaneously.
 $("showChange").onchange = e => {
     ["cur","new","conf"].forEach(id=>{
         $(id).type = e.target.checked ? "text" : "password"
     })
 }
 
-// -------- INIT --------
+// ======================================================
+// INITIALIZATION
+// Runs once when the page loads.
+// ======================================================
 
-loadPolicy()
-refresh()
-setInterval(refresh,5000)
+loadPolicy()           // fetch and display password complexity requirements
+refresh()              // fetch and display initial drive state
+setInterval(refresh, 5000)  // keep drive state current with a 5-second poll
 
 </script>
 
