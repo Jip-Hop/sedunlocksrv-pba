@@ -1489,6 +1489,14 @@ func BootSystem() (*BootResult, error) {
 			appendBootDebug(&debug, "Found kernel: %s", kernel)
 			appendBootDebug(&debug, "Found initrd: %s", initrd)
 			appendBootDebug(&debug, "Found cmdline: %s", cmdline)
+			if strings.TrimSpace(cmdline) == "" {
+				appendBootDebug(&debug, "Refusing to kexec with an empty kernel command line.")
+				unmount()
+				return nil, BootAttemptError{
+					Message: "unable to determine kernel command line for boot target",
+					Debug:   debug,
+				}
+			}
 
 			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
 				appendBootDebug(&debug, "kexec -l failed: %s", err)
@@ -1534,6 +1542,68 @@ func extractLinuxCmdline(line string) (string, bool) {
 	return strings.Join(fields[2:], " "), true
 }
 
+func parseQuotedShellValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if unquoted, err := strconv.Unquote(raw); err == nil {
+		return unquoted
+	}
+	if len(raw) >= 2 && raw[0] == '\'' && raw[len(raw)-1] == '\'' {
+		return raw[1 : len(raw)-1]
+	}
+	return raw
+}
+
+func parseDefaultGrubCmdline(mountPoint string) (string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(mountPoint, "etc", "default", "grub"))
+	if err != nil {
+		return "", false, err
+	}
+
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(t, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key != "GRUB_CMDLINE_LINUX" && key != "GRUB_CMDLINE_LINUX_DEFAULT" {
+			continue
+		}
+		values[key] = strings.TrimSpace(parseQuotedShellValue(value))
+	}
+
+	parts := make([]string, 0, 2)
+	if v := values["GRUB_CMDLINE_LINUX"]; v != "" {
+		parts = append(parts, v)
+	}
+	if v := values["GRUB_CMDLINE_LINUX_DEFAULT"]; v != "" {
+		parts = append(parts, v)
+	}
+	if len(parts) == 0 {
+		return "", false, fmt.Errorf("kernel command line not found in /etc/default/grub")
+	}
+	return strings.Join(parts, " "), true, nil
+}
+
+func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(mountPoint, "etc", "kernel", "cmdline"))
+	if err != nil {
+		return "", false, err
+	}
+	cmdline := strings.TrimSpace(string(data))
+	if cmdline == "" {
+		return "", false, fmt.Errorf("kernel command line not found in /etc/kernel/cmdline")
+	}
+	return cmdline, true, nil
+}
+
 // findBootCmdline tries loader entries then grub configs in priority order.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
@@ -1573,6 +1643,12 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 		},
 		func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
+		},
+		func() (string, bool, error) {
+			return parseKernelCmdlineFile(mountPoint)
+		},
+		func() (string, bool, error) {
+			return parseDefaultGrubCmdline(mountPoint)
 		},
 	}
 	for _, grubPath := range grubConfigs {

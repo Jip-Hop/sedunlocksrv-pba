@@ -119,3 +119,70 @@ func TestMatchBootEntryCmdlineSplitEfiAndRoot(t *testing.T) {
 		t.Fatalf("cmdline = %q, want %q", cmdline, want)
 	}
 }
+
+func TestMatchBootEntryCmdlineRequiresMatchingKernel(t *testing.T) {
+	entries := []BootEntry{
+		makeBootEntry(
+			"/boot/vmlinuz-6.17.3-1-pve",
+			[]string{"/boot/initrd.img-6.17.3-1-pve"},
+			"root=/dev/mapper/pve-root ro",
+			"test",
+		),
+	}
+
+	if _, ok := matchBootEntryCmdline(entries, "/boot/vmlinuz-6.17.4-2-pve", "/boot/initrd.img-6.17.4-2-pve"); ok {
+		t.Fatal("matchBootEntryCmdline() matched a cmdline for the wrong kernel version")
+	}
+}
+
+func TestParseDefaultGrubCmdline(t *testing.T) {
+	mountPoint := t.TempDir()
+	grubDefaults := filepath.Join(mountPoint, "etc", "default", "grub")
+	if err := os.MkdirAll(filepath.Dir(grubDefaults), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", grubDefaults, err)
+	}
+
+	content := "" +
+		"GRUB_DEFAULT=0\n" +
+		"GRUB_CMDLINE_LINUX=\"root=/dev/mapper/pve-root ro\"\n" +
+		"GRUB_CMDLINE_LINUX_DEFAULT='quiet iommu=pt'\n"
+	if err := os.WriteFile(grubDefaults, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", grubDefaults, err)
+	}
+
+	got, ok, err := parseDefaultGrubCmdline(mountPoint)
+	if err != nil {
+		t.Fatalf("parseDefaultGrubCmdline() error: %v", err)
+	}
+	if !ok {
+		t.Fatal("parseDefaultGrubCmdline() did not find a cmdline")
+	}
+	want := "root=/dev/mapper/pve-root ro quiet iommu=pt"
+	if got != want {
+		t.Fatalf("cmdline = %q, want %q", got, want)
+	}
+}
+
+func TestParseKernelCmdlineFile(t *testing.T) {
+	mountPoint := t.TempDir()
+	cmdlinePath := filepath.Join(mountPoint, "etc", "kernel", "cmdline")
+	if err := os.MkdirAll(filepath.Dir(cmdlinePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", cmdlinePath, err)
+	}
+
+	want := "root=/dev/mapper/pve-root boot=zfs quiet"
+	if err := os.WriteFile(cmdlinePath, []byte(want+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", cmdlinePath, err)
+	}
+
+	got, ok, err := parseKernelCmdlineFile(mountPoint)
+	if err != nil {
+		t.Fatalf("parseKernelCmdlineFile() error: %v", err)
+	}
+	if !ok {
+		t.Fatal("parseKernelCmdlineFile() did not find a cmdline")
+	}
+	if got != want {
+		t.Fatalf("cmdline = %q, want %q", got, want)
+	}
+}
