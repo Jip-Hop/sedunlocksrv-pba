@@ -647,8 +647,38 @@ func changePassword(current, newPw string) []PasswordChangeResult {
 // BOOT
 // ============================================================
 
-func listDevicePartitions(device string) ([]string, error) {
+func bootBlockBaseNames(device string) []string {
 	base := filepath.Base(device)
+	bases := []string{base}
+
+	// sedutil-cli reports NVMe controller nodes like /dev/nvme0, while the
+	// actual partitioned block device is usually the namespace, e.g. nvme0n1.
+	if strings.HasPrefix(base, "nvme") && !strings.Contains(base, "n1") {
+		matches, _ := filepath.Glob(filepath.Join("/sys/class/block", base+"n*"))
+		for _, match := range matches {
+			name := filepath.Base(match)
+			if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+				continue
+			}
+			bases = append(bases, name)
+		}
+	}
+
+	sort.Strings(bases)
+	uniq := make([]string, 0, len(bases))
+	seen := make(map[string]struct{}, len(bases))
+	for _, name := range bases {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		uniq = append(uniq, name)
+	}
+	return uniq
+}
+
+func listDevicePartitions(device string) ([]string, error) {
+	bases := bootBlockBaseNames(device)
 	entries, err := os.ReadDir("/sys/class/block")
 	if err != nil {
 		return nil, err
@@ -663,14 +693,21 @@ func listDevicePartitions(device string) ([]string, error) {
 
 		parent, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
 		if err == nil {
-			if strings.TrimSpace(string(parent)) == base {
-				partitions = append(partitions, "/dev/"+name)
+			parentName := strings.TrimSpace(string(parent))
+			for _, base := range bases {
+				if parentName == base {
+					partitions = append(partitions, "/dev/"+name)
+					break
+				}
 			}
 			continue
 		}
 
-		if strings.HasPrefix(name, base) {
-			partitions = append(partitions, "/dev/"+name)
+		for _, base := range bases {
+			if strings.HasPrefix(name, base) {
+				partitions = append(partitions, "/dev/"+name)
+				break
+			}
 		}
 	}
 
