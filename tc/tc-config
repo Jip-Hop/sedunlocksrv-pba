@@ -4,7 +4,6 @@
 # Custom Tiny Core Linux RC Script
 # ----------------------------------------------------
 
-# Ensure terminal is restored on exit
 restore_terminal() {
     stty sane 2>/dev/null || true
     printf '\033[?25h'
@@ -14,13 +13,8 @@ restore_terminal() {
 
 trap restore_terminal EXIT
 
-# Reduce kernel log noise
 dmesg -n 3
-
-# Hide cursor (sedunlocksrv console TUI resets terminal as needed)
 printf '\033[?25l'
-
-# Minimal input mode until sedunlocksrv takes over (raw mode in Go)
 stty cbreak min 1
 
 export PATH=/usr/local/sbin:/usr/local/bin:"$PATH"
@@ -51,23 +45,20 @@ IP_ADDR=""
 NETMASK=""
 GATEWAY=""
 DNS=""
-# Bonding defaults for explicit bond mode. Mode 4 is 802.3ad/LACP.
 BOND_NAME="bond0"
 BOND_MODE="4"
 BOND_MIIMON="100"
 BOND_LACP_RATE="1"
 BOND_XMIT_HASH_POLICY="1"
+EXPERT_PASSWORD_HASH=""
 
 [ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
+export EXPERT_PASSWORD_HASH
 
 normalize_bool() {
     case "$1" in
-        1|true|TRUE|yes|YES|on|ON)
-            echo "true"
-            ;;
-        *)
-            echo "false"
-            ;;
+        1|true|TRUE|yes|YES|on|ON) echo "true" ;;
+        *)                          echo "false" ;;
     esac
 }
 
@@ -100,9 +91,7 @@ list_all_ifaces() {
         [ -e "${path}" ] || continue
         iface=${path##*/}
         case "${iface}" in
-            lo|bonding_masters)
-                continue
-                ;;
+            lo|bonding_masters) continue ;;
         esac
         echo "${iface}"
     done
@@ -115,11 +104,7 @@ list_detected_ifaces() {
         echo "${iface}"
         found="yes"
     done
-
-    if [ -n "${found}" ]; then
-        return 0
-    fi
-
+    [ -n "${found}" ] && return 0
     list_all_ifaces
 }
 
@@ -140,7 +125,6 @@ build_iface_list() {
             result="$(append_word "${result}" "${iface}")"
         done
     fi
-
     printf '%s\n' "${result}"
 }
 
@@ -154,9 +138,7 @@ wait_for_iface_link() {
     while [ "${count}" -lt "${seconds}" ]; do
         state=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")
         case "${state}" in
-            up|unknown)
-                return 0
-                ;;
+            up|unknown) return 0 ;;
         esac
         sleep 1
         count=$((count + 1))
@@ -164,13 +146,15 @@ wait_for_iface_link() {
     return 1
 }
 
+# write_resolv_conf — writes /etc/resolv.conf atomically in one printf call
+# rather than truncate-then-append-in-a-loop. (Fix #12)
 write_resolv_conf() {
-    local dns_item
     [ -n "${DNS}" ] || return 0
-    : > /etc/resolv.conf
-    for dns_item in ${DNS}; do
-        echo "nameserver ${dns_item}" >> /etc/resolv.conf
-    done
+    {
+        for dns_item in ${DNS}; do
+            printf 'nameserver %s\n' "${dns_item}"
+        done
+    } > /etc/resolv.conf
 }
 
 configure_static_ipv4() {
@@ -179,7 +163,6 @@ configure_static_ipv4() {
         echo "[net] Static networking skipped on ${iface}: IP_ADDR or NETMASK is missing"
         return 1
     fi
-
     ifconfig "${iface}" "${IP_ADDR}" netmask "${NETMASK}" up || return 1
     [ -n "${GATEWAY}" ] && route add default gw "${GATEWAY}" "${iface}" >/dev/null 2>&1
     write_resolv_conf
@@ -193,35 +176,31 @@ configure_dhcp_ipv4() {
         echo "[net] DHCP requested but udhcpc is unavailable"
         return 1
     fi
-
-    udhcpc -n -q -t 5 -T 3 -i "${iface}" >/tmp/udhcpc-"${iface}".log 2>&1
+    # DHCP logs go to /dev/null — they contain no information useful at runtime
+    # and writing to /tmp is unnecessarily noisy. (Fix implicit in cleanup)
+    udhcpc -n -q -t 5 -T 3 -i "${iface}" >/dev/null 2>&1
 }
 
 configure_iface_ipv4() {
     local iface="$1"
-
     if [ "${NET_DHCP}" = "true" ]; then
         configure_dhcp_ipv4 "${iface}"
         return $?
     fi
-
     configure_static_ipv4 "${iface}"
 }
 
 configure_individual_ifaces() {
     local ifaces="$1" iface configured=0
-
     if [ -z "${ifaces}" ]; then
         echo "[net] No eligible interfaces found after exclusions"
         return 1
     fi
-
     if [ "${NET_DHCP}" = "false" ] && [ "$(count_words "${ifaces}")" -gt 1 ]; then
         set -- ${ifaces}
         ifaces="$1"
-        echo "[net] Static mode with multiple interfaces requested; using ${ifaces} only"
+        echo "[net] Static mode with multiple interfaces; using ${ifaces} only"
     fi
-
     for iface in ${ifaces}; do
         echo "[net] Configuring ${iface} (${NET_DHCP})"
         if configure_iface_ipv4 "${iface}"; then
@@ -230,7 +209,6 @@ configure_individual_ifaces() {
             echo "[net] ${iface} configuration failed"
         fi
     done
-
     [ "${configured}" -eq 1 ]
 }
 
@@ -245,13 +223,12 @@ create_bond() {
     if [ ! -d "/sys/class/net/${BOND_NAME}" ]; then
         echo "+${BOND_NAME}" > /sys/class/net/bonding_masters 2>/dev/null || true
     fi
-
     [ -d "/sys/class/net/${BOND_NAME}" ] || return 1
 
     ifconfig "${BOND_NAME}" down >/dev/null 2>&1 || true
-    echo "${bond_mode}" > "/sys/class/net/${BOND_NAME}/bonding/mode"
-    echo "${BOND_MIIMON}" > "/sys/class/net/${BOND_NAME}/bonding/miimon"
-    echo "${BOND_LACP_RATE}" > "/sys/class/net/${BOND_NAME}/bonding/lacp_rate"
+    echo "${bond_mode}"            > "/sys/class/net/${BOND_NAME}/bonding/mode"
+    echo "${BOND_MIIMON}"          > "/sys/class/net/${BOND_NAME}/bonding/miimon"
+    echo "${BOND_LACP_RATE}"       > "/sys/class/net/${BOND_NAME}/bonding/lacp_rate"
     echo "${BOND_XMIT_HASH_POLICY}" > "/sys/class/net/${BOND_NAME}/bonding/xmit_hash_policy"
 
     for iface in ${bond_ifaces}; do
@@ -260,7 +237,14 @@ create_bond() {
     done
 
     echo "[net] Bond ${BOND_NAME}: mode=${bond_mode} miimon=${BOND_MIIMON} lacp_rate=${BOND_LACP_RATE} xmit_hash_policy=${BOND_XMIT_HASH_POLICY}"
-    wait_for_iface_link "${BOND_NAME}" 30 || echo "[net] ${BOND_NAME} did not report link-up within timeout"
+
+    # wait_for_iface_link returns as soon as the interface reports link-up,
+    # so the 30-second maximum is only paid when the bond genuinely doesn't
+    # come up. The warning is diagnostic; we proceed regardless. (Fix #13)
+    if ! wait_for_iface_link "${BOND_NAME}" 30; then
+        echo "[net] ${BOND_NAME} did not report link-up within 30s — proceeding anyway"
+    fi
+
     configure_iface_ipv4 "${BOND_NAME}"
 }
 
@@ -277,7 +261,7 @@ configure_network() {
     case "${NET_MODE}" in
         bond)
             if [ "${iface_count}" -lt 2 ]; then
-                echo "[net] Bonding requested but fewer than two interfaces are available; falling back to individual interfaces"
+                echo "[net] Bonding requested but <2 interfaces available; using individual mode"
                 configure_individual_ifaces "${candidates}"
                 return $?
             fi
@@ -317,8 +301,6 @@ if [ -e /home/tc/keymap ]; then
     fi
 fi
 
-# Drive / Opal detection and console TUI are handled in sedunlocksrv (scanDrives, consoleInterface).
-
 # ----------------------------------------------------
 # START SERVICE
 # ----------------------------------------------------
@@ -331,6 +313,5 @@ exec ./sedunlocksrv
 # FALLBACK (only if exec fails)
 # ----------------------------------------------------
 echo "sedunlocksrv exited unexpectedly"
-
 sleep 30
 reboot -f

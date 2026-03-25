@@ -1,241 +1,236 @@
 <!DOCTYPE html>
-<!--
-    index.html — SED Unlock Web UI
-    
-    This page is served by the Go server (sedunlocksrv) at GET /
-    over HTTPS on port 443. Port 80 redirects here automatically.
-    
-    It communicates with the server's JSON API using fetch(). The same
-    API is used by the SSH script (ssh_sed_unlock.sh), so all three
-    interfaces (web, SSH, console TUI) share the same lock state and
-    rate limiting.
-    
-    The page has two tabs:
-      Unlock         — enter password, unlock drives, boot/reboot/shutdown
-      Change Password — change the drive password with policy enforcement
-    
-    Drive status is polled every 5 seconds and reflected live in the UI.
-    The Boot button is shown only when at least one drive is unlocked.
--->
 <html>
 <head>
 <meta charset="utf-8">
 <title>SED Unlock</title>
-
 <style>
-/* Dark terminal aesthetic — matches the console TUI and SSH interface. */
 body {
-    background:#111;
-    color:#eee;
+    background: #111;
+    color: #eee;
     font-family: monospace;
-    max-width: 720px;
+    max-width: 900px;
     margin: auto;
     padding: 10px;
 }
-
-h2 { text-align:center; }
-
-/* Generic bordered container used for grouping related controls. */
+h2 { text-align: center; }
 .box {
-    border:1px solid #444;
-    padding:10px;
-    margin-bottom:10px;
+    border: 1px solid #444;
+    padding: 10px;
+    margin-bottom: 10px;
 }
-
 button {
-    background:#0e639c;
-    color:#fff;
-    border:1px solid #0e639c;
-    padding:8px 10px;
-    margin-top:5px;
-    transition:opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    background: #0e639c;
+    color: #fff;
+    border: 1px solid #0e639c;
+    padding: 8px 10px;
+    margin-top: 5px;
+    transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
-
 button:hover {
-    opacity:0.88;
-    transform:translateY(-1px);
-    box-shadow:0 0 0 1px rgba(255,255,255,0.06) inset;
+    opacity: 0.88;
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
 }
-
-/* Used to hide the Change Password tab and the Boot button when not needed. */
-.hidden { display:none; }
-
-/* Status indicator colors — mirror the ✅/❌/⚠ icons in the console TUI. */
-.ok   { color:#4ade80; } /* green  — unlocked OPAL drive */
-.bad  { color:#f87171; } /* red    — locked OPAL drive */
-.warn { color:#facc15; } /* yellow — non-OPAL drive */
-
-input {
-    width:100%;
-    padding:5px;
-    margin-top:5px;
-    background:#000;
-    color:#eee;
-    border:1px solid #555;
+button:disabled {
+    opacity: 0.5;
+    transform: none;
 }
-
-/* Tab strip at the top of the page. */
+input, textarea {
+    width: 100%;
+    padding: 5px;
+    margin-top: 5px;
+    background: #000;
+    color: #eee;
+    border: 1px solid #555;
+    box-sizing: border-box;
+}
+textarea {
+    min-height: 140px;
+    resize: vertical;
+    font-family: monospace;
+}
+.hidden { display: none; }
+.ok   { color: #4ade80; }
+.bad  { color: #f87171; }
+.warn { color: #facc15; }
+.small { font-size: 11px; color: #aaa; }
+.hint  { font-size: 12px; color: #bbb; line-height: 1.45; }
+.danger {
+    border-color: #8b1f1f;
+    background: #1a1010;
+}
 .tab {
-    display:flex;
-    margin-bottom:10px;
+    display: flex;
+    gap: 5px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
 }
 .tab button {
-    flex:1;
-    margin:0;
-    background:#2d2d2d;
-    border-color:#3c3c3c;
-    text-transform:uppercase;
+    flex: 1 1 170px;
+    margin: 0;
+    background: #2d2d2d;
+    border-color: #3c3c3c;
+    text-transform: uppercase;
 }
-
-/* Highlight the currently active tab button. */
 .active {
-    background:#0e639c !important;
-    border-color:#0e639c !important;
+    background: #0e639c !important;
+    border-color: #0e639c !important;
 }
-
-/* Used for the password policy display and show-password checkbox labels. */
-.small { font-size:11px; color:#aaa; }
-
-.hint { font-size:12px; color:#bbb; line-height:1.4; }
-
-/* Inline checkbox label row (e.g. "Show Password"). */
 .checkbox-row {
-    display:flex;
-    align-items:center;
-    margin-top:5px;
-    font-size:11px;
-    color:#aaa;
+    display: flex;
+    align-items: center;
+    margin-top: 5px;
+    font-size: 11px;
+    color: #aaa;
 }
 .checkbox-row input {
-    width:auto;
-    margin-right:6px;
+    width: auto;
+    margin-right: 6px;
 }
-
-/* Side-by-side button layout (Unlock/Boot, Reboot/Shutdown). */
-.row {
-    display:flex;
-    gap:5px;
+.row { display: flex; gap: 5px; flex-wrap: wrap; }
+.row button { flex: 1; }
+.primary-btn   { background: #68217a; border-color: #68217a; }
+.secondary-btn { background: #0e639c; border-color: #0e639c; }
+.warm-btn      { background: #e37933; border-color: #e37933; }
+.danger-btn    { background: #9e2a2b; border-color: #9e2a2b; }
+.mono { white-space: pre-wrap; word-break: break-word; }
+@media (max-width: 700px) {
+    .tab button { flex: 1 1 100%; }
 }
-.row button {
-    flex:1;
-}
-
-.primary-btn { background:#68217a; border-color:#68217a; }
-.secondary-btn { background:#0e639c; border-color:#0e639c; }
-.warm-btn { background:#e37933; border-color:#e37933; }
 </style>
 </head>
-
 <body>
 
-<h2>🔑 SED Unlock</h2>
+<h2>SED Unlock</h2>
 
-<!-- Tab strip: switches between the Unlock and Change Password views. -->
 <div class="tab">
-    <button id="tabUnlock" class="active">Unlock</button>
-    <button id="tabChange">Change Password</button>
+    <button id="tabUnlock" class="active" onclick="showTab('unlock')">Unlock</button>
+    <button id="tabChange" onclick="showTab('change')">Change Password</button>
+    <button id="tabDiag" onclick="showTab('diag')">Diagnostics</button>
+    <button id="tabExpert" onclick="showTab('expert')">Expert</button>
 </div>
 
-<!-- STATUS BOX
-     Populated by refresh() via GET /status every 5 seconds.
-     Shows one line per drive with lock state and OPAL support indicator.
-     The Boot button (below) is shown/hidden based on this data. -->
 <div class="box">
     <div id="status"></div>
 </div>
 
 <div class="box">
-    <div class="hint">Network Interfaces as seen by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
+    <div class="hint">Network interfaces detected by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
     <div id="interfaces" class="small"></div>
 </div>
 
-<!-- ============================================================
-     UNLOCK TAB (default visible tab)
-     ============================================================ -->
 <div id="unlockTab">
-
     <div class="box">
-        <!-- Password input for the unlock operation.
-             Cleared after each unlock attempt regardless of success. -->
         <input id="pw" type="password" placeholder="Disk Password">
-
-        <!-- Show/hide password toggle. Switches the input between
-             type="password" (masked) and type="text" (visible). -->
         <label class="checkbox-row">
             <input type="checkbox" id="showUnlock"> Show Password
         </label>
-
         <div class="row">
-            <!-- Unlock: POSTs to /unlock with the password.
-                 The Go server runs sedutil-cli against all locked drives. -->
             <button class="primary-btn" onclick="unlock()">Unlock</button>
-
-            <!-- Boot: only visible when at least one drive reports unlocked.
-                 Shown/hidden by refresh() based on GET /status response.
-                 POSTs to /boot which triggers kexec into the Proxmox kernel. -->
-            <button id="bootBtn" class="secondary-btn hidden" onclick="boot()">Boot</button>
+            <button class="secondary-btn hidden" id="bootBtn" onclick="boot()">Boot</button>
+        </div>
+        <div class="hint">
+            Use <b>Boot</b> to kexec directly into the OS while keeping unlocked state.
+            Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
+            NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
         </div>
     </div>
-
-    <!-- Reboot and Shutdown are outside the password box since they don't
-         require a password — just direct POST requests to /reboot and /poweroff.
-         Note: Reboot does a cold reboot (re-locks drives), unlike Boot (kexec). -->
     <div class="row">
         <button class="warm-btn" onclick="reboot()">Reboot</button>
         <button class="secondary-btn" onclick="shutdown()">Shutdown</button>
     </div>
-
 </div>
 
-<!-- ============================================================
-     CHANGE PASSWORD TAB (hidden by default)
-     ============================================================ -->
 <div id="changeTab" class="hidden">
-
     <div class="box">
-        <input id="cur"  type="password" placeholder="Current Password">
-        <input id="new"  type="password" placeholder="New Password">
+        <input id="cur" type="password" placeholder="Current Password">
+        <input id="new" type="password" placeholder="New Password">
         <input id="conf" type="password" placeholder="Confirm Password">
-
-        <!-- Show/hide toggle for all three password fields simultaneously. -->
         <label class="checkbox-row">
             <input type="checkbox" id="showChange"> Show Passwords
         </label>
-
-        <!-- Populated by loadPolicy() via GET /password-policy at page load.
-             Displays the active complexity requirements so the user knows
-             what the new password must satisfy before submitting. -->
         <div id="policy" class="small"></div>
-
-        <!-- Submits to /change-password. The Go server validates the new
-             password against the policy before calling sedutil-cli. -->
         <button class="primary-btn" onclick="changePw()">Update Password</button>
+        <div class="hint">You must unlock at least one drive first in this boot session before changing passwords.</div>
+    </div>
+</div>
+
+<div id="diagTab" class="hidden">
+    <div class="box">
+        <div class="row">
+            <button class="secondary-btn" onclick="loadDiagnostics()">Refresh Diagnostics</button>
+        </div>
+        <div class="hint">Diagnostics are pulled from <code>sedutil-cli --query</code> per drive.</div>
+        <div id="diagSummary" class="small"></div>
+        <div id="diagContent" class="mono small"></div>
+    </div>
+</div>
+
+<div id="expertTab" class="hidden">
+    <div class="box danger">
+        <div class="warn"><b>Expert Mode</b>: these operations can permanently destroy data or ownership metadata.</div>
+        <div class="hint">Use this only when standard unlock paths cannot recover the drive.</div>
+        <input id="expertPw" type="password" placeholder="Expert Password">
+        <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
     </div>
 
+    <div id="expertActions" class="hidden">
+        <div class="box danger">
+            <div><b>Revert TPer</b> (destructive)</div>
+            <div class="hint">Attempts a TPer revert using the current drive password. This can invalidate existing unlock configuration.</div>
+            <input id="expDeviceRevert" type="text" placeholder="/dev/sda">
+            <input id="expRevertPw" type="password" placeholder="Current Drive Password">
+            <input id="expRevertConfirm" type="text" placeholder='Type REVERT to confirm'>
+            <button class="danger-btn" onclick="expertRevertTper()">Run Revert TPer</button>
+        </div>
+        <div class="box danger">
+            <div><b>PSID Revert</b> (full erase)</div>
+            <div class="hint">Last-resort factory reset by PSID. This erases access to existing encrypted data.</div>
+            <input id="expDevicePsid" type="text" placeholder="/dev/sda">
+            <input id="expPsid" type="text" placeholder="PSID from drive label">
+            <input id="expPsidConfirm" type="text" placeholder='Type ERASE to confirm'>
+            <button class="danger-btn" onclick="expertPsidRevert()">Run PSID Revert</button>
+        </div>
+        <div class="box">
+            <div class="small">Expert output</div>
+            <textarea id="expertOutput" readonly></textarea>
+        </div>
+    </div>
 </div>
 
 <script>
-// Shorthand for document.getElementById — used throughout.
 const $ = id => document.getElementById(id)
 
-// Cached policy object from GET /password-policy.
-// Displayed in the Change Password tab and used for any client-side hints.
 let policy = {}
 let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
+let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
 
-// ======================================================
-// PASSWORD POLICY
-// Fetched once at page load. The server enforces this policy server-side;
-// this display is informational only — the real validation is in main.go's
-// validatePassword().
-// ======================================================
+function showTab(name) {
+    const tabs = {
+        unlock: ["unlockTab", "tabUnlock"],
+        change: ["changeTab", "tabChange"],
+        diag: ["diagTab", "tabDiag"],
+        expert: ["expertTab", "tabExpert"]
+    }
+    Object.keys(tabs).forEach(k => {
+        const visible = k === name
+        $(tabs[k][0]).classList.toggle("hidden", !visible)
+        $(tabs[k][1]).classList.toggle("active", visible)
+    })
+    if (name === "diag") loadDiagnostics()
+}
 
-async function loadPolicy(){
+function authHeaders() {
+    return authToken ? {"X-Auth-Token": authToken} : {}
+}
+
+function expertHeaders() {
+    return expertToken ? {"X-Expert-Token": expertToken} : {}
+}
+
+async function loadPolicy() {
     let r = await fetch("/password-policy")
     policy = await r.json()
-
-    // Display a compact summary of the active requirements under the
-    // password inputs in the Change Password tab.
     $("policy").innerText =
         "Min " + policy.minLength +
         " | Upper:" + policy.requireUpper +
@@ -244,35 +239,17 @@ async function loadPolicy(){
         " Special:" + policy.requireSpecial
 }
 
-// ======================================================
-// STATUS POLLING
-// Called on load and then every 5 seconds via setInterval.
-// Reflects the current state of all drives in the status box and
-// controls the visibility of the Boot button.
-// ======================================================
-
-async function refresh(){
+async function refresh() {
     let r = await fetch("/status")
     let j = await r.json()
 
-    let html = ""
-    let ifaceHtml = ""
-    let unlocked = false  // becomes true if any drive is unlocked
-
+    let html = "", ifaceHtml = "", unlocked = false
     j.drives.forEach(d => {
-        let icon  = d.locked ? "❌" : "✅"
-        let state = d.locked ? "LOCKED" : "UNLOCKED"
-
-        // Non-OPAL drives can't be unlocked by this tool — flag them with
-        // a warning color and a different icon.
-        let opalLabel = d.opal ? "🔐 OPAL" : "⚠ NON-OPAL"
-        let color     = d.opal ? (d.locked ? "bad" : "ok") : "warn"
-
+        let icon = d.locked ? "LOCKED" : "UNLOCKED"
+        let opalLabel = d.opal ? "OPAL" : "NON-OPAL"
+        let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
         if (!d.locked) unlocked = true
-
-        html += `<div class="${color}">
-            ${icon} ${d.device} — ${state} — ${opalLabel}
-        </div>`
+        html += `<div class="${color}">${d.device} - ${icon} - ${opalLabel}</div>`
     })
 
     j.interfaces.forEach(iface => {
@@ -281,152 +258,153 @@ async function refresh(){
         if (iface.mac) extra.push(iface.mac)
         if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.join(", "))
         if (iface.loopback) extra.push("loopback")
-
-        ifaceHtml += `<div>
-            <span>${iface.name}</span> -
-            <span>${iface.state}</span> -
-            <span>${link}</span>
-            ${extra.length ? `- <span>${extra.join(" - ")}</span>` : ""}
-        </div>`
+        ifaceHtml += `<div>${iface.name} - ${iface.state} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
     })
 
-    $("status").innerHTML = html
+    $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
-
-    // Show the Boot button only when at least one drive is unlocked.
-    // Mirroring the console TUI's B option, which also only makes sense
-    // once there's something to boot from.
     $("bootBtn").classList.toggle("hidden", !unlocked)
 }
 
-// ======================================================
-// ACTIONS — all POST requests to the Go server's API
-// ======================================================
-
-async function unlock(){
-    let pw = $("pw").value
-
-    // POST /unlock — the Go server will:
-    //   1. reject blank passwords immediately
-    //   2. check the rate limit (powers off after maxAttempts failures)
-    //   3. run sedutil-cli against all locked drives
-    let r = await fetch("/unlock", {
-        method:"POST",
-        body: JSON.stringify({password:pw})
+async function postJSON(url, payload, headers) {
+    let r = await fetch(url, {
+        method: "POST",
+        headers: Object.assign({"Content-Type": "application/json"}, headers || {}),
+        body: JSON.stringify(payload || {})
     })
-    let j = await r.json()
-
-    if (j.token) {
-        authToken = j.token
-        sessionStorage.setItem("sedunlocksrvAuthToken", authToken)
-    }
-
-    // Clear the password field after every attempt, success or failure,
-    // so it isn't accidentally re-submitted or left visible.
-    $("pw").value=""
-    refresh()  // update drive status immediately after the attempt
-}
-
-async function changePw(){
-    let cur = $("cur").value
-    let nw  = $("new").value
-    let cf  = $("conf").value
-
-    // Client-side confirmation check — the server does not receive "conf",
-    // so mismatches must be caught here before the request is sent.
-    if(nw !== cf){
-        alert("Password mismatch")
-        return
-    }
-
-    // POST /change-password — the Go server validates the new password
-    // against the policy (validatePassword) before calling sedutil-cli.
-    let r = await fetch("/change-password", {
-        method:"POST",
-        body: JSON.stringify({
-            currentPassword:cur,
-            newPassword:nw
-        })
-    })
-
-    let j = await r.json()
-
-    // The server returns {"error":"..."} for policy violations (HTTP 400)
-    // or {"results":[...]} on success. Display a simple alert in both cases.
-    if(j.error) alert(j.error)
-    else alert("Password updated")
-}
-
-// POST /boot — triggers kexec into the Proxmox kernel.
-// The Go server responds before kexec fires (500ms delay), so the fetch
-// completes. The page becomes unreachable once kexec succeeds.
-function authHeaders() {
-    return authToken ? {"X-Auth-Token": authToken} : {}
-}
-
-async function postWithFeedback(url){
-    let r = await fetch(url,{method:"POST", headers: authHeaders()})
     let j = await r.json().catch(() => ({}))
-    if (!r.ok && j.error) alert(j.error)
+    if (!r.ok && j.error) throw new Error(j.error)
     return j
 }
 
-function boot(){ postWithFeedback("/boot") }
-
-// POST /reboot — cold reboot. Re-locks drives; PBA will start again.
-function reboot(){ postWithFeedback("/reboot") }
-
-// POST /poweroff — shuts the system down completely.
-function shutdown(){ postWithFeedback("/poweroff") }
-
-// ======================================================
-// TABS
-// Switches between the Unlock and Change Password views by toggling
-// the .hidden class on the tab content divs and the .active class
-// on the tab buttons.
-// ======================================================
-
-$("tabUnlock").onclick = () => {
-    $("unlockTab").classList.remove("hidden")
-    $("changeTab").classList.add("hidden")
-    $("tabUnlock").classList.add("active")
-    $("tabChange").classList.remove("active")
+async function postWithFeedback(url) {
+    try {
+        return await postJSON(url, {}, authHeaders())
+    } catch (err) {
+        alert(err.message || "Request failed")
+        return {}
+    }
 }
 
-$("tabChange").onclick = () => {
-    $("changeTab").classList.remove("hidden")
-    $("unlockTab").classList.add("hidden")
-    $("tabChange").classList.add("active")
-    $("tabUnlock").classList.remove("active")
+async function unlock() {
+    try {
+        let j = await postJSON("/unlock", {password: $("pw").value})
+        if (j.token) {
+            authToken = j.token
+            sessionStorage.setItem("sedunlocksrvAuthToken", authToken)
+        }
+    } catch (err) {
+        alert(err.message || "Unlock failed")
+    }
+    $("pw").value = ""
+    refresh()
 }
 
-// ======================================================
-// SHOW PASSWORD TOGGLES
-// Each toggle controls a separate set of inputs to avoid accidentally
-// revealing passwords in the wrong tab.
-// ======================================================
+async function changePw() {
+    let cur = $("cur").value
+    let nw = $("new").value
+    let cf = $("conf").value
+    if (nw !== cf) {
+        alert("Password mismatch")
+        return
+    }
+    try {
+        await postJSON("/change-password", {currentPassword: cur, newPassword: nw}, authHeaders())
+        alert("Password updated")
+    } catch (err) {
+        alert(err.message || "Password change failed")
+    }
+}
 
-// Unlock tab: toggles only the single password input.
+async function loadDiagnostics() {
+    try {
+        let r = await fetch("/diagnostics")
+        let j = await r.json()
+        $("diagSummary").innerText = `Generated: ${j.generatedAt || "unknown"}`
+        let out = ""
+        ;(j.drives || []).forEach(d => {
+            out += `Device: ${d.device}\n`
+            out += `  OPAL: ${d.opal}  Locked: ${d.locked}\n`
+            out += `  LockingSupported: ${d.lockingSupported}\n`
+            out += `  LockingEnabled: ${d.lockingEnabled}\n`
+            out += `  MBREnable: ${d.mbrEnabled}\n`
+            out += `  MBRDone: ${d.mbrDone}\n`
+            out += `  MediaEncrypt: ${d.mediaEncrypt}\n`
+            out += `  Locked (from query): ${d.lockingRange0Locked}\n`
+            out += `  --- raw --query output ---\n`
+            out += (d.queryRaw || "(empty)") + "\n\n"
+        })
+        $("diagContent").innerText = out || "No diagnostics data available."
+    } catch (err) {
+        $("diagContent").innerText = "Failed to load diagnostics: " + (err.message || "unknown error")
+    }
+}
+
+async function expertLogin() {
+    try {
+        let j = await postJSON("/expert/auth", {password: $("expertPw").value})
+        if (!j.token) throw new Error("no expert token returned")
+        expertToken = j.token
+        sessionStorage.setItem("sedunlocksrvExpertToken", expertToken)
+        $("expertActions").classList.remove("hidden")
+        $("expertPw").value = ""
+        appendExpertOutput("Expert mode authenticated.")
+    } catch (err) {
+        alert(err.message || "Expert authentication failed")
+    }
+}
+
+function appendExpertOutput(text) {
+    let ta = $("expertOutput")
+    ta.value = (ta.value ? ta.value + "\n\n" : "") + text
+    ta.scrollTop = ta.scrollHeight
+}
+
+async function expertRevertTper() {
+    try {
+        let j = await postJSON("/expert/revert-tper", {
+            device: $("expDeviceRevert").value.trim(),
+            password: $("expRevertPw").value,
+            confirm: $("expRevertConfirm").value.trim()
+        }, expertHeaders())
+        appendExpertOutput(JSON.stringify(j, null, 2))
+    } catch (err) {
+        appendExpertOutput("ERROR: " + (err.message || "revert tper failed"))
+        alert(err.message || "Revert TPer failed")
+    }
+}
+
+async function expertPsidRevert() {
+    try {
+        let j = await postJSON("/expert/psid-revert", {
+            device: $("expDevicePsid").value.trim(),
+            psid: $("expPsid").value.trim(),
+            confirm: $("expPsidConfirm").value.trim()
+        }, expertHeaders())
+        appendExpertOutput(JSON.stringify(j, null, 2))
+    } catch (err) {
+        appendExpertOutput("ERROR: " + (err.message || "psid revert failed"))
+        alert(err.message || "PSID revert failed")
+    }
+}
+
+function boot() { postWithFeedback("/boot") }
+function reboot() { postWithFeedback("/reboot") }
+function shutdown() { postWithFeedback("/poweroff") }
+
 $("showUnlock").onchange = e => {
     $("pw").type = e.target.checked ? "text" : "password"
 }
-
-// Change Password tab: toggles all three password inputs simultaneously.
 $("showChange").onchange = e => {
-    ["cur","new","conf"].forEach(id=>{
+    ["cur", "new", "conf"].forEach(id => {
         $(id).type = e.target.checked ? "text" : "password"
     })
 }
 
-// ======================================================
-// INITIALIZATION
-// Runs once when the page loads.
-// ======================================================
-
-loadPolicy()           // fetch and display password complexity requirements
-refresh()              // fetch and display initial drive state
-setInterval(refresh, 5000)  // keep drive state current with a 5-second poll
-
+if (expertToken) $("expertActions").classList.remove("hidden")
+loadPolicy()
+refresh()
+setInterval(refresh, 5000)
 </script>
 
 </body>

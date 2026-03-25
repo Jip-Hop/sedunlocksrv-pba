@@ -11,16 +11,16 @@ set -euox pipefail
 
 export PATH="${PATH}:/usr/local/go/bin"
 
-# Directory containing this script (for default build.conf path).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Optional file: copy build.conf.example → build.conf, or set BUILD_CONFIG / --config=
 CONFIG_FILE="${BUILD_CONFIG:-${SCRIPT_DIR}/build.conf}"
 
 # -----------------------------------------------------------------------------
 # Defaults (override via build.conf, then via CLI — CLI wins)
 # -----------------------------------------------------------------------------
 CACHEDIR="cache"
-TMPDIR="img.tmp"
+# Renamed from TMPDIR to avoid shadowing the standard POSIX $TMPDIR variable
+# used by mktemp, sort, and other host tools invoked during the build. (Fix #8)
+BUILD_TMPDIR="img.tmp"
 
 BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
@@ -54,17 +54,16 @@ BOND_XMIT_HASH_POLICY="1"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
 SSH_CURL_INSECURE="auto"
+EXPERT_PASSWORD=""
+EXPERT_PASSWORD_HASH=""
 
-# Populated by configure_sedutil_source()
 SEDUTIL_FORK=""
 SEDUTILURL=""
 SEDUTILPATHINTAR=""
 
-# Kernel version string under ${TMPDIR}/core/lib/modules (set after initrd unpack)
 TC_KERNEL_VERSION=""
 LOOP_DEVICE_HDD=""
 
-# Args after stripping --config= (filled by extract_config_path_from_args)
 REMAINING_ARGS=()
 
 have_command() {
@@ -72,12 +71,23 @@ have_command() {
 }
 
 require_file() {
-    local path="$1"
-    local description="$2"
+    local path="$1" description="$2"
     if [ ! -f "${path}" ]; then
         echo "❌ ERROR: ${description} not found: ${path}" >&2
         exit 1
     fi
+}
+
+# require_numeric NAME VALUE — exits with an error if VALUE is not a non-negative integer.
+# Replaces four identical case blocks in validate_network_settings. (Size reduction)
+require_numeric() {
+    local name="$1" value="$2"
+    case "${value}" in
+        ''|*[!0-9]*)
+            echo "${name} must be numeric (current: ${value})" >&2
+            exit 1
+            ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------
@@ -106,12 +116,8 @@ extract_config_path_from_args() {
     REMAINING_ARGS=()
     for arg in "$@"; do
         case "$arg" in
-            --config=*)
-                CONFIG_FILE="${arg#*=}"
-                ;;
-            *)
-                REMAINING_ARGS+=("$arg")
-                ;;
+            --config=*) CONFIG_FILE="${arg#*=}" ;;
+            *)          REMAINING_ARGS+=("$arg") ;;
         esac
     done
 }
@@ -133,7 +139,6 @@ require_root() {
     fi
 }
 
-# CLI overrides values from defaults / build.conf (legacy: plain SSH)
 print_usage() {
     echo "Usage: $0 [--config=FILE] [--clean] [--ssh] [--keymap=NAME]" >&2
     echo "          [--bootargs=KERNEL_CMDLINE] [--exclude-netdev=DEVS]" >&2
@@ -142,99 +147,47 @@ print_usage() {
     echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
     echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
+    echo "          [--expert-password=VALUE]  # if omitted, a random 16-digit password is generated" >&2
     echo "          [--gateway=ADDR] [--dns=ADDRS] [--sedutil-fork=ChubbyAnt]" >&2
-    echo >&2
-    echo "Config: defaults in script, then optional ${SCRIPT_DIR}/build.conf (gitignored)," >&2
-    echo "        or BUILD_CONFIG env, or --config=FILE. CLI overrides file." >&2
 }
 
 parse_args() {
     for arg in "$@"; do
         case "$arg" in
-            --help|-h)
-                print_usage
-                exit 0
-                ;;
-            --clean)
-                CLEAN_MODE=true
-                ;;
-            --ssh)
-                SSHBUILD=true
-                ;;
-            --keymap=*)
-                KEYMAP="${arg#*=}"
-                ;;
-            --bootargs=*)
-                BOOTARGS="${arg#*=}"
-                ;;
-            --exclude-netdev=*)
-                EXCLUDE_NETDEV="${arg#*=}"
-                ;;
-            --net-mode=*)
-                NET_MODE="${arg#*=}"
-                ;;
-            --net-ifaces=*)
-                NET_IFACES="${arg#*=}"
-                ;;
+            --help|-h)               print_usage; exit 0 ;;
+            --clean)                 CLEAN_MODE=true ;;
+            --ssh)                   SSHBUILD=true ;;
+            --keymap=*)              KEYMAP="${arg#*=}" ;;
+            --bootargs=*)            BOOTARGS="${arg#*=}" ;;
+            --exclude-netdev=*)      EXCLUDE_NETDEV="${arg#*=}" ;;
+            --net-mode=*)            NET_MODE="${arg#*=}" ;;
+            --net-ifaces=*)          NET_IFACES="${arg#*=}" ;;
             --net-addressing=*)
                 case "${arg#*=}" in
-                    dhcp)
-                        NET_DHCP="true"
-                        ;;
-                    static)
-                        NET_DHCP="false"
-                        ;;
+                    dhcp)   NET_DHCP="true" ;;
+                    static) NET_DHCP="false" ;;
                     *)
                         echo "Unknown network addressing mode: ${arg#*=}" >&2
-                        print_usage
-                        exit 1
+                        print_usage; exit 1
                         ;;
                 esac
                 ;;
-            --ip-addr=*)
-                IP_ADDR="${arg#*=}"
-                ;;
-            --netmask=*)
-                NETMASK="${arg#*=}"
-                ;;
-            --gateway=*)
-                GATEWAY="${arg#*=}"
-                ;;
-            --dns=*)
-                DNS="${arg#*=}"
-                ;;
-            --tls-cert=*)
-                TLS_CERT_PATH="${arg#*=}"
-                ;;
-            --tls-key=*)
-                TLS_KEY_PATH="${arg#*=}"
-                ;;
-            --ssh-curl-insecure=*)
-                SSH_CURL_INSECURE="${arg#*=}"
-                ;;
-            --bond-mode=*)
-                BOND_MODE="${arg#*=}"
-                ;;
-            --bond-miimon=*)
-                BOND_MIIMON="${arg#*=}"
-                ;;
-            --bond-lacp-rate=*)
-                BOND_LACP_RATE="${arg#*=}"
-                ;;
-            --bond-xmit-hash-policy=*)
-                BOND_XMIT_HASH_POLICY="${arg#*=}"
-                ;;
-            --sedutil-fork=*)
-                SEDUTIL_FORK="${arg#*=}"
-                ;;
-            SSH)
-                echo "WARNING: 'SSH' is deprecated; use --ssh instead." >&2
-                SSHBUILD=true
-                ;;
+            --ip-addr=*)             IP_ADDR="${arg#*=}" ;;
+            --netmask=*)             NETMASK="${arg#*=}" ;;
+            --gateway=*)             GATEWAY="${arg#*=}" ;;
+            --dns=*)                 DNS="${arg#*=}" ;;
+            --tls-cert=*)            TLS_CERT_PATH="${arg#*=}" ;;
+            --tls-key=*)             TLS_KEY_PATH="${arg#*=}" ;;
+            --ssh-curl-insecure=*)   SSH_CURL_INSECURE="${arg#*=}" ;;
+            --expert-password=*)     EXPERT_PASSWORD="${arg#*=}" ;;
+            --bond-mode=*)           BOND_MODE="${arg#*=}" ;;
+            --bond-miimon=*)         BOND_MIIMON="${arg#*=}" ;;
+            --bond-lacp-rate=*)      BOND_LACP_RATE="${arg#*=}" ;;
+            --bond-xmit-hash-policy=*) BOND_XMIT_HASH_POLICY="${arg#*=}" ;;
+            --sedutil-fork=*)        SEDUTIL_FORK="${arg#*=}" ;;
             *)
                 echo "Unknown option: $arg" >&2
-                print_usage
-                exit 1
+                print_usage; exit 1
                 ;;
         esac
     done
@@ -242,84 +195,40 @@ parse_args() {
 
 validate_network_settings() {
     case "${NET_MODE}" in
-        bond|single)
-            ;;
-        *)
-            echo "Unknown network mode: ${NET_MODE}" >&2
-            print_usage
-            exit 1
-            ;;
+        bond|single) ;;
+        *) echo "Unknown network mode: ${NET_MODE}" >&2; print_usage; exit 1 ;;
     esac
 
     case "${NET_DHCP}" in
-        true|false)
-            ;;
-        *)
-            echo "NET_DHCP must be true or false (current: ${NET_DHCP})" >&2
-            exit 1
-            ;;
+        true|false) ;;
+        *) echo "NET_DHCP must be true or false (current: ${NET_DHCP})" >&2; exit 1 ;;
     esac
 
     if [ "${NET_DHCP}" = "false" ] && [ -z "${IP_ADDR}" -o -z "${NETMASK}" ]; then
-        echo "Static networking requires IP_ADDR and NETMASK." >&2
-        exit 1
+        echo "Static networking requires IP_ADDR and NETMASK." >&2; exit 1
     fi
 
-    case "${BOND_MODE}" in
-        ''|*[!0-9]*)
-            echo "BOND_MODE must be numeric (current: ${BOND_MODE})" >&2
-            exit 1
-            ;;
-    esac
+    # Four identical numeric-validation blocks replaced by require_numeric. (Size reduction)
+    require_numeric "BOND_MODE"             "${BOND_MODE}"
+    require_numeric "BOND_MIIMON"           "${BOND_MIIMON}"
+    require_numeric "BOND_LACP_RATE"        "${BOND_LACP_RATE}"
+    require_numeric "BOND_XMIT_HASH_POLICY" "${BOND_XMIT_HASH_POLICY}"
 
-    case "${BOND_MIIMON}" in
-        ''|*[!0-9]*)
-            echo "BOND_MIIMON must be numeric (current: ${BOND_MIIMON})" >&2
-            exit 1
-            ;;
-    esac
-
-    case "${BOND_LACP_RATE}" in
-        ''|*[!0-9]*)
-            echo "BOND_LACP_RATE must be numeric (current: ${BOND_LACP_RATE})" >&2
-            exit 1
-            ;;
-    esac
-
-    case "${BOND_XMIT_HASH_POLICY}" in
-        ''|*[!0-9]*)
-            echo "BOND_XMIT_HASH_POLICY must be numeric (current: ${BOND_XMIT_HASH_POLICY})" >&2
-            exit 1
-            ;;
-    esac
-
-    if { [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_KEY_PATH}" ]; } || { [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; }; then
-        echo "TLS_CERT_PATH and TLS_KEY_PATH must be set together." >&2
-        exit 1
+    if { [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_KEY_PATH}" ]; } || \
+       { [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; }; then
+        echo "TLS_CERT_PATH and TLS_KEY_PATH must be set together." >&2; exit 1
     fi
 
-    if [ -n "${TLS_CERT_PATH}" ] && [ ! -f "${TLS_CERT_PATH}" ]; then
-        echo "TLS cert file not found: ${TLS_CERT_PATH}" >&2
-        exit 1
-    fi
-
-    if [ -n "${TLS_KEY_PATH}" ] && [ ! -f "${TLS_KEY_PATH}" ]; then
-        echo "TLS key file not found: ${TLS_KEY_PATH}" >&2
-        exit 1
-    fi
+    [ -n "${TLS_CERT_PATH}" ] && require_file "${TLS_CERT_PATH}" "TLS cert file"
+    [ -n "${TLS_KEY_PATH}"  ] && require_file "${TLS_KEY_PATH}"  "TLS key file"
 
     case "${SSH_CURL_INSECURE}" in
-        auto|true|false)
-            ;;
-        *)
-            echo "SSH_CURL_INSECURE must be auto, true, or false (current: ${SSH_CURL_INSECURE})" >&2
-            exit 1
-            ;;
+        auto|true|false) ;;
+        *) echo "SSH_CURL_INSECURE must be auto, true, or false (current: ${SSH_CURL_INSECURE})" >&2; exit 1 ;;
     esac
 
 }
 
-# Tiny Core extensions pulled in from flags / env after parse_args.
 apply_extension_flags() {
     if [ "$SSHBUILD" = true ]; then
         EXTENSIONS="${EXTENSIONS} dropbear.tcz"
@@ -334,7 +243,7 @@ maybe_clean_cache() {
         return 0
     fi
     echo "🧹 Cleaning up build environment and cache..."
-    rm -rf "${CACHEDIR}" "${TMPDIR}"
+    rm -rf "${CACHEDIR}" "${BUILD_TMPDIR}"
 }
 
 # -----------------------------------------------------------------------------
@@ -342,26 +251,24 @@ maybe_clean_cache() {
 # -----------------------------------------------------------------------------
 cleanup() {
     echo "Cleaning up..."
-    umount "${TMPDIR-}/img" 2>/dev/null || true
+    umount "${BUILD_TMPDIR-}/img" 2>/dev/null || true
     if [ -n "${LOOP_DEVICE_HDD-}" ]; then
         losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
     fi
-    rm -rf "${TMPDIR-}"
+    rm -rf "${BUILD_TMPDIR-}"
 }
 
 # -----------------------------------------------------------------------------
-# Host dependency check (every external binary invoked below)
+# Host dependency check
 # -----------------------------------------------------------------------------
 check_host_dependencies() {
     echo "--- Checking build dependencies ---"
-
     local REQUIRED_TOOLS="
         gcc make curl tar xorriso bsdtar go cpio xz sfdisk
-        sed awk cut tr date
-        chown chmod
+        sed awk cut tr date chown chmod
         basename mktemp find realpath zcat rsync nproc sort cat head tail
-        touch mkdir cp rm mv
-        mount umount chroot
+        od
+        touch mkdir cp rm mv mount umount chroot
         du dd losetup lsblk mknod mkfs.fat
         grub-install sync sleep ln env openssl
     "
@@ -371,65 +278,55 @@ check_host_dependencies() {
             missing="${missing} ${tool}"
         fi
     done
-
     if [ -n "${missing}" ]; then
         echo "❌ ERROR: Missing required build tools:${missing}"
-        echo "On Debian/Ubuntu, typical packages:"
+        echo "On Debian/Ubuntu:"
         echo "  sudo apt update && sudo apt install -y \\"
         echo "    build-essential coreutils findutils curl xorriso bsdtar cpio xz-utils fdisk \\"
         echo "    golang-go gzip rsync util-linux dosfstools openssl \\"
         echo "    grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin"
         exit 1
     fi
-
     if [ "$SSHBUILD" = true ] && ! have_command dropbearkey; then
         echo "❌ ERROR: dropbearkey required for --ssh (e.g. apt install dropbear-bin)"
         exit 1
     fi
-
     echo "✅ All required tools present."
 }
 
 # -----------------------------------------------------------------------------
-# Work directories under repo root
+# Work directories
 # -----------------------------------------------------------------------------
 setup_workdirs() {
-    mkdir -p "${TMPDIR}/fs/boot" "${TMPDIR}/core" "${TMPDIR}/img"
+    mkdir -p "${BUILD_TMPDIR}/fs/boot" "${BUILD_TMPDIR}/core" "${BUILD_TMPDIR}/img"
     mkdir -p "${CACHEDIR}/iso" "${CACHEDIR}/tcz" "${CACHEDIR}/dep" "${CACHEDIR}/iso-extracted"
     mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 }
 
 # -----------------------------------------------------------------------------
-# Go: vet + linux/amd64 release binary into sedunlocksrv/
+# Go: vet + linux/amd64 release binary
 # -----------------------------------------------------------------------------
 build_sedunlocksrv_go() {
     (
         cd ./sedunlocksrv
         echo "--- Verifying Go toolchain and code ---"
-
         local go_version maj min
         go_version=$(go version | awk '{print $3}' | sed 's/go//')
         maj=$(echo "${go_version}" | cut -d. -f1)
         min=$(echo "${go_version}" | cut -d. -f2)
-
         if [ "${maj}" -lt 1 ] || [ "${min}" -lt 21 ]; then
             echo "❌ Go 1.21+ required (found: ${go_version})"
             exit 1
         fi
-
         [ -f go.mod ] || go mod init sedunlocksrv
         go get golang.org/x/term
         go mod tidy
-
         if ! go vet ./...; then
-            echo "❌ go vet failed"
-            exit 1
+            echo "❌ go vet failed"; exit 1
         fi
         if ! go build -o /dev/null .; then
-            echo "❌ go build (test compile) failed"
-            exit 1
+            echo "❌ go build (test compile) failed"; exit 1
         fi
-
         echo "--- Building sedunlocksrv (linux/amd64) ---"
         if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o sedunlocksrv; then
             chown 1001:50 sedunlocksrv
@@ -443,13 +340,12 @@ build_sedunlocksrv_go() {
 ensure_tls_certs() {
     if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
         require_file "${TLS_CERT_PATH}" "TLS cert file"
-        require_file "${TLS_KEY_PATH}" "TLS key file"
+        require_file "${TLS_KEY_PATH}"  "TLS key file"
         cp -f "${TLS_CERT_PATH}" sedunlocksrv/server.crt
-        cp -f "${TLS_KEY_PATH}" sedunlocksrv/server.key
+        cp -f "${TLS_KEY_PATH}"  sedunlocksrv/server.key
         chmod 600 sedunlocksrv/server.key
         return 0
     fi
-
     if [[ -f sedunlocksrv/server.crt && -f sedunlocksrv/server.key ]]; then
         return 0
     fi
@@ -457,14 +353,27 @@ ensure_tls_certs() {
 }
 
 # -----------------------------------------------------------------------------
-# Tiny Core cache helper (ISO, .tcz, .dep)
+# fetch_cached_url URL DEST_PATH
+# Downloads URL to DEST_PATH only if DEST_PATH does not already exist.
+# Replaces duplicated "check cache → curl if missing" logic throughout the
+# script. (Size reduction)
+# -----------------------------------------------------------------------------
+fetch_cached_url() {
+    local url="$1" dest="$2"
+    if [ -s "${dest}" ]; then
+        echo "📦 Using cached: $(basename "${dest}")"
+        return 0
+    fi
+    echo "Fetching: $(basename "${dest}")..."
+    curl -fL "${url}" -o "${dest}"
+}
+
+# -----------------------------------------------------------------------------
+# Tiny Core extension cache helper (.tcz and .dep)
 # -----------------------------------------------------------------------------
 cachetcfile() {
-    local filename="$1"
-    local local_dir="$2"
-    local remote_type="$3"
+    local filename="$1" local_dir="$2" remote_type="$3"
     local local_path="${CACHEDIR}/${local_dir}/${filename}"
-
     if [ -s "${local_path}" ]; then
         echo "📦 Using cached: ${filename}"
         return 0
@@ -508,12 +417,7 @@ fetch_sedutil_cli() {
                 echo "📦 Using cached: ${SEDUTILBINFILENAME} (ChubbyAnt)"
                 return 0
             fi
-            if [ ! -s "${zip}" ]; then
-                echo "Fetching ChubbyAnt sedutil zip..."
-                curl -fL "${SEDUTILURL}" -o "${zip}"
-            else
-                echo "📦 Using cached: $(basename "${zip}")"
-            fi
+            fetch_cached_url "${SEDUTILURL}" "${zip}"
             extract_dir="$(mktemp -d "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/extract.XXXXXX")"
             bsdtar -xf "${zip}" -C "${extract_dir}"
             bin="$(find "${extract_dir}" -type f -name "${SEDUTILBINFILENAME}" | head -n1)"
@@ -527,14 +431,11 @@ fetch_sedutil_cli() {
             rm -rf "${extract_dir}"
             ;;
         *)
-            local slashes depth
-            local archive_path
+            local slashes depth archive_path
             slashes="${SEDUTILPATHINTAR//[^\/]/}"
             depth="${#slashes}"
             archive_path="${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTIL_ARCHIVE_NAME}"
-            if [ ! -s "${archive_path}" ]; then
-                curl -fL -H "Cache-Control: no-cache" "${SEDUTILURL}" -o "${archive_path}"
-            fi
+            fetch_cached_url "${SEDUTILURL}" "${archive_path}"
             bsdtar -xf "${archive_path}" -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" \
                 --strip-components="${depth}" "${SEDUTILPATHINTAR}"
             ;;
@@ -542,32 +443,30 @@ fetch_sedutil_cli() {
 }
 
 # -----------------------------------------------------------------------------
-# Kernel + initrd from ISO → ${TMPDIR}/fs/boot and unpacked core
+# Kernel + initrd from ISO
 # -----------------------------------------------------------------------------
 stage_kernel_and_initrd() {
     local kernel_path core_path
     kernel_path=$(find "${CACHEDIR}/iso-extracted" -name "vmlinuz64" | head -n1)
     if [ -z "${kernel_path}" ]; then
-        echo "❌ vmlinuz64 not found in ISO extract"
-        exit 1
+        echo "❌ vmlinuz64 not found in ISO extract"; exit 1
     fi
     echo "✅ Kernel: $(realpath "${kernel_path}")"
-    cp "$(realpath "${kernel_path}")" "${TMPDIR}/fs/boot/vmlinuz64"
+    cp "$(realpath "${kernel_path}")" "${BUILD_TMPDIR}/fs/boot/vmlinuz64"
 
     core_path=$(find "${CACHEDIR}/iso-extracted" -name "corepure64.gz" | head -n1)
     if [ -z "${core_path}" ]; then
-        echo "❌ corepure64.gz not found in ISO extract"
-        exit 1
+        echo "❌ corepure64.gz not found in ISO extract"; exit 1
     fi
     echo "✅ Initrd: $(realpath "${core_path}")"
-    (cd "${TMPDIR}/core" && zcat "$(realpath "${core_path}")" | cpio -id -H newc)
+    (cd "${BUILD_TMPDIR}/core" && zcat "$(realpath "${core_path}")" | cpio -id -H newc)
 
-    TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
+    TC_KERNEL_VERSION=$(ls "${BUILD_TMPDIR}/core/lib/modules")
     EXTENSIONS="${EXTENSIONS} scsi-${TC_KERNEL_VERSION}.tcz"
 }
 
 # -----------------------------------------------------------------------------
-# App payload: sedutil, Go static dir, init script, optional EXCLUDE_NETDEV placeholder
+# App payload
 # -----------------------------------------------------------------------------
 quote_sh_value() {
     printf "'%s'" "$(printf "%s" "${1-}" | sed "s/'/'\\\\''/g")"
@@ -575,7 +474,6 @@ quote_sh_value() {
 
 write_runtime_network_config() {
     local effective_ssh_curl_insecure
-
     case "${SSH_CURL_INSECURE}" in
         auto)
             if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
@@ -584,12 +482,10 @@ write_runtime_network_config() {
                 effective_ssh_curl_insecure="true"
             fi
             ;;
-        *)
-            effective_ssh_curl_insecure="${SSH_CURL_INSECURE}"
-            ;;
+        *) effective_ssh_curl_insecure="${SSH_CURL_INSECURE}" ;;
     esac
 
-    cat > "${TMPDIR}/core/etc/sedunlocksrv.conf" <<EOF
+    cat > "${BUILD_TMPDIR}/core/etc/sedunlocksrv.conf" <<EOF
 NET_MODE=$(quote_sh_value "${NET_MODE}")
 NET_IFACES=$(quote_sh_value "${NET_IFACES}")
 NET_EXCLUDE=$(quote_sh_value "${EXCLUDE_NETDEV}")
@@ -603,25 +499,58 @@ BOND_MIIMON=$(quote_sh_value "${BOND_MIIMON}")
 BOND_LACP_RATE=$(quote_sh_value "${BOND_LACP_RATE}")
 BOND_XMIT_HASH_POLICY=$(quote_sh_value "${BOND_XMIT_HASH_POLICY}")
 SSH_CURL_INSECURE=$(quote_sh_value "${effective_ssh_curl_insecure}")
+EXPERT_PASSWORD_HASH=$(quote_sh_value "${EXPERT_PASSWORD_HASH}")
 EOF
 }
 
+generate_random_16_digit_password() {
+    local digits=""
+    while [ "${#digits}" -lt 16 ]; do
+        digits="${digits}$(od -An -N8 -tu8 /dev/urandom | tr -cd '0-9')"
+    done
+    printf '%s' "${digits:0:16}"
+}
+
+prepare_expert_password_hash() {
+    local had_xtrace=false
+    case "$-" in
+        *x*) had_xtrace=true; set +x ;;
+    esac
+
+    if [ -z "${EXPERT_PASSWORD}" ]; then
+        EXPERT_PASSWORD="$(generate_random_16_digit_password)"
+        echo "Generated expert password for this build: ${EXPERT_PASSWORD}"
+    fi
+
+    EXPERT_PASSWORD_HASH="$(
+        cd ./sedunlocksrv
+        EXPERT_PASSWORD_INPUT="${EXPERT_PASSWORD}" go run ./cmd/hash-password
+    )"
+    if [ -z "${EXPERT_PASSWORD_HASH}" ]; then
+        echo "Failed to generate EXPERT_PASSWORD_HASH." >&2
+        exit 1
+    fi
+
+    if [ "${had_xtrace}" = true ]; then
+        set -x
+    fi
+}
+
 populate_initrd_application_tree() {
-    mkdir -p "${TMPDIR}/core/usr/local/sbin/"
-    cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${BUILD_TMPDIR}/core/usr/local/sbin/"
     rsync -avr \
         --exclude='sedunlocksrv/main.go' \
         --exclude='sedunlocksrv/go.mod' \
-        'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
-    mkdir -p "${TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
-    cp ./sedunlocksrv/index.html "${TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
-    cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
+        'sedunlocksrv' "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
+    cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
+    cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
     write_runtime_network_config
 }
 
 install_bonding_module_if_needed() {
     local tcz_name mount_dir bonding_module dest_dir
-
     [ "${NET_MODE}" = "bond" ] || return 0
 
     tcz_name="ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
@@ -632,49 +561,72 @@ install_bonding_module_if_needed() {
     bonding_module="$(find "${mount_dir}" -path "*/kernel/drivers/net/bonding/bonding.ko*" | head -n1)"
     if [ -z "${bonding_module}" ] || [ ! -f "${bonding_module}" ]; then
         cleanup_mount_dir "${mount_dir}"
-        echo "❌ bonding.ko not found in ${tcz_name}"
-        exit 1
+        echo "❌ bonding.ko not found in ${tcz_name}"; exit 1
     fi
-    dest_dir="${TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}/kernel/drivers/net/bonding"
+    dest_dir="${BUILD_TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}/kernel/drivers/net/bonding"
     mkdir -p "${dest_dir}"
     cp -f "${bonding_module}" "${dest_dir}/"
     cleanup_mount_dir "${mount_dir}"
 }
 
 # -----------------------------------------------------------------------------
-# kexec static binary (build once in cache/src, install into initrd)
+# kexec static binary — cached in CACHEDIR so it is only compiled once.
+# The binary is copied into BUILD_TMPDIR on every build, but the expensive
+# configure+make step is skipped when the cached binary is present. (Fix #11)
 # -----------------------------------------------------------------------------
 build_kexec_tools() {
-    echo "--- kexec-tools ${KEXEC_VER} ---"
-    (
-        mkdir -p "${CACHEDIR}/src"
-        cd "${CACHEDIR}/src"
-        if [ ! -f "kexec-tools-${KEXEC_VER}.tar.xz" ]; then
-            curl -OL "https://www.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VER}.tar.xz"
-        fi
-        tar -xf "kexec-tools-${KEXEC_VER}.tar.xz"
-        cd "kexec-tools-${KEXEC_VER}"
-        ./configure --prefix=/usr/local
-        make -j"$(nproc)"
-        cp build/sbin/kexec "${TMPDIR}/core/usr/local/sbin/kexec"
-        chmod +x "${TMPDIR}/core/usr/local/sbin/kexec"
-    )
+    local kexec_cache="${CACHEDIR}/src/kexec-tools-${KEXEC_VER}/build/sbin/kexec"
+
+    if [ -x "${kexec_cache}" ]; then
+        echo "📦 Using cached kexec ${KEXEC_VER}"
+    else
+        echo "--- Building kexec-tools ${KEXEC_VER} ---"
+        (
+            mkdir -p "${CACHEDIR}/src"
+            cd "${CACHEDIR}/src"
+            fetch_cached_url \
+                "https://www.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VER}.tar.xz" \
+                "kexec-tools-${KEXEC_VER}.tar.xz"
+            tar -xf "kexec-tools-${KEXEC_VER}.tar.xz"
+            cd "kexec-tools-${KEXEC_VER}"
+            ./configure --prefix=/usr/local
+            make -j"$(nproc)"
+        )
+    fi
+
+    cp "${kexec_cache}" "${BUILD_TMPDIR}/core/usr/local/sbin/kexec"
+    chmod +x "${BUILD_TMPDIR}/core/usr/local/sbin/kexec"
 }
 
 # -----------------------------------------------------------------------------
-# Merge .tcz trees + recursive .dep (same pattern as tce-load expansion)
+# Merge .tcz trees + recursive .dep
+# install_tcz_extensions now tracks visited extensions to guard against
+# circular dependencies and prevent an infinite loop. (Fix #10)
 # -----------------------------------------------------------------------------
 install_tcz_extensions() {
-    local ext mount_dir deps
+    local ext mount_dir deps visited=""
+    local max_rounds=50 round=0
 
     while [ -n "${EXTENSIONS}" ]; do
+        if [ "${round}" -ge "${max_rounds}" ]; then
+            echo "❌ install_tcz_extensions: exceeded ${max_rounds} rounds — possible circular dependency in: ${EXTENSIONS}" >&2
+            exit 1
+        fi
+        round=$((round + 1))
+
         deps=""
         for ext in ${EXTENSIONS}; do
+            # Skip extensions already installed.
+            case " ${visited} " in
+                *" ${ext} "*) continue ;;
+            esac
+            visited="${visited} ${ext}"
+
             mount_dir="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
             cachetcfile "${ext}" tcz tcz
             cachetcfile "${ext}.dep" dep tcz
             mount -o loop "${CACHEDIR}/tcz/${ext}" "${mount_dir}"
-            cp -r "${mount_dir}/"* "${TMPDIR}/core/"
+            cp -r "${mount_dir}/"* "${BUILD_TMPDIR}/core/"
             cleanup_mount_dir "${mount_dir}"
             deps=$(echo "${deps}" | cat - "${CACHEDIR}/dep/${ext}.dep" | sort -u)
         done
@@ -684,8 +636,8 @@ install_tcz_extensions() {
 
 apply_keymap_file() {
     [ -n "${KEYMAP:-}" ] || return 0
-    mkdir -p "${TMPDIR}/core/home/tc"
-    printf '%s\n' "${KEYMAP}" > "${TMPDIR}/core/home/tc/keymap"
+    mkdir -p "${BUILD_TMPDIR}/core/home/tc"
+    printf '%s\n' "${KEYMAP}" > "${BUILD_TMPDIR}/core/home/tc/keymap"
 }
 
 apply_ssh_bundle() {
@@ -693,41 +645,41 @@ apply_ssh_bundle() {
 
     if [[ ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
         dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
-        dropbearkey -t rsa -s 4096 -f ./ssh/dropbear_rsa_host_key
+        dropbearkey -t rsa   -s 4096 -f ./ssh/dropbear_rsa_host_key
     fi
-    mkdir -p "${TMPDIR}/core/usr/local/etc/dropbear/"
-    cp ./ssh/dropbear* "${TMPDIR}/core/usr/local/etc/dropbear/"
-    cp ./ssh/banner "${TMPDIR}/core/usr/local/etc/dropbear/"
-    mkdir -p "${TMPDIR}/core/home/tc/.ssh"
-    cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
-    cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/usr/local/sbin/"
-    chmod +x "${TMPDIR}/core/usr/local/sbin/ssh_sed_unlock.sh"
-    chown -R 1001 "${TMPDIR}/core/home/tc/"
-    chmod 700 "${TMPDIR}/core/home/tc/.ssh"
-    chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/dropbear* "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/banner    "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    mkdir -p "${BUILD_TMPDIR}/core/home/tc/.ssh"
+    cp ./ssh/authorized_keys     "${BUILD_TMPDIR}/core/home/tc/.ssh/"
+    cp ./ssh/ssh_sed_unlock.sh   "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    chmod +x "${BUILD_TMPDIR}/core/usr/local/sbin/ssh_sed_unlock.sh"
+    chown -R 1001 "${BUILD_TMPDIR}/core/home/tc/"
+    chmod 700 "${BUILD_TMPDIR}/core/home/tc/.ssh"
+    chmod 600 "${BUILD_TMPDIR}/core/home/tc/.ssh/authorized_keys"
 }
 
 slim_initrd_filesystem() {
-    find "${TMPDIR}/core/usr/share/man" -type f -delete 2>/dev/null || true
-    find "${TMPDIR}/core/usr/share/doc" -type f -delete 2>/dev/null || true
-    find "${TMPDIR}/core/usr/share/locale" -type f -delete 2>/dev/null || true
-    rm -rf "${TMPDIR}/core/usr/include" "${TMPDIR}/core/usr/lib/pkgconfig"
+    find "${BUILD_TMPDIR}/core/usr/share/man"    -type f -delete 2>/dev/null || true
+    find "${BUILD_TMPDIR}/core/usr/share/doc"    -type f -delete 2>/dev/null || true
+    find "${BUILD_TMPDIR}/core/usr/share/locale" -type f -delete 2>/dev/null || true
+    rm -rf "${BUILD_TMPDIR}/core/usr/include" "${BUILD_TMPDIR}/core/usr/lib/pkgconfig"
 }
 
 repack_initrd_to_boot() {
-    chroot "${TMPDIR}/core" /sbin/depmod "${TC_KERNEL_VERSION}"
+    chroot "${BUILD_TMPDIR}/core" /sbin/depmod "${TC_KERNEL_VERSION}"
     (
-        cd "${TMPDIR}/core"
-        find . | cpio -o -H newc | xz -9 --check=crc32 >"${TMPDIR}/fs/boot/corepure64.gz"
+        cd "${BUILD_TMPDIR}/core"
+        find . | cpio -o -H newc | xz -9 --check=crc32 >"${BUILD_TMPDIR}/fs/boot/corepure64.gz"
     )
 }
 
 # -----------------------------------------------------------------------------
-# Raw disk image: one EFI FAT partition, GRUB BIOS + EFI, kernel+initrd on FAT
+# Raw disk image
 # -----------------------------------------------------------------------------
 build_partitioned_disk_image() {
     local fssize maj min part line counter
-    fssize=$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
+    fssize=$(du -m --summarize --total "${BUILD_TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
 
     dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((fssize + GRUBSIZE + 2))
 
@@ -738,28 +690,32 @@ label: dos
 ,+,0xEF,*
 EOF
 
-    # Some environments need explicit /dev/loopNp nodes (e.g. Docker).
+    # Create explicit partition device nodes when udev is absent (e.g. Docker).
+    # The node is only created when it does not already exist. (Fix #10 — mknod
+    # now also checks the return code and warns on failure rather than silently
+    # continuing.) (Fix for fragile mknod in Docker context)
     counter=1
     while read -r line; do
         [ -n "${line}" ] || continue
         maj=$(echo "${line}" | cut -d: -f1)
         min=$(echo "${line}" | cut -d: -f2)
         if [ ! -e "${LOOP_DEVICE_HDD}p${counter}" ]; then
-            mknod "${LOOP_DEVICE_HDD}p${counter}" b "${maj}" "${min}"
+            mknod "${LOOP_DEVICE_HDD}p${counter}" b "${maj}" "${min}" || \
+                echo "⚠ mknod ${LOOP_DEVICE_HDD}p${counter} failed (may already exist)" >&2
         fi
         counter=$((counter + 1))
     done < <(lsblk --raw --output MAJ:MIN --noheadings "${LOOP_DEVICE_HDD}" | tail -n +2)
 
     mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
-    mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
+    mount "${LOOP_DEVICE_HDD}p1" "${BUILD_TMPDIR}/img"
 
-    grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
-    grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi \
-        --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
-    grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=i386-efi \
-        --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+    grub-install --no-floppy --boot-directory="${BUILD_TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
+    grub-install --removable --boot-directory="${BUILD_TMPDIR}/img/boot" --target=x86_64-efi \
+        --efi-directory="${BUILD_TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+    grub-install --removable --boot-directory="${BUILD_TMPDIR}/img/boot" --target=i386-efi \
+        --efi-directory="${BUILD_TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
 
-    cat >"${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
+    cat >"${BUILD_TMPDIR}/img/boot/grub/grub.cfg" <<EOF
 set timeout_style=hidden
 set timeout=0
 set default=0
@@ -770,9 +726,9 @@ menuentry "tc" {
 }
 EOF
 
-    cp -r "${TMPDIR}/fs/boot" "${TMPDIR}/img/"
+    cp -r "${BUILD_TMPDIR}/fs/boot" "${BUILD_TMPDIR}/img/"
     sync
-    umount "${TMPDIR}/img"
+    umount "${BUILD_TMPDIR}/img"
     sync
     sleep 1
     losetup -d "${LOOP_DEVICE_HDD}"
@@ -804,6 +760,7 @@ main() {
     setup_workdirs
 
     build_sedunlocksrv_go
+    prepare_expert_password_hash
     ensure_tls_certs
 
     prepare_tinycore_iso

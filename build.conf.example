@@ -24,6 +24,7 @@
 # TLS_CERT_PATH=""   # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""    # optional custom TLS key copied to sedunlocksrv/server.key
 # SSH_CURL_INSECURE="auto"  # auto: false when custom TLS cert/key are used, else true
+# EXPERT_PASSWORD=""    # optional plain input for build-time hashing; if empty build.sh generates random 16-digit
 
 # --- PBA runtime (wired into tc-config where supported) ---
 # KEYMAP=""                 # e.g. fr-latin9 → adds kmaps.tcz and /home/tc/keymap
@@ -40,6 +41,7 @@
 # BOND_LACP_RATE="1"        # 1 = fast LACPDU rate
 # BOND_XMIT_HASH_POLICY="1" # default transmit hash policy
 # SSH_CURL_INSECURE="true"  # runtime flag consumed by ssh_sed_unlock.sh
+# EXPERT_PASSWORD=""    # runtime uses only EXPERT_PASSWORD_HASH generated at build time
 
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
 # SEDUTIL_FORK=""           # or ChubbyAnt / chubbyant

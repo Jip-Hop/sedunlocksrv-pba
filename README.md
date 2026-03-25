@@ -15,6 +15,26 @@ This fork has been refactored for enterprise-grade security and reliability, opt
 
 ---
 
+## Version Summary (vs original fork)
+This version keeps the original remote-unlock goal, but adds stronger operational safety and better recovery tooling. The web, SSH, and console flows now expose clearer NIC information for interface selection, networking is configurable for single-interface or bond use, static-IP settings are build-time configurable, and unlock can continue from console even when network setup fails.
+
+Security and control surfaces were also expanded: `boot` and password change are token-gated, a diagnostics view exposes per-drive `sedutil-cli --query` state, and a separate Expert tab isolates destructive recovery actions behind a dedicated expert password hash generated at build time.
+
+## Quick Start
+1. Build host prep (Debian/Ubuntu): install dependencies, then run `sudo ./build.sh`.
+2. Optional build config: copy `build.conf.example` to `build.conf`, set values such as network mode, TLS cert/key, and optional `EXPERT_PASSWORD` (input only; build stores hash).
+3. Build image: `sudo ./build.sh --ssh` (if you want SSH UI) or `sudo ./build.sh` (web + console only).
+4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, then enable locking per your OPAL workflow.
+5. Boot target machine into PBA and unlock drives from:
+   - Web UI: `https://<pba-ip>/`
+   - SSH UI (optional): `ssh -p 2222 tc@<pba-ip>`
+   - Local console keyboard on the machine
+6. After unlock:
+   - Use `Boot` for fast warm handoff via `kexec`
+   - Use `Reboot` for a full hardware/firmware restart path
+
+---
+
 ## 🛠️ Build Host Dependencies
 To prepare your build host (Proxmox, Debian, or Ubuntu) for generating the enhanced PBA image, follow this formatted summary of required tools and the Go upgrade process.
 
@@ -69,7 +89,7 @@ Defaults live in `build.sh`. To set your own defaults without long CLI lines:
 
 Resolution order: **built-in defaults → `build.conf` (or `BUILD_CONFIG` env path) → `--config=FILE` (replaces path) → remaining flags**.
 
-Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--net-mode=single|bond`, `--net-ifaces="eth0 eth1"`, `--net-addressing=dhcp|static`, `--ip-addr=...`, `--netmask=...`, `--gateway=...`, `--dns="..."`, `--bond-mode=4`, `--bond-miimon=100`, `--bond-lacp-rate=1`, `--bond-xmit-hash-policy=1`, `--tls-cert=/path/to/server.crt`, `--tls-key=/path/to/server.key`, `--ssh-curl-insecure=auto|true|false`, `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
+Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--net-mode=single|bond`, `--net-ifaces="eth0 eth1"`, `--net-addressing=dhcp|static`, `--ip-addr=...`, `--netmask=...`, `--gateway=...`, `--dns="..."`, `--bond-mode=4`, `--bond-miimon=100`, `--bond-lacp-rate=1`, `--bond-xmit-hash-policy=1`, `--tls-cert=/path/to/server.crt`, `--tls-key=/path/to/server.key`, `--ssh-curl-insecure=auto|true|false`, `--expert-password=...` (build input; hash stored), `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
 
 
 # sedunlocksrv-pba

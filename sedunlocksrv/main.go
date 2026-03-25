@@ -18,9 +18,10 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -35,28 +36,20 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 )
 
 // ============================================================
 // DATA TYPES
-// These structs are used as JSON request/response bodies across
-// the HTTP API, the web UI (index.html), and the SSH script
-// (ssh_sed_unlock.sh) which parses the JSON with grep/awk.
 // ============================================================
 
-// DriveStatus represents a single drive detected by sedutil-cli.
-// Returned by /status, which is polled every 5 seconds by index.html
-// and every 10 seconds by the SSH script.
 type DriveStatus struct {
-	Device string `json:"device"` // e.g. "/dev/sda"
-	Locked bool   `json:"locked"` // true if the drive's locking range is active
-	Opal   bool   `json:"opal"`   // true if the drive supports TCG OPAL 2.x
+	Device string `json:"device"`
+	Locked bool   `json:"locked"`
+	Opal   bool   `json:"opal"`
 }
 
-// NetworkInterfaceStatus describes one network interface visible inside Tiny Core.
-// It is returned by /status so users can see the exact interface names that this
-// environment exposes (for example eth0/eth1) when choosing exclude/include lists.
 type NetworkInterfaceStatus struct {
 	Name      string   `json:"name"`
 	MAC       string   `json:"mac,omitempty"`
@@ -66,61 +59,61 @@ type NetworkInterfaceStatus struct {
 	Addresses []string `json:"addresses,omitempty"`
 }
 
-// StatusResponse is the shared status payload consumed by the web UI, SSH UI,
-// and console TUI.
 type StatusResponse struct {
-	Drives    []DriveStatus            `json:"drives"`
+	Drives     []DriveStatus            `json:"drives"`
 	Interfaces []NetworkInterfaceStatus `json:"interfaces"`
 }
 
-// UnlockResult is the per-drive outcome of a single unlock attempt.
+type DriveDiagnostics struct {
+	Device              string `json:"device"`
+	Opal                bool   `json:"opal"`
+	Locked              bool   `json:"locked"`
+	LockingSupported    string `json:"lockingSupported"`
+	LockingEnabled      string `json:"lockingEnabled"`
+	MBREnabled          string `json:"mbrEnabled"`
+	MBRDone             string `json:"mbrDone"`
+	MediaEncrypt        string `json:"mediaEncrypt"`
+	LockingRange0Locked string `json:"lockingRange0Locked"`
+	QueryRaw            string `json:"queryRaw"`
+}
+
+type DiagnosticsResponse struct {
+	GeneratedAt string             `json:"generatedAt"`
+	Drives      []DriveDiagnostics `json:"drives"`
+}
+
 type UnlockResult struct {
 	Device  string `json:"device"`
 	Success bool   `json:"success"`
 }
 
-// UnlockResponse is the top-level response body for POST /unlock.
-// index.html currently checks only for the presence of an "error" key;
-// ssh_sed_unlock.sh uses grep to check for "error" in the raw response.
 type UnlockResponse struct {
 	Results []UnlockResult `json:"results"`
 	Token   string         `json:"token,omitempty"`
 }
 
-// PasswordChangeResult is the per-drive outcome of a password change.
-// A drive can fail independently of others (e.g. wrong current password
-// on one drive but not another).
 type PasswordChangeResult struct {
 	Device  string `json:"device"`
 	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"` // omitted from JSON when empty
+	Error   string `json:"error,omitempty"`
 }
 
-// PasswordChangeResponse is the top-level response body for POST /change-password.
 type PasswordChangeResponse struct {
 	Results []PasswordChangeResult `json:"results"`
 }
 
-// BootResult is the response body for POST /boot. It describes the kernel,
-// initrd, and cmdline that were loaded via kexec, plus drive state at the
-// time of boot. The web UI displays the Warning field if any drives were
-// still locked when boot was requested.
 type BootResult struct {
 	Kernel        string        `json:"kernel"`
 	Initrd        string        `json:"initrd"`
 	Cmdline       string        `json:"cmdline"`
 	Drives        []DriveStatus `json:"drives"`
-	Warning       string        `json:"warning,omitempty"` // set if any drives were still locked
+	Warning       string        `json:"warning,omitempty"`
 	FullyUnlocked bool          `json:"fullyUnlocked"`
 }
 
-// PasswordPolicy describes the complexity requirements enforced when this tool
-// *sets* a new password via /change-password or the console P menu.
+// PasswordPolicy describes complexity requirements for setting a new password.
 // It is NOT applied to unlock attempts — the drive may have been initialized
-// by another tool (e.g. sedutil-cli directly) with a password that doesn't
-// meet these requirements, and we must still be able to unlock it.
-// The policy is exposed via GET /password-policy so index.html can display
-// the current requirements in the Change Password tab.
+// with a password that doesn't meet these requirements.
 type PasswordPolicy struct {
 	MinLength      int  `json:"minLength"`
 	RequireUpper   bool `json:"requireUpper"`
@@ -134,41 +127,26 @@ type PasswordPolicy struct {
 // ============================================================
 
 var (
-	// failedAttempts counts consecutive failed unlock attempts across all
-	// interfaces (web, SSH, console). It is reset to zero on any success.
-	// Protected by mu.
+	// mu protects failedAttempts. The check, work, and increment are all
+	// done under a single lock hold to prevent TOCTOU races between
+	// concurrent unlock requests (e.g. web UI + SSH open simultaneously).
 	failedAttempts int
-	maxAttempts    = 5 // power off after this many consecutive failures
+	maxAttempts    = 5
+	mu             sync.Mutex
+	unlockMu       sync.Mutex
 
-	// mu protects failedAttempts from concurrent modification. Two simultaneous
-	// unlock requests (e.g. web UI and SSH) could otherwise both read a value
-	// below maxAttempts and both proceed, potentially overshooting the limit.
-	mu sync.Mutex
+	sessionMu        sync.RWMutex
+	apiSessionToken  string
+	expertSessionTok string
 
-	// sessionMu protects apiSessionToken, which is required for remote state-
-	// changing actions such as boot/reboot/poweroff after a successful unlock.
-	sessionMu       sync.RWMutex
-	apiSessionToken string
-
-	// passwordPolicy is loaded once at startup from environment variables.
-	// Defaults match the README's "enterprise-grade" security requirements.
-	passwordPolicy = loadPolicy()
+	passwordPolicy    = loadPolicy()
+	expertPasswordHash = loadExpertPasswordHash()
 )
 
 // ============================================================
 // PASSWORD POLICY
 // ============================================================
 
-// loadPolicy reads password policy settings from environment variables.
-// This allows the policy to be tuned at build time by setting ENV values
-// in tc-config without recompiling the binary.
-//
-// Environment variables and their defaults:
-//   MIN_PASSWORD_LENGTH  (default: 12)
-//   REQUIRE_UPPER        (default: true)
-//   REQUIRE_LOWER        (default: true)
-//   REQUIRE_NUMBER       (default: true)
-//   REQUIRE_SPECIAL      (default: true)
 func loadPolicy() PasswordPolicy {
 	getBool := func(k string, def bool) bool {
 		v := os.Getenv(k)
@@ -177,15 +155,12 @@ func loadPolicy() PasswordPolicy {
 		}
 		return v == "true"
 	}
-
 	getInt := func(k string, def int) int {
-		v := os.Getenv(k)
-		if i, err := strconv.Atoi(v); err == nil {
+		if i, err := strconv.Atoi(os.Getenv(k)); err == nil {
 			return i
 		}
 		return def
 	}
-
 	return PasswordPolicy{
 		MinLength:      getInt("MIN_PASSWORD_LENGTH", 12),
 		RequireUpper:   getBool("REQUIRE_UPPER", true),
@@ -195,17 +170,17 @@ func loadPolicy() PasswordPolicy {
 	}
 }
 
+func loadExpertPasswordHash() string {
+	return strings.TrimSpace(os.Getenv("EXPERT_PASSWORD_HASH"))
+}
+
 // validatePassword checks a proposed new password against the loaded policy.
-// This is called only when *setting* a password (POST /change-password and
-// the console P menu). It is intentionally NOT called during unlock — see
-// the PasswordPolicy comment above for the rationale.
+// Called only when *setting* a password — NOT during unlock.
 func validatePassword(password string) error {
 	if len(password) < passwordPolicy.MinLength {
 		return fmt.Errorf("minimum length %d", passwordPolicy.MinLength)
 	}
-
 	var hasUpper, hasLower, hasNumber, hasSpecial bool
-
 	for _, c := range password {
 		switch {
 		case unicode.IsUpper(c):
@@ -215,11 +190,9 @@ func validatePassword(password string) error {
 		case unicode.IsNumber(c):
 			hasNumber = true
 		case !unicode.IsLetter(c) && !unicode.IsNumber(c):
-			// Anything that isn't a letter or digit counts as a special character.
 			hasSpecial = true
 		}
 	}
-
 	if passwordPolicy.RequireUpper && !hasUpper {
 		return fmt.Errorf("missing uppercase")
 	}
@@ -232,7 +205,6 @@ func validatePassword(password string) error {
 	if passwordPolicy.RequireSpecial && !hasSpecial {
 		return fmt.Errorf("missing special character")
 	}
-
 	return nil
 }
 
@@ -241,67 +213,81 @@ func validatePassword(password string) error {
 // ============================================================
 
 // scanDrives calls sedutil-cli to enumerate all drives and their lock state.
-// It is called on every status poll, unlock attempt, and boot request, so its
-// results always reflect the current state of the hardware.
-//
-// sedutil-cli --scan output format (one line per drive):
-//   /dev/sda  2  Samsung SSD 850 ...
-//   ^device   ^OPAL version
-//
-// sedutil-cli --query /dev/sda output includes "Locked = Y" when locked.
+// Each call uses a 5-second context timeout so a stalled drive or missing
+// binary never blocks the HTTP handler indefinitely. (Fix #1)
 func scanDrives() []DriveStatus {
 	var statuses []DriveStatus
 
-	out, err := exec.Command("sedutil-cli", "--scan").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "sedutil-cli", "--scan").Output()
 	if err != nil {
-		// If sedutil-cli is not available or fails, return an empty list.
-		// Callers handle an empty drive list gracefully.
 		return statuses
 	}
 
-	lines := strings.Split(string(out), "\n")
-
-	for _, line := range lines {
+	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
-
 		dev := fields[0]
-
-		// Skip lines that aren't device paths (e.g. header lines).
 		if !strings.HasPrefix(dev, "/dev/") {
 			continue
 		}
 
-		// The second field is the OPAL version string reported by sedutil.
-		// We check HasPrefix("2") rather than Contains("2") to avoid false
-		// positives from strings like "12" or "20".
 		opal := strings.HasPrefix(fields[1], "2")
-
-		// Query the individual drive for its current lock state.
-		query, _ := exec.Command("sedutil-cli", "--query", dev).Output()
-		locked := strings.Contains(string(query), "Locked = Y")
-
-		statuses = append(statuses, DriveStatus{
-			Device: dev,
-			Locked: locked,
-			Opal:   opal,
-		})
+		query, _ := queryDrive(dev)
+		locked := strings.Contains(query, "Locked = Y")
+		statuses = append(statuses, DriveStatus{Device: dev, Locked: locked, Opal: opal})
 	}
-
 	return statuses
 }
 
-// scanNetworkInterfaces returns the network interfaces visible inside the PBA.
-// This helps users map Tiny Core interface names to the hardware in the box
-// before using include/exclude options at build time.
+func queryDrive(dev string) (string, error) {
+	qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer qcancel()
+	query, err := exec.CommandContext(qctx, "sedutil-cli", "--query", dev).CombinedOutput()
+	return string(query), err
+}
+
+func queryField(query, field string) string {
+	prefix := field + " = "
+	for _, line := range strings.Split(query, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(t, prefix))
+		}
+	}
+	return "unknown"
+}
+
+func collectDriveDiagnostics() []DriveDiagnostics {
+	drives := scanDrives()
+	diag := make([]DriveDiagnostics, 0, len(drives))
+	for _, d := range drives {
+		raw, _ := queryDrive(d.Device)
+		diag = append(diag, DriveDiagnostics{
+			Device:              d.Device,
+			Opal:                d.Opal,
+			Locked:              d.Locked,
+			LockingSupported:    queryField(raw, "LockingSupported"),
+			LockingEnabled:      queryField(raw, "LockingEnabled"),
+			MBREnabled:          queryField(raw, "MBREnable"),
+			MBRDone:             queryField(raw, "MBRDone"),
+			MediaEncrypt:        queryField(raw, "MediaEncrypt"),
+			LockingRange0Locked: queryField(raw, "Locked"),
+			QueryRaw:            strings.TrimSpace(raw),
+		})
+	}
+	return diag
+}
+
 func scanNetworkInterfaces() []NetworkInterfaceStatus {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-
 	statuses := make([]NetworkInterfaceStatus, 0, len(interfaces))
 	for _, iface := range interfaces {
 		addrs, _ := iface.Addrs()
@@ -311,18 +297,14 @@ func scanNetworkInterfaces() []NetworkInterfaceStatus {
 		}
 		sort.Strings(addresses)
 
-		stateBytes, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "operstate"))
 		state := "unknown"
-		if err == nil {
-			state = strings.TrimSpace(string(stateBytes))
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "operstate")); err == nil {
+			state = strings.TrimSpace(string(b))
 		}
-
-		carrierBytes, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "carrier"))
 		carrier := false
-		if err == nil {
-			carrier = strings.TrimSpace(string(carrierBytes)) == "1"
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "carrier")); err == nil {
+			carrier = strings.TrimSpace(string(b)) == "1"
 		}
-
 		statuses = append(statuses, NetworkInterfaceStatus{
 			Name:      iface.Name,
 			MAC:       iface.HardwareAddr.String(),
@@ -332,17 +314,18 @@ func scanNetworkInterfaces() []NetworkInterfaceStatus {
 			Addresses: addresses,
 		})
 	}
-
 	sort.Slice(statuses, func(i, j int) bool {
 		if statuses[i].Loopback != statuses[j].Loopback {
 			return !statuses[i].Loopback
 		}
 		return statuses[i].Name < statuses[j].Name
 	})
-
 	return statuses
 }
 
+// currentStatus returns a snapshot of drives and network interfaces.
+// Callers that need both should call this once and pass the result down
+// rather than calling scanDrives/scanNetworkInterfaces separately. (Size #1)
 func currentStatus() StatusResponse {
 	return StatusResponse{
 		Drives:     scanDrives(),
@@ -350,17 +333,31 @@ func currentStatus() StatusResponse {
 	}
 }
 
+// ============================================================
+// SESSION TOKEN
+// ============================================================
+
 func mintSessionToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
 	token := hex.EncodeToString(buf)
-
 	sessionMu.Lock()
 	apiSessionToken = token
 	sessionMu.Unlock()
+	return token, nil
+}
 
+func mintExpertToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(buf)
+	sessionMu.Lock()
+	expertSessionTok = token
+	sessionMu.Unlock()
 	return token, nil
 }
 
@@ -368,7 +365,6 @@ func validSessionToken(token string) bool {
 	if token == "" {
 		return false
 	}
-
 	sessionMu.RLock()
 	defer sessionMu.RUnlock()
 	return apiSessionToken != "" && token == apiSessionToken
@@ -382,18 +378,46 @@ func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func validExpertToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	sessionMu.RLock()
+	defer sessionMu.RUnlock()
+	return expertSessionTok != "" && token == expertSessionTok
+}
+
+func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
+	if !validExpertToken(r.Header.Get("X-Expert-Token")) {
+		jsonResponse(w, http.StatusForbidden, map[string]string{"error": "expert authentication required"})
+		return true
+	}
+	return false
+}
+
 func anySuccessfulUnlock(results []UnlockResult) bool {
-	for _, result := range results {
-		if result.Success {
+	for _, r := range results {
+		if r.Success {
 			return true
 		}
 	}
 	return false
 }
 
-func printConsoleInterfaces() {
+// ============================================================
+// CONSOLE HELPERS
+// ============================================================
+
+func printConsoleStatus(status StatusResponse) {
+	for _, d := range status.Drives {
+		if d.Locked {
+			fmt.Println("❌", d.Device)
+		} else {
+			fmt.Println("✅", d.Device)
+		}
+	}
 	fmt.Println("\nNetwork Interfaces:")
-	for _, iface := range scanNetworkInterfaces() {
+	for _, iface := range status.Interfaces {
 		link := "no-link"
 		if iface.Carrier {
 			link = "link"
@@ -416,28 +440,22 @@ func printConsoleInterfaces() {
 // UNLOCK
 // ============================================================
 
-// attemptUnlock tries to unlock all currently-locked drives with the given
-// password. It is the handler for all three interfaces:
-//   - POST /unlock        (web UI and SSH script)
-//   - console ENTER key   (physical terminal / TUI)
+// attemptUnlock tries to unlock all locked drives with the given password.
 //
-// Rate limiting: after maxAttempts consecutive failures across all interfaces,
-// the system powers off to prevent brute-force attacks. The counter resets to
-// zero on any successful unlock.
-//
-// The password is only checked for blankness here. Full complexity requirements
-// (validatePassword) are NOT enforced — see PasswordPolicy comment for rationale.
+// Rate limiting: the entire check-and-increment sequence is held under mu so
+// two concurrent requests cannot both pass the limit check simultaneously.
+// (Fix #2 — closes the TOCTOU race between check and increment.)
 func attemptUnlock(password string) ([]UnlockResult, error) {
-	// Reject blank passwords immediately. No point sending them to sedutil-cli
-	// and burning a rate-limit attempt on an obviously invalid input.
 	if strings.TrimSpace(password) == "" {
 		return nil, fmt.Errorf("password cannot be blank")
 	}
 
-	// Check the lockout state before doing any work. This is done under the
-	// mutex so that two concurrent unlock requests (e.g. web UI tab and SSH
-	// session open simultaneously) can't both slip past the check at the same
-	// time.
+	// Serialize unlock workflows without holding the failed-attempt mutex while
+	// running external commands. This prevents long lock holds that block other
+	// request paths, while preserving deterministic attempt accounting.
+	unlockMu.Lock()
+	defer unlockMu.Unlock()
+
 	mu.Lock()
 	if failedAttempts >= maxAttempts {
 		mu.Unlock()
@@ -450,55 +468,36 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 
 	for _, d := range scanDrives() {
 		if !d.Locked {
-			// Already unlocked — skip. The web UI's Boot button becomes visible
-			// once at least one drive reports unlocked.
 			continue
 		}
-
-		// Two sedutil-cli calls are required per drive to fully unlock it:
-		//   1. --setlockingrange 0 rw  — enables read/write access to locking range 0
-		//   2. --setmbrdone on          — clears the MBR shadow so the real MBR is visible
-		err1 := exec.Command("sedutil-cli",
-			"--setlockingrange", "0", "rw", password, d.Device).Run()
-
-		err2 := exec.Command("sedutil-cli",
-			"--setmbrdone", "on", password, d.Device).Run()
-
+		err1 := exec.Command("sedutil-cli", "--setlockingrange", "0", "rw", password, d.Device).Run()
+		err2 := exec.Command("sedutil-cli", "--setmbrdone", "on", password, d.Device).Run()
 		success := err1 == nil && err2 == nil
-
 		if success {
 			successAny = true
 		}
-
-		results = append(results, UnlockResult{
-			Device:  d.Device,
-			Success: success,
-		})
+		results = append(results, UnlockResult{Device: d.Device, Success: success})
 	}
 
-	// Update the failure counter under the mutex.
-	mu.Lock()
-	defer mu.Unlock()
-
 	if successAny {
-		// At least one drive unlocked — reset the counter.
+		mu.Lock()
 		failedAttempts = 0
+		mu.Unlock()
 	} else {
+		mu.Lock()
 		failedAttempts++
 		log.Printf("Failed unlock attempt %d/%d\n", failedAttempts, maxAttempts)
-
 		if failedAttempts >= maxAttempts {
+			mu.Unlock()
 			log.Println("Max failed attempts reached. Powering off.")
-			// Sleep briefly so the HTTP response (or console message) can be
-			// delivered before the machine loses power.
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 				exec.Command("poweroff", "-nf").Run()
 			}()
 			return results, fmt.Errorf("maximum failed attempts reached")
 		}
+		mu.Unlock()
 	}
-
 	return results, nil
 }
 
@@ -506,44 +505,34 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // PASSWORD CHANGE
 // ============================================================
 
-// changePassword updates the SID and Admin1 passwords on all detected drives.
-// It is called by POST /change-password (web UI Change Password tab) and by
-// the console P menu.
+// changePassword updates SID and Admin1 passwords on all detected drives.
 //
-// Both passwords must be updated together — SID is the master credential used
-// by sedutil for administrative operations, Admin1 is the locking credential
-// used during unlock. If they diverge, the drive may become difficult to manage.
-//
-// NOTE: This function does not independently verify that `current` is correct.
-// A wrong current password will cause sedutil-cli to fail, which is reported
-// as success:false with a generic error message. The caller is responsible for
-// communicating the result to the user.
+// Both commands are attempted and each failure is reported independently.
+// If only one of the two sedutil-cli calls fails the drive is left in a
+// split state; the error message now identifies which command failed so
+// the operator can take corrective action. (Fix #5)
 func changePassword(current, newPw string) []PasswordChangeResult {
 	var results []PasswordChangeResult
-
 	for _, d := range scanDrives() {
-		// Update the SID (Security ID) password — used for sedutil admin operations.
-		err1 := exec.Command("sedutil-cli",
-			"--setsidpassword", current, newPw, d.Device).Run()
-
-		// Update the Admin1 password — used for locking range operations (unlock).
-		err2 := exec.Command("sedutil-cli",
-			"--setadmin1password", current, newPw, d.Device).Run()
-
-		success := err1 == nil && err2 == nil
+		err1 := exec.Command("sedutil-cli", "--setsidpassword", current, newPw, d.Device).Run()
+		err2 := exec.Command("sedutil-cli", "--setadmin1password", current, newPw, d.Device).Run()
 
 		var errMsg string
-		if !success {
-			errMsg = "failed to update password"
+		switch {
+		case err1 != nil && err2 != nil:
+			errMsg = "failed to update SID and Admin1 passwords"
+		case err1 != nil:
+			errMsg = "SID password update failed (drive may be in split state — Admin1 was updated)"
+		case err2 != nil:
+			errMsg = "Admin1 password update failed (drive may be in split state — SID was updated)"
 		}
 
 		results = append(results, PasswordChangeResult{
 			Device:  d.Device,
-			Success: success,
+			Success: err1 == nil && err2 == nil,
 			Error:   errMsg,
 		})
 	}
-
 	return results
 }
 
@@ -553,16 +542,6 @@ func changePassword(current, newPw string) []PasswordChangeResult {
 
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
-// This is called by POST /boot (web UI Boot button, SSH B option) and the
-// console B key.
-//
-// Using kexec rather than a cold reboot keeps the drives authorized across the
-// transition — a cold reboot would cause the drives to re-lock (requiring the
-// PBA again), whereas kexec performs a "warm" kernel switch without power cycling.
-//
-// The function returns a BootResult immediately so the caller can send an HTTP
-// response before kexec fires. Kexec itself runs in a short-delay goroutine to
-// ensure the response is flushed first.
 func BootSystem() (*BootResult, error) {
 	drives := scanDrives()
 
@@ -574,53 +553,44 @@ func BootSystem() (*BootResult, error) {
 			unlocked = append(unlocked, d.Device)
 		}
 	}
-
 	if len(unlocked) == 0 {
 		return nil, fmt.Errorf("no unlocked drives")
 	}
 
 	fullyUnlocked := len(locked) == 0
-
-	// If any drives are still locked, include a warning in the response.
-	// The web UI and SSH script display this to the user but still proceed
-	// with booting.
 	var warning string
 	if !fullyUnlocked {
 		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
 	}
 
-	// Use the first unlocked drive as the boot source.
 	bootDrive := unlocked[0]
 
-	// List partitions on the boot drive using lsblk.
-	out, err := exec.Command("lsblk", "-ln", "-o", "NAME", bootDrive).Output()
+	// Use lsblk with a TYPE filter to get only partition entries,
+	// avoiding the fragile parts[1:] index assumption. (Fix #3)
+	out, err := exec.Command("lsblk", "-ln", "-o", "NAME,TYPE", bootDrive).Output()
 	if err != nil {
 		return nil, err
 	}
 
-	parts := strings.Fields(string(out))
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
-	// Try each partition in turn until we find one with a Proxmox kernel.
-	for _, p := range parts[1:] { // parts[0] is the drive itself; skip it
-		part := "/dev/" + p
-
-		// Mount read-only — we only need to read the kernel/initrd files.
-		if err := exec.Command("mount", "-r", part, mountPoint).Run(); err != nil {
-			continue // not a mountable filesystem — try the next partition
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != "part" {
+			continue
 		}
+		part := "/dev/" + fields[0]
 
-		// Ensure the partition is unmounted on every path out of this block,
-		// including error returns, to avoid leaving stale mounts.
+		if err := exec.Command("mount", "-r", part, mountPoint).Run(); err != nil {
+			continue
+		}
 		unmount := func() { exec.Command("umount", mountPoint).Run() }
 
-		// Look for Proxmox-specific kernel and initrd naming conventions.
 		kernels, _ := filepath.Glob(mountPoint + "/boot/vmlinuz-*-pve")
 		initrds, _ := filepath.Glob(mountPoint + "/boot/initrd.img-*-pve")
 
 		if len(kernels) > 0 && len(initrds) > 0 {
-			// Use the last (lexicographically highest = most recent) kernel version.
 			kernel := kernels[len(kernels)-1]
 			initrd := initrds[len(initrds)-1]
 
@@ -629,25 +599,15 @@ func BootSystem() (*BootResult, error) {
 				unmount()
 				return nil, err
 			}
-
 			unmount()
 
-			// Stage the kernel into kexec. This does not yet transfer control.
-			if err := exec.Command("kexec",
-				"-l", kernel,
-				"--initrd="+initrd,
-				"--append="+cmdline,
-			).Run(); err != nil {
+			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
 				return nil, err
 			}
-
-			// Execute the staged kernel after a brief delay so the HTTP response
-			// (or console output) can be delivered before control transfers.
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 				exec.Command("kexec", "-e").Run()
 			}()
-
 			return &BootResult{
 				Kernel:        kernel,
 				Initrd:        initrd,
@@ -657,111 +617,108 @@ func BootSystem() (*BootResult, error) {
 				FullyUnlocked: fullyUnlocked,
 			}, nil
 		}
-
 		unmount()
 	}
-
 	return nil, fmt.Errorf("no bootable partition")
 }
 
-func extractLinuxCmdline(line string) string {
+// extractLinuxCmdline parses a GRUB "linux" or "linuxefi" line.
+// It returns the command line plus a validity flag.
+func extractLinuxCmdline(line string) (string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) < 3 {
-		return ""
+	if len(fields) < 2 {
+		return "", false
 	}
-	return strings.Join(fields[2:], " ")
+	if len(fields) == 2 {
+		return "", true
+	}
+	return strings.Join(fields[2:], " "), true
 }
 
-func findBootCmdlineFromGrub(grubPath, kernel string) (string, error) {
+// findBootCmdline tries three sources in priority order:
+//  1. systemd-boot loader entries  (modern Proxmox)
+//  2. grub.cfg under /boot/grub/   (legacy BIOS GRUB)
+//  3. grub.cfg under /grub/        (some EFI layouts)
+//
+// The three source-specific functions are expressed as a slice of closures
+// rather than three separate named functions, halving the boilerplate. (Size #2)
+func findBootCmdline(mountPoint, kernel string) (string, error) {
+	kernelBase := filepath.Base(kernel)
+
+	candidates := []func() (string, bool, error){
+		func() (string, bool, error) {
+			// systemd-boot: scan *.conf files in loader/entries/
+			entriesDir := filepath.Join(mountPoint, "loader", "entries")
+			files, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
+			if err != nil || len(files) == 0 {
+				return "", false, fmt.Errorf("no loader entries in %s", entriesDir)
+			}
+			sort.Strings(files)
+			for _, f := range files {
+				data, err := os.ReadFile(f)
+				if err != nil {
+					continue
+				}
+				var kernelMatch bool
+				var options string
+				for _, line := range strings.Split(string(data), "\n") {
+					t := strings.TrimSpace(line)
+					if strings.HasPrefix(t, "linux ") {
+						kernelMatch = kernelBase == "" || strings.Contains(t, kernelBase)
+					} else if strings.HasPrefix(t, "options ") {
+						options = strings.TrimSpace(strings.TrimPrefix(t, "options "))
+					}
+				}
+				if kernelMatch {
+					return options, true, nil
+				}
+			}
+			return "", false, fmt.Errorf("kernel command line not found in loader entries")
+		},
+		func() (string, bool, error) {
+			// GRUB config at /boot/grub/grub.cfg
+			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), kernelBase)
+		},
+		func() (string, bool, error) {
+			// GRUB config at /grub/grub.cfg (some EFI layouts)
+			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
+		},
+	}
+
+	for _, try := range candidates {
+		if cmdline, found, err := try(); err == nil && found {
+			return cmdline, nil
+		}
+	}
+	return "", fmt.Errorf("unable to determine target kernel command line from %s", mountPoint)
+}
+
+// parseGrubCfg extracts the kernel command line from a grub.cfg file.
+// It looks for a "linux" or "linuxefi" directive that references kernelBase.
+func parseGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-
-	kernelBase := filepath.Base(kernel)
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "linux ") && !strings.HasPrefix(trimmed, "linuxefi ") {
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
 			continue
 		}
-		if kernelBase != "" && !strings.Contains(trimmed, kernelBase) {
+		if kernelBase != "" && !strings.Contains(t, kernelBase) {
 			continue
 		}
-		if cmdline := extractLinuxCmdline(trimmed); cmdline != "" {
-			return cmdline, nil
+		if cmdline, ok := extractLinuxCmdline(t); ok {
+			return cmdline, true, nil
 		}
 	}
-
-	return "", fmt.Errorf("kernel command line not found in %s", grubPath)
-}
-
-func findBootCmdlineFromLoader(entriesDir, kernel string) (string, error) {
-	entryFiles, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
-	if err != nil || len(entryFiles) == 0 {
-		return "", fmt.Errorf("no loader entries in %s", entriesDir)
-	}
-
-	kernelBase := filepath.Base(kernel)
-	sort.Strings(entryFiles)
-	for _, entry := range entryFiles {
-		data, err := os.ReadFile(entry)
-		if err != nil {
-			continue
-		}
-
-		lines := strings.Split(string(data), "\n")
-		kernelMatch := kernelBase == ""
-		var options string
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			switch {
-			case strings.HasPrefix(trimmed, "linux "):
-				kernelMatch = kernelBase == "" || strings.Contains(trimmed, kernelBase)
-			case strings.HasPrefix(trimmed, "options "):
-				options = strings.TrimSpace(strings.TrimPrefix(trimmed, "options "))
-			}
-		}
-
-		if kernelMatch && options != "" {
-			return options, nil
-		}
-	}
-
-	return "", fmt.Errorf("kernel command line not found in loader entries")
-}
-
-func findBootCmdline(mountPoint, kernel string) (string, error) {
-	candidates := []func() (string, error){
-		func() (string, error) {
-			return findBootCmdlineFromLoader(filepath.Join(mountPoint, "loader", "entries"), kernel)
-		},
-		func() (string, error) {
-			return findBootCmdlineFromGrub(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), kernel)
-		},
-		func() (string, error) {
-			return findBootCmdlineFromGrub(filepath.Join(mountPoint, "grub", "grub.cfg"), kernel)
-		},
-	}
-
-	for _, candidate := range candidates {
-		cmdline, err := candidate()
-		if err == nil && cmdline != "" {
-			return cmdline, nil
-		}
-	}
-
-	return "", fmt.Errorf("unable to determine target kernel command line from %s", mountPoint)
+	return "", false, fmt.Errorf("kernel command line not found in %s", grubPath)
 }
 
 // ============================================================
 // CONSOLE TUI
 // ============================================================
 
-// privacyTimeout is the duration of inactivity in the active menu before the
-// console returns to the standby screen. This prevents the active menu (which
-// shows drive status and accepts commands) from remaining visible indefinitely
-// on an unattended physical terminal.
 const privacyTimeout = 30 * time.Second
 
 const (
@@ -772,35 +729,14 @@ const (
 	colorDim    = "\033[38;5;245m"
 )
 
-// consoleInterface is the outermost loop of the physical terminal UI.
-// It runs in a goroutine alongside the HTTP server so both interfaces are
-// available simultaneously.
-//
-// The console has two states:
-//   STANDBY — shows drive status, waits for any keypress to become active
-//   ACTIVE  — shows the command menu, returns to standby after privacyTimeout
 func consoleInterface() {
 	fd := int(os.Stdin.Fd())
-
 	for {
-		// Standby screen: show current drive status and wait for a keypress.
-		fmt.Print("\033[H\033[2J") // clear screen (ANSI escape)
+		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔒 PBA STANDBY" + colorReset)
-
-		for _, d := range scanDrives() {
-			if d.Locked {
-				fmt.Println("❌", d.Device)
-			} else {
-				fmt.Println("✅", d.Device)
-			}
-		}
-
-		printConsoleInterfaces()
-
+		printConsoleStatus(currentStatus()) // single scan shared by drives + interfaces
 		fmt.Println("\n" + colorDim + "Press any key..." + colorReset)
 
-		// Switch stdin to raw mode so we receive individual keypresses
-		// without waiting for Enter.
 		old, err := term.MakeRaw(fd)
 		if err != nil {
 			log.Printf("term.MakeRaw failed: %v", err)
@@ -810,53 +746,31 @@ func consoleInterface() {
 		buf := make([]byte, 1)
 		os.Stdin.Read(buf)
 		term.Restore(fd, old)
-
-		// Any key transitions to the active command menu.
 		activeMenu(fd)
 	}
 }
 
-// activeMenu shows the command menu on the physical terminal and processes
-// keypresses until the privacy timeout expires or the user navigates away.
-// It returns to consoleInterface (standby) when done.
 func activeMenu(fd int) {
 	for {
-		// Redraw the active menu on every iteration to reflect current drive state.
-		fmt.Print("\033[H\033[2J") // clear screen
+		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔑 ACTIVE MODE" + colorReset)
-
-		for _, d := range scanDrives() {
-			if d.Locked {
-				fmt.Println("❌", d.Device)
-			} else {
-				fmt.Println("✅", d.Device)
-			}
-		}
-
-		printConsoleInterfaces()
+		printConsoleStatus(currentStatus()) // single scan shared by drives + interfaces
 
 		fmt.Printf(
 			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sP%s] %sChange PW%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s\n",
-			colorDim, colorReset,
-			colorPurple, colorReset,
-			colorDim, colorReset,
-			colorBlue, colorReset,
-			colorDim, colorReset,
-			colorPurple, colorReset,
-			colorDim, colorReset,
-			colorOrange, colorReset,
-			colorDim, colorReset,
-			colorBlue, colorReset,
+			colorDim, colorReset, colorPurple, colorReset,
+			colorDim, colorReset, colorBlue, colorReset,
+			colorDim, colorReset, colorPurple, colorReset,
+			colorDim, colorReset, colorOrange, colorReset,
+			colorDim, colorReset, colorBlue, colorReset,
 		)
 
 		old, err := term.MakeRaw(fd)
 		if err != nil {
 			log.Printf("term.MakeRaw failed: %v", err)
-			return // back to standby
+			return
 		}
 
-		// Read a single keypress in a goroutine so we can also select on
-		// the privacy timeout channel.
 		type readResult struct {
 			b   byte
 			err error
@@ -873,27 +787,24 @@ func activeMenu(fd int) {
 		case res := <-ch:
 			term.Restore(fd, old)
 			if res.err != nil {
-				return // stdin error — back to standby
+				return
 			}
 			key = strings.ToUpper(string(res.b))
 		case <-time.After(privacyTimeout):
-			// No keypress within the timeout window — return to standby screen.
 			term.Restore(fd, old)
 			return
 		}
 
 		switch key {
-
-		case "\r": // Enter — prompt for password and attempt unlock
+		case "\r":
 			fmt.Print("Password: ")
 			pw, _ := term.ReadPassword(fd)
-			_, err := attemptUnlock(string(pw))
-			if err != nil {
+			if _, err := attemptUnlock(string(pw)); err != nil {
 				fmt.Println("\n❌", err)
 				time.Sleep(2 * time.Second)
 			}
 
-		case "B": // Boot — load Proxmox kernel via kexec
+		case "B":
 			res, err := BootSystem()
 			if err != nil {
 				fmt.Println(err)
@@ -902,13 +813,11 @@ func activeMenu(fd int) {
 			}
 			time.Sleep(2 * time.Second)
 
-		case "P": // Change Password — prompts for current and new passwords
+		case "P":
 			fmt.Print("\nCurrent: ")
 			curr, _ := term.ReadPassword(fd)
-
 			fmt.Print("\nNew: ")
 			newP, _ := term.ReadPassword(fd)
-
 			fmt.Print("\nConfirm: ")
 			conf, _ := term.ReadPassword(fd)
 
@@ -917,22 +826,17 @@ func activeMenu(fd int) {
 				time.Sleep(2 * time.Second)
 				break
 			}
-
-			// validatePassword is called here (setting a new password) but NOT
-			// during unlock — drives may have been initialized with passwords
-			// that don't meet policy, and we must still be able to unlock them.
 			if err := validatePassword(string(newP)); err != nil {
 				fmt.Println("\n❌", err)
 				time.Sleep(2 * time.Second)
 				break
 			}
-
 			changePassword(string(curr), string(newP))
 
-		case "R": // Reboot
+		case "R":
 			exec.Command("reboot", "-nf").Run()
 
-		case "S": // Shutdown
+		case "S":
 			exec.Command("poweroff", "-nf").Run()
 		}
 	}
@@ -942,27 +846,69 @@ func activeMenu(fd int) {
 // HTTP HELPERS
 // ============================================================
 
-// jsonResponse writes v as JSON to w with the given HTTP status code.
-// It sets Content-Type so browsers and clients correctly interpret the body.
-// All API endpoints use this instead of calling json.NewEncoder directly,
-// which would leave the Content-Type as the default "text/plain".
+// jsonResponse writes v as JSON with the given status code.
+// The encode error is explicitly discarded — a client disconnect mid-stream
+// is not actionable and would only pollute the log. (Fix #6)
 func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
-// requireMethod writes a 405 and returns true if the request method doesn't
-// match. Handlers call this at the top and return immediately if it returns
-// true. This prevents mutating endpoints (unlock, boot, reboot, etc.) from
-// being triggered by browser prefetches, bookmarks, or GET-based attacks.
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	if r.Method != method {
-		jsonResponse(w, http.StatusMethodNotAllowed,
-			map[string]string{"error": "method not allowed"})
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return true
 	}
 	return false
+}
+
+func runSedutil(timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sedutil-cli", args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("sedutil-cli timed out")
+	}
+	if err != nil {
+		if len(out) > 0 {
+			return string(out), fmt.Errorf("sedutil-cli failed: %v", err)
+		}
+		return "", fmt.Errorf("sedutil-cli failed: %v", err)
+	}
+	return string(out), nil
+}
+
+func runExpertCommand(w http.ResponseWriter, args ...string) {
+	out, err := runSedutil(45*time.Second, args...)
+	resp := map[string]string{
+		"command": strings.Join(append([]string{"sedutil-cli"}, args...), " "),
+		"output":  strings.TrimSpace(out),
+	}
+	if err != nil {
+		resp["error"] = err.Error()
+		jsonResponse(w, http.StatusBadRequest, resp)
+		return
+	}
+	resp["status"] = "ok"
+	jsonResponse(w, http.StatusOK, resp)
+}
+
+// makeSystemActionHandler returns an http.HandlerFunc that runs cmd after a
+// 500ms delay and responds with {"status": label}.
+// Reboot and poweroff intentionally remain available even when no drive is
+// unlocked so operators can recover from bad states without local console.
+func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{"status": label})
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			exec.Command(args[0], args[1:]...).Run()
+		}()
+	}
 }
 
 // ============================================================
@@ -970,31 +916,20 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 // ============================================================
 
 func main() {
-	// Start the console TUI in a background goroutine. It runs independently
-	// of the HTTP server and shares the same underlying functions (attemptUnlock,
-	// BootSystem, etc.) that the HTTP handlers use.
 	go consoleInterface()
 
-	// Port 80: redirect all HTTP requests to HTTPS. This ensures the web UI
-	// is always accessed over an encrypted connection, even if the user types
-	// the IP address without "https://".
+	// Port 80: redirect all HTTP to HTTPS.
 	go http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
 	}))
 
-	// Use an explicit mux (rather than http.DefaultServeMux) so that the HTTPS
-	// server and the HTTP redirect server don't share the same handler table.
 	mux := http.NewServeMux()
 
-	// Static files (index.html, any CSS/JS) are served from ./static/ rather
-	// than the working directory. This prevents server.crt, server.key, and
-	// the sedunlocksrv binary from being downloadable via the web interface.
+	// Static files served from ./static/ to prevent the binary, certs, and
+	// keys from being downloadable via the web interface.
 	mux.Handle("/", http.FileServer(http.Dir("static")))
 
-	// GET /status — returns the current locked/unlocked state of all drives.
-	// Polled every 5 seconds by index.html's setInterval(refresh, 5000) and
-	// every 10 seconds by the SSH script's read -t 10 loop.
-	// The Boot button in index.html is shown/hidden based on this response.
+	// GET /status — current drive and interface state; polled every 5s by index.html.
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
 			return
@@ -1002,10 +937,18 @@ func main() {
 		jsonResponse(w, http.StatusOK, currentStatus())
 	})
 
-	// GET /password-policy — returns the active password complexity policy.
-	// Consumed by index.html's loadPolicy() to display requirements in the
-	// Change Password tab. Not used by the SSH script (which has no UI for
-	// setting passwords).
+	// GET /diagnostics — per-drive sedutil --query details for troubleshooting.
+	mux.HandleFunc("/diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		jsonResponse(w, http.StatusOK, DiagnosticsResponse{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+			Drives:      collectDriveDiagnostics(),
+		})
+	})
+
+	// GET /password-policy — active complexity policy; consumed by index.html.
 	mux.HandleFunc("/password-policy", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
 			return
@@ -1013,16 +956,11 @@ func main() {
 		jsonResponse(w, http.StatusOK, passwordPolicy)
 	})
 
-	// POST /unlock — attempts to unlock all locked drives with the given password.
-	// Called by index.html's unlock() function and ssh_sed_unlock.sh's U option.
-	// Request body:  { "password": "..." }
-	// Success:       { "results": [{ "device": "/dev/sda", "success": true }] }
-	// Failure:       { "error": "..." }  with HTTP 403
+	// POST /unlock — attempt to unlock all locked drives with the given password.
 	mux.HandleFunc("/unlock", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
-
 		var req struct {
 			Password string `json:"password"`
 		}
@@ -1030,38 +968,31 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-
 		results, err := attemptUnlock(req.Password)
 		if err != nil {
 			jsonResponse(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
-
 		token := ""
 		if anySuccessfulUnlock(results) {
-			var err error
-			token, err = mintSessionToken()
-			if err != nil {
+			var mintErr error
+			token, mintErr = mintSessionToken()
+			if mintErr != nil {
 				jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session token"})
 				return
 			}
 		}
-
 		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results, Token: token})
 	})
 
-	// POST /change-password — changes the drive password on all detected drives.
-	// Called only by index.html's changePw() function (the SSH script has no
-	// password change UI). The new password is validated against the policy
-	// before any sedutil-cli calls are made.
-	// Request body:  { "currentPassword": "...", "newPassword": "..." }
-	// Success:       { "results": [...] }
-	// Policy error:  { "error": "..." }  with HTTP 400
+	// POST /change-password — change drive password on all detected drives.
 	mux.HandleFunc("/change-password", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
-
+		if requireSessionToken(w, r) {
+			return
+		}
 		var req struct {
 			CurrentPassword string `json:"currentPassword"`
 			NewPassword     string `json:"newPassword"`
@@ -1070,24 +1001,104 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-
-		// Enforce password policy on the new password. This is the only place
-		// in the codebase where validatePassword is called — unlock does not
-		// use it (see PasswordPolicy comment for rationale).
 		if err := validatePassword(req.NewPassword); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-
 		jsonResponse(w, http.StatusOK, PasswordChangeResponse{
 			Results: changePassword(req.CurrentPassword, req.NewPassword),
 		})
 	})
 
-	// POST /boot — loads and executes the Proxmox kernel via kexec.
-	// Called by index.html's boot() function (Boot button, visible only when
-	// at least one drive is unlocked) and ssh_sed_unlock.sh's B option.
-	// The response is sent before kexec fires (500ms delay in BootSystem).
+	// POST /expert/auth — unlock expert actions with a build-time password hash.
+	mux.HandleFunc("/expert/auth", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if expertPasswordHash == "" {
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "expert auth is not configured"})
+			return
+		}
+		var req struct {
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(expertPasswordHash), []byte(req.Password)); err != nil {
+			jsonResponse(w, http.StatusForbidden, map[string]string{"error": "invalid expert password"})
+			return
+		}
+		token, err := mintExpertToken()
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create expert session"})
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{"token": token})
+	})
+
+	// POST /expert/revert-tper — destructive: resets TPer with current password.
+	mux.HandleFunc("/expert/revert-tper", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if requireExpertToken(w, r) {
+			return
+		}
+		var req struct {
+			Device   string `json:"device"`
+			Password string `json:"password"`
+			Confirm  string `json:"confirm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if !strings.HasPrefix(req.Device, "/dev/") {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+			return
+		}
+		if req.Confirm != "REVERT" {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "confirmation text must be REVERT"})
+			return
+		}
+		runExpertCommand(w, "--reverttper", req.Password, req.Device)
+	})
+
+	// POST /expert/psid-revert — destructive: full erase using PSID.
+	mux.HandleFunc("/expert/psid-revert", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if requireExpertToken(w, r) {
+			return
+		}
+		var req struct {
+			Device  string `json:"device"`
+			PSID    string `json:"psid"`
+			Confirm string `json:"confirm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if !strings.HasPrefix(req.Device, "/dev/") {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+			return
+		}
+		if strings.TrimSpace(req.PSID) == "" {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "PSID is required"})
+			return
+		}
+		if req.Confirm != "ERASE" {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "confirmation text must be ERASE"})
+			return
+		}
+		runExpertCommand(w, "--yesIreallywanttoERASEALLmydatausingthePSID", req.PSID, req.Device)
+	})
+
+	// POST /boot — load and execute the Proxmox kernel via kexec.
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1095,7 +1106,6 @@ func main() {
 		if requireSessionToken(w, r) {
 			return
 		}
-
 		res, err := BootSystem()
 		if err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1104,44 +1114,13 @@ func main() {
 		jsonResponse(w, http.StatusOK, res)
 	})
 
-	// POST /reboot — performs a cold reboot of the PBA system.
-	// Note: unlike /boot (kexec), this does a full hardware reboot, which will
-	// re-lock the drives and bring the PBA up again from scratch.
-	// Called by index.html's reboot() and ssh_sed_unlock.sh's R option.
-	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodPost) {
-			return
-		}
-		if requireSessionToken(w, r) {
-			return
-		}
-		// Send the response before sleeping, so the client receives confirmation.
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "rebooting"})
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			exec.Command("reboot", "-nf").Run()
-		}()
-	})
+	// POST /reboot  — cold reboot (re-locks drives; PBA starts again).
+	// POST /poweroff — full shutdown.
+	// Both use the makeSystemActionHandler factory. (Size #3)
+	mux.HandleFunc("/reboot", makeSystemActionHandler("rebooting", "reboot", "-nf"))
+	mux.HandleFunc("/poweroff", makeSystemActionHandler("powering off", "poweroff", "-nf"))
 
-	// POST /poweroff — shuts the system down completely.
-	// Called by index.html's shutdown() and ssh_sed_unlock.sh's S option.
-	mux.HandleFunc("/poweroff", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodPost) {
-			return
-		}
-		if requireSessionToken(w, r) {
-			return
-		}
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "powering off"})
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			exec.Command("poweroff", "-nf").Run()
-		}()
-	})
-
-	// Start the HTTPS server. This call blocks until the server exits (which
-	// in practice only happens on a fatal error, since the system powers off
-	// or reboots through other means).
-	// server.crt and server.key are generated by make-cert.sh during the build.
 	log.Fatal(http.ListenAndServeTLS(":443", "server.crt", "server.key", mux))
 }
+
+
