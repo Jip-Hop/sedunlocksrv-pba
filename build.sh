@@ -706,10 +706,12 @@ slim_initrd_filesystem() {
 }
 
 repack_initrd_to_boot() {
+    local initrd_out_abs
+    initrd_out_abs="$(cd "${BUILD_TMPDIR}/fs/boot" && pwd)/corepure64.gz"
     chroot "${BUILD_TMPDIR}/core" /sbin/depmod "${TC_KERNEL_VERSION}"
     (
         cd "${BUILD_TMPDIR}/core"
-        find . | cpio -o -H newc | xz -9 --check=crc32 >"${BUILD_TMPDIR}/fs/boot/corepure64.gz"
+        find . | cpio -o -H newc | xz -9 --check=crc32 >"${initrd_out_abs}"
     )
 }
 
