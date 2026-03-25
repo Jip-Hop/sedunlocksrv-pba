@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -734,7 +735,46 @@ func listLogicalVolumes() []string {
 	return lvs
 }
 
-func buildBootSearchDevices(bootDrive string) ([]string, error) {
+func listAllBlockPartitions() ([]string, error) {
+	entries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	partitions := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
+			continue
+		}
+		partitions = append(partitions, "/dev/"+name)
+	}
+	sort.Strings(partitions)
+	return partitions, nil
+}
+
+func listMDDevices() ([]string, error) {
+	entries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	devices := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "md") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
+			continue
+		}
+		devices = append(devices, "/dev/"+name)
+	}
+	sort.Strings(devices)
+	return devices, nil
+}
+
+func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 	devices := make([]string, 0)
 	seen := make(map[string]struct{})
 	add := func(path string) {
@@ -748,12 +788,14 @@ func buildBootSearchDevices(bootDrive string) ([]string, error) {
 		devices = append(devices, path)
 	}
 
-	partitions, err := listDevicePartitions(bootDrive)
-	if err != nil {
-		return nil, err
-	}
-	for _, part := range partitions {
-		add(part)
+	for _, bootDrive := range bootDrives {
+		partitions, err := listDevicePartitions(bootDrive)
+		if err != nil {
+			return nil, err
+		}
+		for _, part := range partitions {
+			add(part)
+		}
 	}
 
 	activateLVM()
@@ -761,7 +803,66 @@ func buildBootSearchDevices(bootDrive string) ([]string, error) {
 		add(lv)
 	}
 
+	mds, err := listMDDevices()
+	if err != nil {
+		return nil, err
+	}
+	for _, md := range mds {
+		add(md)
+	}
+
+	// Fall back to every visible partition so we can find a separate EFI or
+	// /boot filesystem even when it lives on another disk or RAID member.
+	partitions, err := listAllBlockPartitions()
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range partitions {
+		add(part)
+	}
+
 	return devices, nil
+}
+
+func collectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+	loaderEntries := make([]string, 0)
+	grubConfigs := make([]string, 0)
+	kernels := make([]string, 0)
+	initrds := make([]string, 0)
+	seen := make(map[string]struct{})
+	add := func(out *[]string, path string) {
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		*out = append(*out, path)
+	}
+
+	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+
+		base := filepath.Base(path)
+		dir := filepath.Dir(path)
+		switch {
+		case strings.EqualFold(base, "grub.cfg"):
+			add(&grubConfigs, path)
+		case filepath.Base(dir) == "entries" && filepath.Base(filepath.Dir(dir)) == "loader" && strings.HasSuffix(base, ".conf"):
+			add(&loaderEntries, path)
+		case strings.HasPrefix(base, "vmlinuz-"), strings.HasPrefix(base, "linux-"):
+			add(&kernels, path)
+		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"):
+			add(&initrds, path)
+		}
+		return nil
+	})
+
+	sort.Strings(loaderEntries)
+	sort.Strings(grubConfigs)
+	sort.Strings(kernels)
+	sort.Strings(initrds)
+	return loaderEntries, grubConfigs, kernels, initrds
 }
 
 func resolveBootPath(mountPoint, ref string) string {
@@ -807,16 +908,7 @@ func splitInitrdLine(line string) []string {
 	return fields[1:]
 }
 
-func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
-	var files []string
-	for _, dir := range []string{
-		filepath.Join(mountPoint, "loader", "entries"),
-		filepath.Join(mountPoint, "boot", "loader", "entries"),
-	} {
-		if m, err := filepath.Glob(filepath.Join(dir, "*.conf")); err == nil {
-			files = append(files, m...)
-		}
-	}
+func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
 	if len(files) == 0 {
 		return "", "", "", false
 	}
@@ -855,6 +947,11 @@ func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool)
 		}
 	}
 	return "", "", "", false
+}
+
+func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
+	files, _, _, _ := collectBootFiles(mountPoint)
+	return findBootFromLoaderEntryFiles(mountPoint, files)
 }
 
 func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
@@ -933,46 +1030,15 @@ func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
 }
 
 func findBootArtifacts(mountPoint string) (string, string, string, bool) {
-	if kernel, initrd, cmdline, ok := findBootFromLoaderEntries(mountPoint); ok {
+	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+
+	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
 		return kernel, initrd, cmdline, true
-	}
-	grubConfigs := []string{
-		filepath.Join(mountPoint, "boot", "grub", "grub.cfg"),
-		filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"),
-		filepath.Join(mountPoint, "grub", "grub.cfg"),
-		filepath.Join(mountPoint, "EFI", "BOOT", "grub.cfg"),
 	}
 	for _, grubPath := range grubConfigs {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
 			return kernel, initrd, cmdline, true
 		}
-	}
-
-	kernelPatterns := []string{
-		filepath.Join(mountPoint, "boot", "vmlinuz-*"),
-		filepath.Join(mountPoint, "boot", "linux-*"),
-		filepath.Join(mountPoint, "vmlinuz-*"),
-		filepath.Join(mountPoint, "EFI", "*", "*", "vmlinuz-*"),
-		filepath.Join(mountPoint, "EFI", "*", "*", "linux-*"),
-	}
-	initrdPatterns := []string{
-		filepath.Join(mountPoint, "boot", "initrd.img-*"),
-		filepath.Join(mountPoint, "boot", "initramfs-*"),
-		filepath.Join(mountPoint, "initrd.img-*"),
-		filepath.Join(mountPoint, "initramfs-*"),
-		filepath.Join(mountPoint, "EFI", "*", "*", "initrd.img-*"),
-		filepath.Join(mountPoint, "EFI", "*", "*", "initramfs-*"),
-	}
-
-	var kernels []string
-	var initrds []string
-	for _, pattern := range kernelPatterns {
-		matches, _ := filepath.Glob(pattern)
-		kernels = append(kernels, matches...)
-	}
-	for _, pattern := range initrdPatterns {
-		matches, _ := filepath.Glob(pattern)
-		initrds = append(initrds, matches...)
 	}
 
 	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
@@ -1023,58 +1089,56 @@ func BootSystem() (*BootResult, error) {
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
-	for _, bootDrive := range bootCandidates {
-		appendBootDebug(&debug, "Inspecting boot drive: %s", bootDrive)
-		searchDevices, err := buildBootSearchDevices(bootDrive)
-		if err != nil {
-			return nil, err
+	searchDevices, err := buildBootSearchDevices(bootCandidates)
+	if err != nil {
+		return nil, err
+	}
+	appendBootDebug(&debug, "Mount search targets: %s", strings.Join(searchDevices, ", "))
+	for _, dev := range searchDevices {
+		appendBootDebug(&debug, "Trying mount target: %s", dev)
+		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+			appendBootDebug(&debug, "Mount failed: %s", err)
+			continue
 		}
-		appendBootDebug(&debug, "Mount search targets: %s", strings.Join(searchDevices, ", "))
-		for _, dev := range searchDevices {
-			appendBootDebug(&debug, "Trying mount target: %s", dev)
-			if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
-				appendBootDebug(&debug, "Mount failed: %s", err)
-				continue
+
+		if entries, err := os.ReadDir(mountPoint); err == nil {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
 			}
+			appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
+		}
 
-			if entries, err := os.ReadDir(mountPoint); err == nil {
-				names := make([]string, 0, len(entries))
-				for _, e := range entries {
-					names = append(names, e.Name())
-				}
-				appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
-			}
+		unmount := func() { exec.Command("umount", mountPoint).Run() }
+		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 
-			unmount := func() { exec.Command("umount", mountPoint).Run() }
-			appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
+		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+			appendBootDebug(&debug, "Found kernel: %s", kernel)
+			appendBootDebug(&debug, "Found initrd: %s", initrd)
+			appendBootDebug(&debug, "Found cmdline: %s", cmdline)
 
-			if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
-				appendBootDebug(&debug, "Found kernel: %s", kernel)
-				appendBootDebug(&debug, "Found initrd: %s", initrd)
-				appendBootDebug(&debug, "Found cmdline: %s", cmdline)
+			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
+				appendBootDebug(&debug, "kexec -l failed: %s", err)
 				unmount()
-
-				if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
-					appendBootDebug(&debug, "kexec -l failed: %s", err)
-					return nil, BootAttemptError{Message: err.Error(), Debug: debug}
-				}
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					exec.Command("kexec", "-e").Run()
-				}()
-				return &BootResult{
-					Kernel:        kernel,
-					Initrd:        initrd,
-					Cmdline:       cmdline,
-					Drives:        drives,
-					Warning:       warning,
-					FullyUnlocked: fullyUnlocked,
-					Debug:         debug,
-				}, nil
+				return nil, BootAttemptError{Message: err.Error(), Debug: debug}
 			}
-			appendBootDebug(&debug, "No boot artifacts found on %s", dev)
 			unmount()
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				exec.Command("kexec", "-e").Run()
+			}()
+			return &BootResult{
+				Kernel:        kernel,
+				Initrd:        initrd,
+				Cmdline:       cmdline,
+				Drives:        drives,
+				Warning:       warning,
+				FullyUnlocked: fullyUnlocked,
+				Debug:         debug,
+			}, nil
 		}
+		appendBootDebug(&debug, "No boot artifacts found on %s", dev)
+		unmount()
 	}
 	appendBootDebug(&debug, "Boot search exhausted without finding a usable kernel/initrd pair.")
 	return nil, BootAttemptError{Message: "no bootable partition", Debug: debug}
@@ -1095,24 +1159,14 @@ func extractLinuxCmdline(line string) (string, bool) {
 // findBootCmdline tries loader entries then grub configs in priority order.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
-	efiGrubConfigs, _ := filepath.Glob(filepath.Join(mountPoint, "EFI", "*", "*", "grub.cfg"))
+	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
-			var files []string
-			for _, dir := range []string{
-				filepath.Join(mountPoint, "loader", "entries"),
-				filepath.Join(mountPoint, "boot", "loader", "entries"),
-			} {
-				if m, err := filepath.Glob(filepath.Join(dir, "*.conf")); err == nil {
-					files = append(files, m...)
-				}
-			}
-			if len(files) == 0 {
+			if len(loaderEntries) == 0 {
 				return "", false, fmt.Errorf("no loader entries under %s", mountPoint)
 			}
-			sort.Strings(files)
-			for _, f := range files {
+			for _, f := range loaderEntries {
 				data, err := os.ReadFile(f)
 				if err != nil {
 					continue
@@ -1143,7 +1197,7 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
 		},
 	}
-	for _, grubPath := range efiGrubConfigs {
+	for _, grubPath := range grubConfigs {
 		path := grubPath
 		candidates = append(candidates, func() (string, bool, error) {
 			return parseGrubCfg(path, kernelBase)
