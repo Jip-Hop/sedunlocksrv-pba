@@ -628,6 +628,63 @@ func listDevicePartitions(device string) ([]string, error) {
 	return partitions, nil
 }
 
+func haveRuntimeCommand(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func activateLVM() {
+	if haveRuntimeCommand("pvscan") {
+		_ = exec.Command("pvscan", "--cache").Run()
+	}
+	if haveRuntimeCommand("vgchange") {
+		_ = exec.Command("vgchange", "-ay").Run()
+	}
+}
+
+func listLogicalVolumes() []string {
+	matches, _ := filepath.Glob("/dev/mapper/*")
+	lvs := make([]string, 0, len(matches))
+	for _, path := range matches {
+		if filepath.Base(path) == "control" {
+			continue
+		}
+		lvs = append(lvs, path)
+	}
+	sort.Strings(lvs)
+	return lvs
+}
+
+func buildBootSearchDevices(bootDrive string) ([]string, error) {
+	devices := make([]string, 0)
+	seen := make(map[string]struct{})
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		devices = append(devices, path)
+	}
+
+	partitions, err := listDevicePartitions(bootDrive)
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range partitions {
+		add(part)
+	}
+
+	activateLVM()
+	for _, lv := range listLogicalVolumes() {
+		add(lv)
+	}
+
+	return devices, nil
+}
+
 func resolveBootPath(mountPoint, ref string) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -864,19 +921,19 @@ func BootSystem() (*BootResult, error) {
 
 	bootDrive := unlocked[0]
 
-	partitions, err := listDevicePartitions(bootDrive)
+	searchDevices, err := buildBootSearchDevices(bootDrive)
 	if err != nil {
 		return nil, err
 	}
-	if len(partitions) == 0 {
-		return nil, fmt.Errorf("no partitions found on %s", bootDrive)
+	if len(searchDevices) == 0 {
+		return nil, fmt.Errorf("no mountable boot candidates found for %s", bootDrive)
 	}
 
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
-	for _, part := range partitions {
-		if err := exec.Command("mount", "-r", part, mountPoint).Run(); err != nil {
+	for _, dev := range searchDevices {
+		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
 			continue
 		}
 		unmount := func() { exec.Command("umount", mountPoint).Run() }
