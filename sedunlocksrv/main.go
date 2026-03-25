@@ -38,6 +38,7 @@ import (
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -749,6 +750,10 @@ func rescanBlockDeviceLayout(device string) {
 	}
 
 	for _, node := range nodes {
+		if f, err := os.OpenFile(node, os.O_RDONLY, 0); err == nil {
+			_ = unix.IoctlSetInt(int(f.Fd()), unix.BLKRRPART, 0)
+			f.Close()
+		}
 		if haveRuntimeCommand("blockdev") {
 			_ = exec.Command("blockdev", "--rereadpt", node).Run()
 		}
@@ -768,7 +773,7 @@ func rescanBlockDeviceLayout(device string) {
 }
 
 func availableRescanTools() []string {
-	tools := make([]string, 0, 4)
+	tools := []string{"ioctl(BLKRRPART)"}
 	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
 		if haveRuntimeCommand(name) {
 			tools = append(tools, name)
@@ -1167,6 +1172,9 @@ func BootSystem() (*BootResult, error) {
 	appendBootDebug(&debug, "Refreshing partition tables for boot candidates.")
 	for _, bootDrive := range bootCandidates {
 		rescanBlockDeviceLayout(bootDrive)
+		if partitions, err := listDevicePartitions(bootDrive); err == nil {
+			appendBootDebug(&debug, "Visible partitions after refresh for %s: %s", bootDrive, strings.Join(partitions, ", "))
+		}
 	}
 
 	searchDevices, err := buildBootSearchDevices(bootCandidates)
