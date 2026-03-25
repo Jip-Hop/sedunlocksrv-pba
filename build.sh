@@ -466,19 +466,22 @@ fetch_sedutil_cli() {
 # -----------------------------------------------------------------------------
 stage_kernel_and_initrd() {
     local kernel_path core_path
-    kernel_path=$(find "${CACHEDIR}/iso-extracted" -name "vmlinuz64" | head -n1)
-    if [ -z "${kernel_path}" ]; then
+    kernel_path=$(find "${CACHEDIR}/iso-extracted" -type f -name "vmlinuz64" | head -n1 || true)
+    if [ -z "${kernel_path}" ] || [ ! -f "${kernel_path}" ]; then
         echo "❌ vmlinuz64 not found in ISO extract"; exit 1
     fi
-    echo "✅ Kernel: $(realpath "${kernel_path}")"
-    cp "$(realpath "${kernel_path}")" "${BUILD_TMPDIR}/fs/boot/vmlinuz64"
+    echo "✅ Kernel: ${kernel_path}"
+    cp "${kernel_path}" "${BUILD_TMPDIR}/fs/boot/vmlinuz64"
 
-    core_path=$(find "${CACHEDIR}/iso-extracted" -name "corepure64.gz" | head -n1)
-    if [ -z "${core_path}" ]; then
+    core_path=$(find "${CACHEDIR}/iso-extracted" -type f -name "corepure64.gz" | head -n1 || true)
+    if [ -z "${core_path}" ] || [ ! -f "${core_path}" ]; then
         echo "❌ corepure64.gz not found in ISO extract"; exit 1
     fi
-    echo "✅ Initrd: $(realpath "${core_path}")"
-    (cd "${BUILD_TMPDIR}/core" && zcat "$(realpath "${core_path}")" | cpio -id -H newc)
+    echo "✅ Initrd: ${core_path}"
+    if ! (cd "${BUILD_TMPDIR}/core" && zcat "${core_path}" | cpio -id -H newc); then
+        echo "❌ Failed to extract initrd from: ${core_path}" >&2
+        exit 1
+    fi
 
     TC_KERNEL_VERSION=$(ls "${BUILD_TMPDIR}/core/lib/modules")
     EXTENSIONS="${EXTENSIONS} scsi-${TC_KERNEL_VERSION}.tcz"
