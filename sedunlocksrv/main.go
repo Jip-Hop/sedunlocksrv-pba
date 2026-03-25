@@ -143,6 +143,31 @@ var (
 	expertPasswordHash = loadExpertPasswordHash()
 )
 
+type filteredHTTPLogWriter struct{}
+
+func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if msg == "" {
+		return len(p), nil
+	}
+
+	benignSubstrings := []string{
+		"TLS handshake error",
+		"use of closed network connection",
+		"broken pipe",
+		"connection reset by peer",
+		"EOF",
+	}
+	for _, s := range benignSubstrings {
+		if strings.Contains(msg, s) {
+			return len(p), nil
+		}
+	}
+
+	log.Printf("[http] %s", msg)
+	return len(p), nil
+}
+
 // ============================================================
 // PASSWORD POLICY
 // ============================================================
@@ -993,10 +1018,21 @@ func main() {
 	go consoleInterface()
 	startSSHService()
 
+	httpErrorLog := log.New(filteredHTTPLogWriter{}, "", 0)
+
 	// Port 80: redirect all HTTP to HTTPS.
-	go http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
-	}))
+	go func() {
+		redirectSrv := &http.Server{
+			Addr:     ":80",
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
+			}),
+			ErrorLog: httpErrorLog,
+		}
+		if err := redirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[http] redirect server failed: %v", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 
@@ -1195,7 +1231,12 @@ func main() {
 	mux.HandleFunc("/reboot", makeSystemActionHandler("rebooting", "reboot", "-nf"))
 	mux.HandleFunc("/poweroff", makeSystemActionHandler("powering off", "poweroff", "-nf"))
 
-	log.Fatal(http.ListenAndServeTLS(":443", "server.crt", "server.key", mux))
+	httpsSrv := &http.Server{
+		Addr:     ":443",
+		Handler:  mux,
+		ErrorLog: httpErrorLog,
+	}
+	log.Fatal(httpsSrv.ListenAndServeTLS("server.crt", "server.key"))
 }
 
 
