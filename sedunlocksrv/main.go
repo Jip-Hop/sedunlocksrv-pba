@@ -779,10 +779,24 @@ func splitInitrdLine(line string) []string {
 }
 
 func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
-	files, err := filepath.Glob(filepath.Join(mountPoint, "loader", "entries", "*.conf"))
-	if err != nil || len(files) == 0 {
+//	files, err := filepath.Glob(filepath.Join(mountPoint, "loader", "entries", "*.conf"))
+//	if err != nil || len(files) == 0 {
+//		return "", "", "", false
+//	}
+
+	var files []string
+	for _, dir := range []string{
+		filepath.Join(mountPoint, "loader", "entries"),
+		filepath.Join(mountPoint, "boot", "loader", "entries"),
+	} {
+		if m, err := filepath.Glob(filepath.Join(dir, "*.conf")); err == nil {
+			files = append(files, m...)
+		}
+	}
+	if len(files) == 0 {
 		return "", "", "", false
 	}
+
 	sort.Strings(files)
 	for i := len(files) - 1; i >= 0; i-- {
 		data, err := os.ReadFile(files[i])
@@ -900,6 +914,7 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	}
 	grubConfigs := []string{
 		filepath.Join(mountPoint, "boot", "grub", "grub.cfg"),
+		filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"),
 		filepath.Join(mountPoint, "grub", "grub.cfg"),
 		filepath.Join(mountPoint, "EFI", "BOOT", "grub.cfg"),
 	}
@@ -997,6 +1012,15 @@ func BootSystem() (*BootResult, error) {
 				appendBootDebug(&debug, "Mount failed: %s", err)
 				continue
 			}
+			
+			if entries, err := os.ReadDir(mountPoint); err == nil {
+				names := make([]string, 0, len(entries))
+				for _, e := range entries {
+					names = append(names, e.Name())
+				}
+				appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
+			}
+			
 			unmount := func() { exec.Command("umount", mountPoint).Run() }
 			appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 
@@ -1059,11 +1083,25 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
 			// systemd-boot: scan *.conf files in loader/entries/
-			entriesDir := filepath.Join(mountPoint, "loader", "entries")
-			files, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
-			if err != nil || len(files) == 0 {
-				return "", false, fmt.Errorf("no loader entries in %s", entriesDir)
+//			entriesDir := filepath.Join(mountPoint, "loader", "entries")
+//			files, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
+//			if err != nil || len(files) == 0 {
+//				return "", false, fmt.Errorf("no loader entries in %s", entriesDir)
+//			}
+
+			var files []string
+			for _, dir := range []string{
+				filepath.Join(mountPoint, "loader", "entries"),
+				filepath.Join(mountPoint, "boot", "loader", "entries"),
+			} {
+				if m, err := filepath.Glob(filepath.Join(dir, "*.conf")); err == nil {
+					files = append(files, m...)
+				}
 			}
+			if len(files) == 0 {
+				return "", false, fmt.Errorf("no loader entries under %s", mountPoint)
+			}
+
 			sort.Strings(files)
 			for _, f := range files {
 				data, err := os.ReadFile(f)
