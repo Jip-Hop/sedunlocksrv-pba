@@ -112,6 +112,7 @@ textarea {
 
 <div class="box">
     <div id="status"></div>
+    <div id="statusSummary" class="small"></div>
 </div>
 
 <div class="box">
@@ -129,6 +130,7 @@ textarea {
             <button class="primary-btn" onclick="unlock()">Unlock</button>
             <button class="secondary-btn hidden" id="bootBtn" onclick="boot()">Boot</button>
         </div>
+        <div id="unlockResult" class="small"></div>
         <div class="hint">
             Use <b>Boot</b> to kexec directly into the OS while keeping unlocked state.
             Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
@@ -244,7 +246,10 @@ async function refresh() {
     let j = await r.json()
 
     let html = "", ifaceHtml = "", unlocked = false
-    j.drives.forEach(d => {
+    let drives = Array.isArray(j.drives) ? j.drives : []
+    let interfaces = Array.isArray(j.interfaces) ? j.interfaces : []
+
+    drives.forEach(d => {
         let icon = d.locked ? "LOCKED" : "UNLOCKED"
         let opalLabel = d.opal ? "OPAL" : "NON-OPAL"
         let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
@@ -252,7 +257,7 @@ async function refresh() {
         html += `<div class="${color}">${d.device} - ${icon} - ${opalLabel}</div>`
     })
 
-    j.interfaces.forEach(iface => {
+    interfaces.forEach(iface => {
         let link = iface.carrier ? "LINK" : "NO-LINK"
         let extra = []
         if (iface.mac) extra.push(iface.mac)
@@ -261,7 +266,10 @@ async function refresh() {
         ifaceHtml += `<div>${iface.name} - ${iface.state} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
     })
 
+    let opalCount = drives.filter(d => d.opal).length
+    let lockedCount = drives.filter(d => d.locked).length
     $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
+    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount}`
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     $("bootBtn").classList.toggle("hidden", !unlocked)
 }
@@ -293,7 +301,21 @@ async function unlock() {
             authToken = j.token
             sessionStorage.setItem("sedunlocksrvAuthToken", authToken)
         }
+        let results = Array.isArray(j.results) ? j.results : []
+        if (results.length) {
+            let ok = results.filter(r => r.success).map(r => r.device)
+            let bad = results.filter(r => !r.success).map(r => r.device)
+            let parts = []
+            if (ok.length) parts.push(`Unlocked: ${ok.join(", ")}`)
+            if (bad.length) parts.push(`Failed: ${bad.join(", ")}`)
+            $("unlockResult").innerText = parts.join(" | ")
+        } else if (j.token) {
+            $("unlockResult").innerText = "Unlock accepted."
+        } else {
+            $("unlockResult").innerText = "No unlockable OPAL drives were reported."
+        }
     } catch (err) {
+        $("unlockResult").innerText = err.message || "Unlock failed"
         alert(err.message || "Unlock failed")
     }
     $("pw").value = ""

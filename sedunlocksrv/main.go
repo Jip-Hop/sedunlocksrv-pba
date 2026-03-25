@@ -262,8 +262,11 @@ func scanDrives() []DriveStatus {
 		}
 
 		opal := strings.HasPrefix(fields[1], "2")
-		query, _ := queryDrive(dev)
-		locked := strings.Contains(query, "Locked = Y")
+		locked := false
+		if opal {
+			query, _ := queryDrive(dev)
+			locked = strings.Contains(query, "Locked = Y")
+		}
 		statuses = append(statuses, DriveStatus{Device: dev, Locked: locked, Opal: opal})
 	}
 	return statuses
