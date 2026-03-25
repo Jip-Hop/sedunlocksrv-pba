@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -782,6 +783,16 @@ func availableRescanTools() []string {
 	return tools
 }
 
+func availableLVMTools() []string {
+	tools := make([]string, 0, 4)
+	for _, name := range []string{"blkid", "pvscan", "vgscan", "vgchange"} {
+		if haveRuntimeCommand(name) {
+			tools = append(tools, name)
+		}
+	}
+	return tools
+}
+
 func haveRuntimeCommand(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
@@ -790,6 +801,9 @@ func haveRuntimeCommand(name string) bool {
 func activateLVM() {
 	if haveRuntimeCommand("pvscan") {
 		_ = exec.Command("pvscan", "--cache").Run()
+	}
+	if haveRuntimeCommand("vgscan") {
+		_ = exec.Command("vgscan", "--mknodes").Run()
 	}
 	if haveRuntimeCommand("vgchange") {
 		_ = exec.Command("vgchange", "-ay").Run()
@@ -846,6 +860,36 @@ func listMDDevices() ([]string, error) {
 	}
 	sort.Strings(devices)
 	return devices, nil
+}
+
+func likelyLVMPhysicalVolume(device string) bool {
+	f, err := os.Open(device)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
+	if err != nil && n == 0 {
+		return false
+	}
+	buf = buf[:n]
+	return bytes.Contains(buf, []byte("LABELONE")) && bytes.Contains(buf, []byte("LVM2"))
+}
+
+func probeBlockType(device string) string {
+	if haveRuntimeCommand("blkid") {
+		if out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", device).Output(); err == nil {
+			if t := strings.TrimSpace(string(out)); t != "" {
+				return t
+			}
+		}
+	}
+	if likelyLVMPhysicalVolume(device) {
+		return "LVM2_member"
+	}
+	return "unknown"
 }
 
 func buildBootSearchDevices(bootDrives []string) ([]string, error) {
@@ -937,6 +981,32 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 	sort.Strings(kernels)
 	sort.Strings(initrds)
 	return loaderEntries, grubConfigs, kernels, initrds
+}
+
+func trimMountPrefix(mountPoint, path string) string {
+	if rel, err := filepath.Rel(mountPoint, path); err == nil && rel != "." {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.Base(path)
+}
+
+func snapshotMountFiles(mountPoint string, limit int) []string {
+	files := make([]string, 0, limit)
+	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		if path == mountPoint {
+			return nil
+		}
+		files = append(files, trimMountPrefix(mountPoint, path))
+		if len(files) >= limit {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files
 }
 
 func resolveBootPath(mountPoint, ref string) string {
@@ -1174,7 +1244,23 @@ func BootSystem() (*BootResult, error) {
 		rescanBlockDeviceLayout(bootDrive)
 		if partitions, err := listDevicePartitions(bootDrive); err == nil {
 			appendBootDebug(&debug, "Visible partitions after refresh for %s: %s", bootDrive, strings.Join(partitions, ", "))
+			for _, part := range partitions {
+				appendBootDebug(&debug, "Block type for %s: %s", part, probeBlockType(part))
+			}
 		}
+	}
+
+	lvmTools := availableLVMTools()
+	if len(lvmTools) == 0 {
+		appendBootDebug(&debug, "LVM tools available: none")
+	} else {
+		appendBootDebug(&debug, "LVM tools available: %s", strings.Join(lvmTools, ", "))
+	}
+	activateLVM()
+	if lvs := listLogicalVolumes(); len(lvs) == 0 {
+		appendBootDebug(&debug, "Logical volumes detected after activation: none")
+	} else {
+		appendBootDebug(&debug, "Logical volumes detected after activation: %s", strings.Join(lvs, ", "))
 	}
 
 	searchDevices, err := buildBootSearchDevices(bootCandidates)
@@ -1224,6 +1310,11 @@ func BootSystem() (*BootResult, error) {
 				FullyUnlocked: fullyUnlocked,
 				Debug:         debug,
 			}, nil
+		}
+		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+		appendBootDebug(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
+		if files := snapshotMountFiles(mountPoint, 40); len(files) > 0 {
+			appendBootDebug(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
 		}
 		appendBootDebug(&debug, "No boot artifacts found on %s", dev)
 		unmount()
