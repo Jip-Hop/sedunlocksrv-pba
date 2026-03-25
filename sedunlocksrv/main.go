@@ -978,7 +978,7 @@ func BootSystem() (*BootResult, error) {
 	var warning string
 	if !fullyUnlocked {
 		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
-		appendBootDebug(&debug, warning)
+		appendBootDebug(&debug, "%s", warning)
 	}
 
 	mountPoint := "/mnt/proxmox"
