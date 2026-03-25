@@ -1,34 +1,15 @@
 #!/bin/busybox ash
-# ssh_sed_unlock.sh — SSH interface for the SED Unlock Service
 #
-# This script is the command that runs when an authorized user connects via SSH.
-# It is locked in as the forced command in authorized_keys, meaning SSH users
-# cannot run arbitrary shell commands — they get only this menu.
+# SSH interface for the SED Unlock Service.
 #
-# It communicates with the Go server (sedunlocksrv) running on localhost:443
-# via its JSON API using curl. All three interfaces (web UI, SSH, console TUI)
-# share the same API, so rate limiting and drive state are consistent across them.
-#
-# jq is used for all JSON parsing. It is included as a build dependency in
-# build.sh (jq.tcz extension) and is always available in the PBA environment.
-#
-# The session auto-logs out after 5 minutes of total inactivity (TMOUT) and
-# the menu refreshes its drive status display every 10 seconds while waiting
-# for input (read -t 10 timeout).
-#
-# Typical SSH connection:
-#   ssh -p 2222 tc@<server-ip>
-# (Port 2222 is used to avoid conflicts with any SSH service on the booted OS.)
+# This script is used as the forced command for SSH logins, so users land in
+# this menu instead of a shell. It talks to the local sedunlocksrv HTTPS API.
 
-# Auto-logout after 5 minutes of shell inactivity.
 export TMOUT=300
 
 SSH_CURL_INSECURE="true"
 [ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
 
-# Base URL for the Go server's JSON API (always localhost).
-# -s suppresses curl progress output. -k is used only when SSH_CURL_INSECURE=true,
-# which is the default for self-signed build-time certificates.
 API="https://localhost:443"
 case "${SSH_CURL_INSECURE}" in
     true)
@@ -38,37 +19,77 @@ case "${SSH_CURL_INSECURE}" in
         CURL="curl -s"
         ;;
 esac
+
 AUTH_TOKEN=""
+STATUS_NOTICE=""
+
 CLR_RESET="$(printf '\033[0m')"
 CLR_BLUE="$(printf '\033[38;5;32m')"
 CLR_PURPLE="$(printf '\033[38;5;91m')"
 CLR_ORANGE="$(printf '\033[38;5;208m')"
 CLR_DIM="$(printf '\033[38;5;245m')"
 
-# ======================================================
-# HELPERS
-# ======================================================
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
 
-# print_drives — display the current state of all drives.
-# Reads from a JSON string passed as $1 (the output of GET /status).
-# Produces one line per drive, e.g.:
-#   ✅ /dev/sda  UNLOCKED  🔐 OPAL
-#   ❌ /dev/sdb  LOCKED    🔐 OPAL
-#   ⚠  /dev/sdc  LOCKED    ⚠ NON-OPAL
+status_fallback_json() {
+    printf '%s\n' '{"drives":[],"interfaces":[]}'
+}
+
+fetch_status_json() {
+    STATUS_NOTICE=""
+
+    if ! have_command curl; then
+        STATUS_NOTICE="Status unavailable: curl is not installed in this build."
+        status_fallback_json
+        return 1
+    fi
+
+    if ! have_command jq; then
+        STATUS_NOTICE="Status unavailable: jq is not installed in this build."
+        status_fallback_json
+        return 1
+    fi
+
+    local response
+    response=$($CURL "$API/status" 2>/dev/null) || response=""
+    if [ -z "${response}" ] || ! echo "${response}" | jq -e . >/dev/null 2>&1; then
+        STATUS_NOTICE="Status unavailable: unable to reach the local unlock service."
+        status_fallback_json
+        return 1
+    fi
+
+    printf '%s\n' "${response}"
+    return 0
+}
+
 print_drives() {
+    local count
+    count=$(echo "$1" | jq -r '.drives | length' 2>/dev/null || echo 0)
+    if [ "${count}" -eq 0 ]; then
+        echo "  No OPAL drives detected."
+        return 0
+    fi
+
     echo "$1" | jq -r '
         .drives[] |
-        if .locked then "  ❌ " else "  ✅ " end +
+        "  " +
+        (if .locked then "[locked] " else "[open]   " end) +
         .device + "  " +
-        if .locked then "LOCKED  " else "UNLOCKED" end + "  " +
-        if .opal then "🔐 OPAL" else "⚠  NON-OPAL" end
+        (if .locked then "LOCKED  " else "UNLOCKED" end) + "  " +
+        (if .opal then "OPAL" else "NON-OPAL" end)
     '
 }
 
-# print_interfaces — display the network interfaces as Tiny Core currently sees them.
-# This helps users choose NET_IFACES / EXCLUDE_NETDEV values with the exact
-# interface names used inside the PBA image.
 print_interfaces() {
+    local count
+    count=$(echo "$1" | jq -r '.interfaces | length' 2>/dev/null || echo 0)
+    if [ "${count}" -eq 0 ]; then
+        echo "  No network interfaces reported."
+        return 0
+    fi
+
     echo "$1" | jq -r '
         .interfaces[] |
         "  " + .name +
@@ -80,15 +101,10 @@ print_interfaces() {
     '
 }
 
-# has_error — returns 0 (true) if the JSON response contains an "error" key.
-# Uses jq -e which sets a non-zero exit code when the result is null/false,
-# so this correctly distinguishes a missing key from one with a value.
 has_error() {
     echo "$1" | jq -e '.error' > /dev/null 2>&1
 }
 
-# get_error — extracts the error message string from a JSON response.
-# Prints nothing if the key is absent.
 get_error() {
     echo "$1" | jq -r '.error // empty'
 }
@@ -101,100 +117,88 @@ post_with_auth() {
     fi
 }
 
-# ======================================================
-# MAIN LOOP
-# ======================================================
-
 while true; do
     clear
-    echo "${CLR_BLUE}🔑 SED UNLOCK (SSH)${CLR_RESET}"
+    echo "${CLR_BLUE}SED UNLOCK (SSH)${CLR_RESET}"
     echo "${CLR_DIM}Auto logout: 5m | Refresh: 10s${CLR_RESET}"
     echo
 
-    # --- Drive Status Display ---
-    # Fetch current drive state from GET /status and display it.
-    # Response format: {"drives":[{"device":"/dev/sda","locked":false,"opal":true},...]}
-    STATUS_JSON=$($CURL "$API/status")
-    print_drives "$STATUS_JSON"
+    STATUS_JSON=$(fetch_status_json)
+    if [ -n "${STATUS_NOTICE}" ]; then
+        echo "${CLR_DIM}${STATUS_NOTICE}${CLR_RESET}"
+        echo
+    fi
+
+    print_drives "${STATUS_JSON}"
     echo
     echo "${CLR_DIM}Network Interfaces (use these names for NET_IFACES / EXCLUDE_NETDEV):${CLR_RESET}"
-    print_interfaces "$STATUS_JSON"
+    print_interfaces "${STATUS_JSON}"
     echo
 
-    # --- Menu ---
     echo "[U] ${CLR_PURPLE}Unlock${CLR_RESET}  [B] ${CLR_BLUE}Boot${CLR_RESET}  [R] ${CLR_ORANGE}Reboot${CLR_RESET}  [S] ${CLR_BLUE}Shutdown${CLR_RESET}  [Q] Quit"
     echo -n "Choice: "
 
-    # Wait up to 10 seconds for input. If no key is pressed, loop back to
-    # the top and refresh the drive status display.
     if ! read -t 10 choice; then
         continue
     fi
 
-    # Normalize input to uppercase so both "u" and "U" are accepted.
     case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
-
-        U) # Unlock — POST /unlock with the password
+        U)
             echo -n "Password: "
-            stty -echo    # disable echo so the password isn't displayed
+            stty -echo
             read -r pass
-            stty sane     # restore normal terminal settings
+            stty sane
             echo
 
-            # Use jq to build the request body so that passwords containing
-            # quotes, backslashes, or other JSON-special characters are safely
-            # escaped. Shell string interpolation into raw JSON would break on
-            # such characters and produce a malformed request body.
             RESP=$($CURL -X POST \
                 -H "Content-Type: application/json" \
                 -d "$(jq -n --arg p "$pass" '{password: $p}')" \
-                "$API/unlock")
+                "$API/unlock" 2>/dev/null)
 
-            if has_error "$RESP"; then
-                # Display the specific error from the server (e.g. "maximum
-                # failed attempts reached", "password cannot be blank").
-                echo "❌ $(get_error "$RESP")"
+            if [ -z "${RESP}" ]; then
+                echo "Service unavailable."
+            elif has_error "$RESP"; then
+                echo "Error: $(get_error "$RESP")"
             else
                 AUTH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
-                # Show per-drive results: one line per drive indicating success
-                # or failure. Format: ✅ /dev/sda  or  ❌ /dev/sda
                 echo "$RESP" | jq -r '
                     .results[] |
-                    if .success then "  ✅ " else "  ❌ " end + .device
+                    "  " + (if .success then "[ok] " else "[failed] " end) + .device
                 '
             fi
             sleep 2
             ;;
 
-        B) # Boot — POST /boot to load the Proxmox kernel via kexec.
-            # Unlike Reboot, this is a warm kernel switch that keeps drives unlocked.
+        B)
             echo -n "Boot OS? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$(post_with_auth "$API/boot")
-                if has_error "$RESP"; then
-                    echo "❌ $(get_error "$RESP")"
+                RESP=$(post_with_auth "$API/boot" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
                     sleep 2
                 else
-                    # Display a warning if any drives were still locked at boot time.
-                    # The Go server includes this in the response when fullyUnlocked=false.
                     WARN=$(echo "$RESP" | jq -r '.warning // empty')
-                    [ -n "$WARN" ] && echo "⚠  $WARN"
-                    echo "🚀 Booting..."
+                    [ -n "$WARN" ] && echo "Warning: $WARN"
+                    echo "Booting..."
                     exit 0
                 fi
             fi
             ;;
 
-        R) # Reboot — POST /reboot for a cold reboot.
-            # Note: unlike Boot (kexec), this re-locks the drives and brings
-            # the PBA up again from scratch.
+        R)
             echo -n "Reboot? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$(post_with_auth "$API/reboot")
-                if has_error "$RESP"; then
-                    echo "❌ $(get_error "$RESP")"
+                RESP=$(post_with_auth "$API/reboot" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
                     sleep 2
                 else
                     echo "$(echo "$RESP" | jq -r '.status // "rebooting"')..."
@@ -203,13 +207,16 @@ while true; do
             fi
             ;;
 
-        S) # Shutdown — POST /poweroff to cut power.
+        S)
             echo -n "Shutdown? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$(post_with_auth "$API/poweroff")
-                if has_error "$RESP"; then
-                    echo "❌ $(get_error "$RESP")"
+                RESP=$(post_with_auth "$API/poweroff" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
                     sleep 2
                 else
                     echo "$(echo "$RESP" | jq -r '.status // "powering off"')..."
@@ -218,9 +225,8 @@ while true; do
             fi
             ;;
 
-        Q) # Quit — exit the SSH session cleanly.
+        Q)
             exit 0
             ;;
-
     esac
 done

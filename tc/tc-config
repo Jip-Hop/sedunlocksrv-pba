@@ -146,8 +146,6 @@ wait_for_iface_link() {
     return 1
 }
 
-# write_resolv_conf — writes /etc/resolv.conf atomically in one printf call
-# rather than truncate-then-append-in-a-loop. (Fix #12)
 write_resolv_conf() {
     [ -n "${DNS}" ] || return 0
     {
@@ -176,8 +174,6 @@ configure_dhcp_ipv4() {
         echo "[net] DHCP requested but udhcpc is unavailable"
         return 1
     fi
-    # DHCP logs go to /dev/null — they contain no information useful at runtime
-    # and writing to /tmp is unnecessarily noisy. (Fix implicit in cleanup)
     udhcpc -n -q -t 5 -T 3 -i "${iface}" >/dev/null 2>&1
 }
 
@@ -213,14 +209,7 @@ configure_individual_ifaces() {
 }
 
 create_bond() {
-    local bond_ifaces="$1" bond_mode="$2" iface bonding_module_path
-
-    bonding_module_path="$(find /lib/modules -type f -name 'bonding.ko*' | head -n1)"
-    if [ -n "${bonding_module_path}" ]; then
-        echo "[net] bonding module file: ${bonding_module_path}"
-    else
-        echo "[net] bonding module file not found under /lib/modules"
-    fi
+    local bond_ifaces="$1" bond_mode="$2" iface
 
     if ! have_command modprobe && [ ! -x /sbin/modprobe ]; then
         echo "[net] modprobe command not available"
@@ -228,8 +217,7 @@ create_bond() {
     fi
 
     if ! /sbin/modprobe bonding >/dev/null 2>&1; then
-        echo "[net] bonding module unavailable or failed to load"
-        dmesg 2>/dev/null | grep -Ei 'bonding|module|unknown symbol|invalid module|disagrees about version' | tail -n10 | sed 's/^/[net] dmesg: /'
+        echo "[net] bonding module unavailable"
         return 1
     fi
 
@@ -239,9 +227,9 @@ create_bond() {
     [ -d "/sys/class/net/${BOND_NAME}" ] || return 1
 
     ifconfig "${BOND_NAME}" down >/dev/null 2>&1 || true
-    echo "${bond_mode}"            > "/sys/class/net/${BOND_NAME}/bonding/mode"
-    echo "${BOND_MIIMON}"          > "/sys/class/net/${BOND_NAME}/bonding/miimon"
-    echo "${BOND_LACP_RATE}"       > "/sys/class/net/${BOND_NAME}/bonding/lacp_rate"
+    echo "${bond_mode}"             > "/sys/class/net/${BOND_NAME}/bonding/mode"
+    echo "${BOND_MIIMON}"           > "/sys/class/net/${BOND_NAME}/bonding/miimon"
+    echo "${BOND_LACP_RATE}"        > "/sys/class/net/${BOND_NAME}/bonding/lacp_rate"
     echo "${BOND_XMIT_HASH_POLICY}" > "/sys/class/net/${BOND_NAME}/bonding/xmit_hash_policy"
 
     for iface in ${bond_ifaces}; do
@@ -251,11 +239,8 @@ create_bond() {
 
     echo "[net] Bond ${BOND_NAME}: mode=${bond_mode} miimon=${BOND_MIIMON} lacp_rate=${BOND_LACP_RATE} xmit_hash_policy=${BOND_XMIT_HASH_POLICY}"
 
-    # wait_for_iface_link returns as soon as the interface reports link-up,
-    # so the 30-second maximum is only paid when the bond genuinely doesn't
-    # come up. The warning is diagnostic; we proceed regardless. (Fix #13)
     if ! wait_for_iface_link "${BOND_NAME}" 30; then
-        echo "[net] ${BOND_NAME} did not report link-up within 30s — proceeding anyway"
+        echo "[net] ${BOND_NAME} did not report link-up within 30s; proceeding anyway"
     fi
 
     configure_iface_ipv4 "${BOND_NAME}"
@@ -291,41 +276,6 @@ configure_network() {
             ;;
     esac
 }
-
-print_intel_700_diagnostics() {
-    local i40e_module dmesg_lines pci_lines
-
-    echo "----------------------------------------------------"
-    echo "[diag] Intel 700-series NIC diagnostics"
-
-    i40e_module="$(find /lib/modules -type f -name 'i40e.ko*' | head -n1)"
-    if [ -n "${i40e_module}" ] && [ -f "${i40e_module}" ]; then
-        echo "[diag] i40e module present: ${i40e_module}"
-    else
-        echo "[diag] i40e module not found in /lib/modules"
-    fi
-
-    if grep -q '^i40e ' /proc/modules 2>/dev/null; then
-        echo "[diag] i40e module loaded"
-    else
-        echo "[diag] i40e module not loaded"
-    fi
-
-    if have_command lspci; then
-        pci_lines="$(lspci -nn 2>/dev/null | grep -Ei 'Ethernet|Network|X710|XL710|XXV710|Intel Corporation' | head -n10)"
-        [ -n "${pci_lines}" ] && printf '%s\n' "${pci_lines}" | sed 's/^/[diag] pci: /'
-    fi
-
-    dmesg_lines="$(dmesg 2>/dev/null | grep -Ei 'i40e|X710|XL710|XXV710|firmware|NVM' | tail -n15)"
-    if [ -n "${dmesg_lines}" ]; then
-        printf '%s\n' "${dmesg_lines}" | sed 's/^/[diag] dmesg: /'
-    else
-        echo "[diag] no Intel 700-series related dmesg lines found"
-    fi
-    echo "----------------------------------------------------"
-}
-
-print_intel_700_diagnostics
 
 if configure_network; then
     echo "[net] Network configuration complete"

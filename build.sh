@@ -234,7 +234,7 @@ validate_network_settings() {
 
 apply_extension_flags() {
     if [ "$SSHBUILD" = true ]; then
-        EXTENSIONS="${EXTENSIONS} dropbear.tcz"
+        EXTENSIONS="${EXTENSIONS} dropbear.tcz curl.tcz"
     fi
     if [ -n "${KEYMAP:-}" ]; then
         EXTENSIONS="${EXTENSIONS} kmaps.tcz"
