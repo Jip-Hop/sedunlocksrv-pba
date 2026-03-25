@@ -28,7 +28,7 @@ body {
     background:#111;
     color:#eee;
     font-family: monospace;
-    max-width: 420px;
+    max-width: 720px;
     margin: auto;
     padding: 10px;
 }
@@ -43,14 +43,19 @@ h2 { text-align:center; }
 }
 
 button {
-    background:#222;
-    color:#eee;
-    border:1px solid #555;
-    padding:6px;
+    background:#0e639c;
+    color:#fff;
+    border:1px solid #0e639c;
+    padding:8px 10px;
     margin-top:5px;
+    transition:opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-button:hover { background:#333; }
+button:hover {
+    opacity:0.88;
+    transform:translateY(-1px);
+    box-shadow:0 0 0 1px rgba(255,255,255,0.06) inset;
+}
 
 /* Used to hide the Change Password tab and the Boot button when not needed. */
 .hidden { display:none; }
@@ -77,13 +82,21 @@ input {
 .tab button {
     flex:1;
     margin:0;
+    background:#2d2d2d;
+    border-color:#3c3c3c;
+    text-transform:uppercase;
 }
 
 /* Highlight the currently active tab button. */
-.active { background:#333; }
+.active {
+    background:#0e639c !important;
+    border-color:#0e639c !important;
+}
 
 /* Used for the password policy display and show-password checkbox labels. */
 .small { font-size:11px; color:#aaa; }
+
+.hint { font-size:12px; color:#bbb; line-height:1.4; }
 
 /* Inline checkbox label row (e.g. "Show Password"). */
 .checkbox-row {
@@ -106,6 +119,10 @@ input {
 .row button {
     flex:1;
 }
+
+.primary-btn { background:#68217a; border-color:#68217a; }
+.secondary-btn { background:#0e639c; border-color:#0e639c; }
+.warm-btn { background:#e37933; border-color:#e37933; }
 </style>
 </head>
 
@@ -127,6 +144,11 @@ input {
     <div id="status"></div>
 </div>
 
+<div class="box">
+    <div class="hint">Network Interfaces as seen by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
+    <div id="interfaces" class="small"></div>
+</div>
+
 <!-- ============================================================
      UNLOCK TAB (default visible tab)
      ============================================================ -->
@@ -146,12 +168,12 @@ input {
         <div class="row">
             <!-- Unlock: POSTs to /unlock with the password.
                  The Go server runs sedutil-cli against all locked drives. -->
-            <button onclick="unlock()">Unlock</button>
+            <button class="primary-btn" onclick="unlock()">Unlock</button>
 
             <!-- Boot: only visible when at least one drive reports unlocked.
                  Shown/hidden by refresh() based on GET /status response.
                  POSTs to /boot which triggers kexec into the Proxmox kernel. -->
-            <button id="bootBtn" class="hidden" onclick="boot()">Boot</button>
+            <button id="bootBtn" class="secondary-btn hidden" onclick="boot()">Boot</button>
         </div>
     </div>
 
@@ -159,8 +181,8 @@ input {
          require a password — just direct POST requests to /reboot and /poweroff.
          Note: Reboot does a cold reboot (re-locks drives), unlike Boot (kexec). -->
     <div class="row">
-        <button onclick="reboot()">Reboot</button>
-        <button onclick="shutdown()">Shutdown</button>
+        <button class="warm-btn" onclick="reboot()">Reboot</button>
+        <button class="secondary-btn" onclick="shutdown()">Shutdown</button>
     </div>
 
 </div>
@@ -187,7 +209,7 @@ input {
 
         <!-- Submits to /change-password. The Go server validates the new
              password against the policy before calling sedutil-cli. -->
-        <button onclick="changePw()">Update Password</button>
+        <button class="primary-btn" onclick="changePw()">Update Password</button>
     </div>
 
 </div>
@@ -199,6 +221,7 @@ const $ = id => document.getElementById(id)
 // Cached policy object from GET /password-policy.
 // Displayed in the Change Password tab and used for any client-side hints.
 let policy = {}
+let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
 
 // ======================================================
 // PASSWORD POLICY
@@ -233,6 +256,7 @@ async function refresh(){
     let j = await r.json()
 
     let html = ""
+    let ifaceHtml = ""
     let unlocked = false  // becomes true if any drive is unlocked
 
     j.drives.forEach(d => {
@@ -251,7 +275,23 @@ async function refresh(){
         </div>`
     })
 
+    j.interfaces.forEach(iface => {
+        let link = iface.carrier ? "LINK" : "NO-LINK"
+        let extra = []
+        if (iface.mac) extra.push(iface.mac)
+        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.join(", "))
+        if (iface.loopback) extra.push("loopback")
+
+        ifaceHtml += `<div>
+            <span>${iface.name}</span> -
+            <span>${iface.state}</span> -
+            <span>${link}</span>
+            ${extra.length ? `- <span>${extra.join(" - ")}</span>` : ""}
+        </div>`
+    })
+
     $("status").innerHTML = html
+    $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
 
     // Show the Boot button only when at least one drive is unlocked.
     // Mirroring the console TUI's B option, which also only makes sense
@@ -270,10 +310,16 @@ async function unlock(){
     //   1. reject blank passwords immediately
     //   2. check the rate limit (powers off after maxAttempts failures)
     //   3. run sedutil-cli against all locked drives
-    await fetch("/unlock", {
+    let r = await fetch("/unlock", {
         method:"POST",
         body: JSON.stringify({password:pw})
     })
+    let j = await r.json()
+
+    if (j.token) {
+        authToken = j.token
+        sessionStorage.setItem("sedunlocksrvAuthToken", authToken)
+    }
 
     // Clear the password field after every attempt, success or failure,
     // so it isn't accidentally re-submitted or left visible.
@@ -314,13 +360,24 @@ async function changePw(){
 // POST /boot — triggers kexec into the Proxmox kernel.
 // The Go server responds before kexec fires (500ms delay), so the fetch
 // completes. The page becomes unreachable once kexec succeeds.
-function boot(){ fetch("/boot",{method:"POST"}) }
+function authHeaders() {
+    return authToken ? {"X-Auth-Token": authToken} : {}
+}
+
+async function postWithFeedback(url){
+    let r = await fetch(url,{method:"POST", headers: authHeaders()})
+    let j = await r.json().catch(() => ({}))
+    if (!r.ok && j.error) alert(j.error)
+    return j
+}
+
+function boot(){ postWithFeedback("/boot") }
 
 // POST /reboot — cold reboot. Re-locks drives; PBA will start again.
-function reboot(){ fetch("/reboot",{method:"POST"}) }
+function reboot(){ postWithFeedback("/reboot") }
 
 // POST /poweroff — shuts the system down completely.
-function shutdown(){ fetch("/poweroff",{method:"POST"}) }
+function shutdown(){ postWithFeedback("/poweroff") }
 
 // ======================================================
 // TABS

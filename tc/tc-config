@@ -1,17 +1,24 @@
 #!/bin/busybox ash
 
 # ----------------------------------------------------
-# Custom Tiny Core Linux RC Script (Improved)
+# Custom Tiny Core Linux RC Script
 # ----------------------------------------------------
 
 # Ensure terminal is restored on exit
-trap "stty sane; echo; echo '[!] Terminal restored';" EXIT
+restore_terminal() {
+    stty sane 2>/dev/null || true
+    printf '\033[?25h'
+    echo
+    echo "[!] Terminal restored"
+}
+
+trap restore_terminal EXIT
 
 # Reduce kernel log noise
 dmesg -n 3
 
 # Hide cursor (sedunlocksrv console TUI resets terminal as needed)
-echo -e "\e[?25l"
+printf '\033[?25l'
 
 # Minimal input mode until sedunlocksrv takes over (raw mode in Go)
 stty cbreak min 1
@@ -34,87 +41,265 @@ while [ ! -e /dev/rtc0 ]; do usleep 50000; done
 /sbin/udevadm settle --timeout=5
 
 # ----------------------------------------------------
-# NETWORK: LACP BONDING
+# Runtime network config
 # ----------------------------------------------------
-echo "----------------------------------------------------"
-echo "🚀 Starting Network Configuration: LACP Bond0"
-echo "----------------------------------------------------"
+NET_MODE="single"
+NET_IFACES=""
+NET_EXCLUDE=""
+NET_DHCP="true"
+IP_ADDR=""
+NETMASK=""
+GATEWAY=""
+DNS=""
+# Bonding defaults for explicit bond mode. Mode 4 is 802.3ad/LACP.
+BOND_NAME="bond0"
+BOND_MODE="4"
+BOND_MIIMON="100"
+BOND_LACP_RATE="1"
+BOND_XMIT_HASH_POLICY="1"
 
-echo -n "Step 1: Loading bonding module... "
-if modprobe bonding; then
-    echo "OK"
-else
-    echo "FAILED"
-    echo "❌ Bonding unavailable. Network disabled."
-fi
+[ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
 
-echo -n "Step 2: Ensuring bond0 exists... "
-if [ ! -d "/sys/class/net/bond0" ]; then
-    echo +bond0 > /sys/class/net/bonding_masters && echo "CREATED"
-else
-    echo "EXISTS"
-fi
+normalize_bool() {
+    case "$1" in
+        1|true|TRUE|yes|YES|on|ON)
+            echo "true"
+            ;;
+        *)
+            echo "false"
+            ;;
+    esac
+}
 
-ifconfig bond0 down 2>/dev/null
+NET_DHCP=$(normalize_bool "${NET_DHCP}")
 
-echo "Step 3: Configuring LACP..."
-echo 4   > /sys/class/net/bond0/bonding/mode
-echo 100 > /sys/class/net/bond0/bonding/miimon
-echo 1   > /sys/class/net/bond0/bonding/lacp_rate
-echo 1   > /sys/class/net/bond0/bonding/xmit_hash_policy
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
 
-# Auto-detect interfaces
-echo "Step 4: Detecting interfaces..."
-PHYS_IFACES=$(ls /sys/class/net | grep -E '^e')
-
-for iface in $PHYS_IFACES; do
-    if [ "$iface" != "bond0" ]; then
-        echo "   -> Enslaving $iface"
-        ifconfig "$iface" down
-        echo "+$iface" > /sys/class/net/bond0/bonding/slaves
-    fi
-done
-
-echo "Step 5: Static network config..."
-ifconfig bond0 192.168.10.230 netmask 255.255.255.0 up
-route add default gw 192.168.10.253 bond0
-echo "nameserver 192.168.10.252" > /etc/resolv.conf
-
-# ----------------------------------------------------
-# LACP SYNC
-# ----------------------------------------------------
-echo "----------------------------------------------------"
-echo "⏳ Synchronizing LACP Link..."
-
-COUNT=0
-MAX=30
-LINK_UP=false
-
-while [ $COUNT -lt $MAX ]; do
-    if [ "$(cat /sys/class/net/bond0/operstate 2>/dev/null)" = "up" ]; then
-        echo "✅ Link UP (${COUNT}s)"
-        LINK_UP=true
-        break
-    fi
-    printf "\rWaiting... %ds/%ds" $COUNT $MAX
-    sleep 1
-    COUNT=$((COUNT+1))
-done
-echo ""
-
-if [ "$LINK_UP" = "true" ]; then
-    echo -n "🔍 Testing connectivity... "
-    sleep 1
-    if ping -c 3 -W 5 192.168.10.253 >/dev/null; then
-        echo "OK"
+append_word() {
+    if [ -n "$1" ]; then
+        printf '%s %s\n' "$1" "$2"
     else
-        echo "FAILED"
+        printf '%s\n' "$2"
     fi
-else
-    echo "❌ LACP failed"
-fi
+}
 
-echo "----------------------------------------------------"
+contains_word() {
+    local needle="$1"
+    shift
+    for item in "$@"; do
+        [ "${item}" = "${needle}" ] && return 0
+    done
+    return 1
+}
+
+list_all_ifaces() {
+    local path iface
+    for path in /sys/class/net/*; do
+        [ -e "${path}" ] || continue
+        iface=${path##*/}
+        case "${iface}" in
+            lo|bonding_masters)
+                continue
+                ;;
+        esac
+        echo "${iface}"
+    done
+}
+
+list_detected_ifaces() {
+    local iface found=""
+    for iface in $(list_all_ifaces); do
+        [ -e "/sys/class/net/${iface}/device" ] || continue
+        echo "${iface}"
+        found="yes"
+    done
+
+    if [ -n "${found}" ]; then
+        return 0
+    fi
+
+    list_all_ifaces
+}
+
+build_iface_list() {
+    local requested iface result="" exclude_items
+    exclude_items="${NET_EXCLUDE}"
+    requested="${NET_IFACES}"
+
+    if [ -n "${requested}" ]; then
+        for iface in ${requested}; do
+            [ -d "/sys/class/net/${iface}" ] || continue
+            contains_word "${iface}" ${exclude_items} && continue
+            result="$(append_word "${result}" "${iface}")"
+        done
+    else
+        for iface in $(list_detected_ifaces); do
+            contains_word "${iface}" ${exclude_items} && continue
+            result="$(append_word "${result}" "${iface}")"
+        done
+    fi
+
+    printf '%s\n' "${result}"
+}
+
+count_words() {
+    set -- $1
+    echo $#
+}
+
+wait_for_iface_link() {
+    local iface="$1" seconds="$2" state count=0
+    while [ "${count}" -lt "${seconds}" ]; do
+        state=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")
+        case "${state}" in
+            up|unknown)
+                return 0
+                ;;
+        esac
+        sleep 1
+        count=$((count + 1))
+    done
+    return 1
+}
+
+write_resolv_conf() {
+    local dns_item
+    [ -n "${DNS}" ] || return 0
+    : > /etc/resolv.conf
+    for dns_item in ${DNS}; do
+        echo "nameserver ${dns_item}" >> /etc/resolv.conf
+    done
+}
+
+configure_static_ipv4() {
+    local iface="$1"
+    if [ -z "${IP_ADDR}" ] || [ -z "${NETMASK}" ]; then
+        echo "[net] Static networking skipped on ${iface}: IP_ADDR or NETMASK is missing"
+        return 1
+    fi
+
+    ifconfig "${iface}" "${IP_ADDR}" netmask "${NETMASK}" up || return 1
+    [ -n "${GATEWAY}" ] && route add default gw "${GATEWAY}" "${iface}" >/dev/null 2>&1
+    write_resolv_conf
+    return 0
+}
+
+configure_dhcp_ipv4() {
+    local iface="$1"
+    ifconfig "${iface}" up || return 1
+    if ! have_command udhcpc; then
+        echo "[net] DHCP requested but udhcpc is unavailable"
+        return 1
+    fi
+
+    udhcpc -n -q -t 5 -T 3 -i "${iface}" >/tmp/udhcpc-"${iface}".log 2>&1
+}
+
+configure_iface_ipv4() {
+    local iface="$1"
+
+    if [ "${NET_DHCP}" = "true" ]; then
+        configure_dhcp_ipv4 "${iface}"
+        return $?
+    fi
+
+    configure_static_ipv4 "${iface}"
+}
+
+configure_individual_ifaces() {
+    local ifaces="$1" iface configured=0
+
+    if [ -z "${ifaces}" ]; then
+        echo "[net] No eligible interfaces found after exclusions"
+        return 1
+    fi
+
+    if [ "${NET_DHCP}" = "false" ] && [ "$(count_words "${ifaces}")" -gt 1 ]; then
+        set -- ${ifaces}
+        ifaces="$1"
+        echo "[net] Static mode with multiple interfaces requested; using ${ifaces} only"
+    fi
+
+    for iface in ${ifaces}; do
+        echo "[net] Configuring ${iface} (${NET_DHCP})"
+        if configure_iface_ipv4 "${iface}"; then
+            configured=1
+        else
+            echo "[net] ${iface} configuration failed"
+        fi
+    done
+
+    [ "${configured}" -eq 1 ]
+}
+
+create_bond() {
+    local bond_ifaces="$1" bond_mode="$2" iface
+
+    if ! modprobe bonding >/dev/null 2>&1; then
+        echo "[net] bonding module unavailable"
+        return 1
+    fi
+
+    if [ ! -d "/sys/class/net/${BOND_NAME}" ]; then
+        echo "+${BOND_NAME}" > /sys/class/net/bonding_masters 2>/dev/null || true
+    fi
+
+    [ -d "/sys/class/net/${BOND_NAME}" ] || return 1
+
+    ifconfig "${BOND_NAME}" down >/dev/null 2>&1 || true
+    echo "${bond_mode}" > "/sys/class/net/${BOND_NAME}/bonding/mode"
+    echo "${BOND_MIIMON}" > "/sys/class/net/${BOND_NAME}/bonding/miimon"
+    echo "${BOND_LACP_RATE}" > "/sys/class/net/${BOND_NAME}/bonding/lacp_rate"
+    echo "${BOND_XMIT_HASH_POLICY}" > "/sys/class/net/${BOND_NAME}/bonding/xmit_hash_policy"
+
+    for iface in ${bond_ifaces}; do
+        ifconfig "${iface}" down >/dev/null 2>&1 || true
+        echo "+${iface}" > "/sys/class/net/${BOND_NAME}/bonding/slaves" 2>/dev/null || true
+    done
+
+    echo "[net] Bond ${BOND_NAME}: mode=${bond_mode} miimon=${BOND_MIIMON} lacp_rate=${BOND_LACP_RATE} xmit_hash_policy=${BOND_XMIT_HASH_POLICY}"
+    wait_for_iface_link "${BOND_NAME}" 30 || echo "[net] ${BOND_NAME} did not report link-up within timeout"
+    configure_iface_ipv4 "${BOND_NAME}"
+}
+
+configure_network() {
+    local candidates iface_count
+    candidates="$(build_iface_list)"
+    iface_count="$(count_words "${candidates}")"
+
+    echo "----------------------------------------------------"
+    echo "[net] Mode=${NET_MODE} DHCP=${NET_DHCP} Exclude='${NET_EXCLUDE}'"
+    echo "[net] Candidates: ${candidates:-none}"
+    echo "----------------------------------------------------"
+
+    case "${NET_MODE}" in
+        bond)
+            if [ "${iface_count}" -lt 2 ]; then
+                echo "[net] Bonding requested but fewer than two interfaces are available; falling back to individual interfaces"
+                configure_individual_ifaces "${candidates}"
+                return $?
+            fi
+            create_bond "${candidates}" "${BOND_MODE}"
+            return $?
+            ;;
+        single)
+            configure_individual_ifaces "${candidates}"
+            return $?
+            ;;
+        *)
+            echo "[net] Unknown NET_MODE='${NET_MODE}', skipping network setup"
+            return 1
+            ;;
+    esac
+}
+
+if configure_network; then
+    echo "[net] Network configuration complete"
+else
+    echo "[net] Network configuration unavailable; console unlock will still start"
+fi
 
 # ----------------------------------------------------
 # SYSTEM FIXES
@@ -125,7 +310,11 @@ echo "----------------------------------------------------"
 if [ -e /home/tc/keymap ]; then
     KEYMAP=$(cat /home/tc/keymap)
     keymapfile=$(find /usr/share/kmap/ -name "${KEYMAP}.kmap")
-    loadkmap < "$keymapfile"
+    if [ -n "${keymapfile}" ] && [ -f "${keymapfile}" ]; then
+        loadkmap < "$keymapfile"
+    else
+        echo "[keymap] Requested keymap not found: ${KEYMAP}"
+    fi
 fi
 
 # Drive / Opal detection and console TUI are handled in sedunlocksrv (scanDrives, consoleInterface).
@@ -135,13 +324,13 @@ fi
 # ----------------------------------------------------
 cd /usr/local/sbin/sedunlocksrv/
 
-echo "🚀 Starting sedunlocksrv..."
+echo "Starting sedunlocksrv..."
 exec ./sedunlocksrv
 
 # ----------------------------------------------------
 # FALLBACK (only if exec fails)
 # ----------------------------------------------------
-echo "❌ sedunlocksrv exited unexpectedly"
+echo "sedunlocksrv exited unexpectedly"
 
-sleep 5
+sleep 30
 reboot -f

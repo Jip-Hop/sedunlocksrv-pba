@@ -69,7 +69,7 @@ Defaults live in `build.sh`. To set your own defaults without long CLI lines:
 
 Resolution order: **built-in defaults → `build.conf` (or `BUILD_CONFIG` env path) → `--config=FILE` (replaces path) → remaining flags**.
 
-Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
+Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--net-mode=single|bond`, `--net-ifaces="eth0 eth1"`, `--net-addressing=dhcp|static`, `--ip-addr=...`, `--netmask=...`, `--gateway=...`, `--dns="..."`, `--bond-mode=4`, `--bond-miimon=100`, `--bond-lacp-rate=1`, `--bond-xmit-hash-policy=1`, `--tls-cert=/path/to/server.crt`, `--tls-key=/path/to/server.key`, `--ssh-curl-insecure=auto|true|false`, `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
 
 
 # sedunlocksrv-pba
@@ -180,15 +180,23 @@ run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (
 
 It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. As long as you prefix every key in authorized_keys with the 'command=...' prefix like in the example, it will only allow SED unlocking, with any other SSH services disabled.
 
+If you provide a custom trusted TLS certificate and key at build time with `--tls-cert` and `--tls-key` (or `TLS_CERT_PATH` / `TLS_KEY_PATH` in `build.conf`), the SSH client helper will default to verified HTTPS (`curl` without `-k`). For self-signed build-generated certificates it defaults to insecure verification bypass (`curl -k`). You can override that with `SSH_CURL_INSECURE=true|false`.
+
 ## Excluding network device(s)
 
-Note that by default, the PBA image will try to configure all network devices with dynamic IP addresses using DHCP, and the web server and SSH server will listen on all interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
+By default, the PBA image auto-detects eligible network interfaces, configures them individually with DHCP, and lets the web server and SSH server listen on all configured interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
 
 To solve this problem, optionally it is possible to set a list of network devices to be excluded when running the build script, for example:
 ```
-sudo EXCLUDE_NETDEV="eth0 eth1" ./build.sh
+./build.sh --exclude-netdev="eth0 eth1"
 ```
-will exclude `eth0` and `eth1` from DHCP configuration.
+will exclude `eth0` and `eth1` from network configuration.
+
+To build a bonded LACP image, explicitly select bond mode and the member interfaces:
+```bash
+./build.sh --net-mode=bond --net-ifaces="eth0 eth1" --net-addressing=static \
+  --ip-addr=192.168.10.230 --netmask=255.255.255.0 --gateway=192.168.10.253 --dns="192.168.10.252"
+```
 
 ## Encrypting your drive and flashing the PBA
 Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.img`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.img /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.

@@ -31,7 +31,7 @@ KEXEC_VER="2.0.28"
 
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
-BOOTARGS="libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
+BOOTARGS="libata.allow_tpm=1"
 
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="jq.tcz"
@@ -40,6 +40,20 @@ CLEAN_MODE=false
 SSHBUILD=false
 KEYMAP=""
 EXCLUDE_NETDEV=""
+NET_MODE="single"
+NET_IFACES=""
+NET_DHCP="true"
+IP_ADDR=""
+NETMASK=""
+GATEWAY=""
+DNS=""
+BOND_MODE="4"
+BOND_MIIMON="100"
+BOND_LACP_RATE="1"
+BOND_XMIT_HASH_POLICY="1"
+TLS_CERT_PATH=""
+TLS_KEY_PATH=""
+SSH_CURL_INSECURE="auto"
 
 # Populated by configure_sedutil_source()
 SEDUTIL_FORK=""
@@ -53,6 +67,19 @@ LOOP_DEVICE_HDD=""
 # Args after stripping --config= (filled by extract_config_path_from_args)
 REMAINING_ARGS=()
 
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+require_file() {
+    local path="$1"
+    local description="$2"
+    if [ ! -f "${path}" ]; then
+        echo "❌ ERROR: ${description} not found: ${path}" >&2
+        exit 1
+    fi
+}
+
 # -----------------------------------------------------------------------------
 # sedutil upstream (env SEDUTIL_FORK=ChubbyAnt or chubbyant)
 # -----------------------------------------------------------------------------
@@ -61,11 +88,13 @@ configure_sedutil_source() {
         chubbyant)
             SEDUTIL_FORK="ChubbyAnt"
             SEDUTILURL="https://github.com/ChubbyAnt/sedutil/releases/download/1.15-5ad84d8/sedutil-cli-1.15-5ad84d8.zip"
+            SEDUTIL_ARCHIVE_NAME="$(basename "${SEDUTILURL}")"
             ;;
         *)
             SEDUTIL_FORK="Drive-Trust-Alliance"
             SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
             SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
+            SEDUTIL_ARCHIVE_NAME="$(basename "${SEDUTILURL}")"
             ;;
     esac
 }
@@ -96,10 +125,24 @@ load_config_file() {
     source "${CONFIG_FILE}"
 }
 
+require_root() {
+    if [ "${EUID}" -ne 0 ]; then
+        echo "❌ ERROR: build.sh must be run as root." >&2
+        echo "Run it with sudo, for example: sudo ./build.sh" >&2
+        exit 1
+    fi
+}
+
 # CLI overrides values from defaults / build.conf (legacy: plain SSH)
 print_usage() {
     echo "Usage: $0 [--config=FILE] [--clean] [--ssh] [--keymap=NAME]" >&2
-    echo "          [--bootargs=KERNEL_CMDLINE] [--exclude-netdev=DEVS] [--sedutil-fork=ChubbyAnt]" >&2
+    echo "          [--bootargs=KERNEL_CMDLINE] [--exclude-netdev=DEVS]" >&2
+    echo "          [--net-mode=bond|single] [--net-ifaces=DEVS]" >&2
+    echo "          [--net-addressing=dhcp|static] [--ip-addr=ADDR] [--netmask=MASK]" >&2
+    echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
+    echo "          [--bond-xmit-hash-policy=VAL]" >&2
+    echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
+    echo "          [--gateway=ADDR] [--dns=ADDRS] [--sedutil-fork=ChubbyAnt]" >&2
     echo >&2
     echo "Config: defaults in script, then optional ${SCRIPT_DIR}/build.conf (gitignored)," >&2
     echo "        or BUILD_CONFIG env, or --config=FILE. CLI overrides file." >&2
@@ -127,6 +170,60 @@ parse_args() {
             --exclude-netdev=*)
                 EXCLUDE_NETDEV="${arg#*=}"
                 ;;
+            --net-mode=*)
+                NET_MODE="${arg#*=}"
+                ;;
+            --net-ifaces=*)
+                NET_IFACES="${arg#*=}"
+                ;;
+            --net-addressing=*)
+                case "${arg#*=}" in
+                    dhcp)
+                        NET_DHCP="true"
+                        ;;
+                    static)
+                        NET_DHCP="false"
+                        ;;
+                    *)
+                        echo "Unknown network addressing mode: ${arg#*=}" >&2
+                        print_usage
+                        exit 1
+                        ;;
+                esac
+                ;;
+            --ip-addr=*)
+                IP_ADDR="${arg#*=}"
+                ;;
+            --netmask=*)
+                NETMASK="${arg#*=}"
+                ;;
+            --gateway=*)
+                GATEWAY="${arg#*=}"
+                ;;
+            --dns=*)
+                DNS="${arg#*=}"
+                ;;
+            --tls-cert=*)
+                TLS_CERT_PATH="${arg#*=}"
+                ;;
+            --tls-key=*)
+                TLS_KEY_PATH="${arg#*=}"
+                ;;
+            --ssh-curl-insecure=*)
+                SSH_CURL_INSECURE="${arg#*=}"
+                ;;
+            --bond-mode=*)
+                BOND_MODE="${arg#*=}"
+                ;;
+            --bond-miimon=*)
+                BOND_MIIMON="${arg#*=}"
+                ;;
+            --bond-lacp-rate=*)
+                BOND_LACP_RATE="${arg#*=}"
+                ;;
+            --bond-xmit-hash-policy=*)
+                BOND_XMIT_HASH_POLICY="${arg#*=}"
+                ;;
             --sedutil-fork=*)
                 SEDUTIL_FORK="${arg#*=}"
                 ;;
@@ -141,6 +238,85 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+validate_network_settings() {
+    case "${NET_MODE}" in
+        bond|single)
+            ;;
+        *)
+            echo "Unknown network mode: ${NET_MODE}" >&2
+            print_usage
+            exit 1
+            ;;
+    esac
+
+    case "${NET_DHCP}" in
+        true|false)
+            ;;
+        *)
+            echo "NET_DHCP must be true or false (current: ${NET_DHCP})" >&2
+            exit 1
+            ;;
+    esac
+
+    if [ "${NET_DHCP}" = "false" ] && [ -z "${IP_ADDR}" -o -z "${NETMASK}" ]; then
+        echo "Static networking requires IP_ADDR and NETMASK." >&2
+        exit 1
+    fi
+
+    case "${BOND_MODE}" in
+        ''|*[!0-9]*)
+            echo "BOND_MODE must be numeric (current: ${BOND_MODE})" >&2
+            exit 1
+            ;;
+    esac
+
+    case "${BOND_MIIMON}" in
+        ''|*[!0-9]*)
+            echo "BOND_MIIMON must be numeric (current: ${BOND_MIIMON})" >&2
+            exit 1
+            ;;
+    esac
+
+    case "${BOND_LACP_RATE}" in
+        ''|*[!0-9]*)
+            echo "BOND_LACP_RATE must be numeric (current: ${BOND_LACP_RATE})" >&2
+            exit 1
+            ;;
+    esac
+
+    case "${BOND_XMIT_HASH_POLICY}" in
+        ''|*[!0-9]*)
+            echo "BOND_XMIT_HASH_POLICY must be numeric (current: ${BOND_XMIT_HASH_POLICY})" >&2
+            exit 1
+            ;;
+    esac
+
+    if { [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_KEY_PATH}" ]; } || { [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; }; then
+        echo "TLS_CERT_PATH and TLS_KEY_PATH must be set together." >&2
+        exit 1
+    fi
+
+    if [ -n "${TLS_CERT_PATH}" ] && [ ! -f "${TLS_CERT_PATH}" ]; then
+        echo "TLS cert file not found: ${TLS_CERT_PATH}" >&2
+        exit 1
+    fi
+
+    if [ -n "${TLS_KEY_PATH}" ] && [ ! -f "${TLS_KEY_PATH}" ]; then
+        echo "TLS key file not found: ${TLS_KEY_PATH}" >&2
+        exit 1
+    fi
+
+    case "${SSH_CURL_INSECURE}" in
+        auto|true|false)
+            ;;
+        *)
+            echo "SSH_CURL_INSECURE must be auto, true, or false (current: ${SSH_CURL_INSECURE})" >&2
+            exit 1
+            ;;
+    esac
+
 }
 
 # Tiny Core extensions pulled in from flags / env after parse_args.
@@ -162,13 +338,13 @@ maybe_clean_cache() {
 }
 
 # -----------------------------------------------------------------------------
-# Cleanup on exit (trap). Uses sudo for umount/losetup if build was interrupted.
+# Cleanup on exit (trap).
 # -----------------------------------------------------------------------------
 cleanup() {
     echo "Cleaning up..."
-    sudo umount "${TMPDIR-}/img" 2>/dev/null || true
+    umount "${TMPDIR-}/img" 2>/dev/null || true
     if [ -n "${LOOP_DEVICE_HDD-}" ]; then
-        sudo losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
+        losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
     fi
     rm -rf "${TMPDIR-}"
 }
@@ -191,7 +367,7 @@ check_host_dependencies() {
     "
     local missing="" tool
     for tool in ${REQUIRED_TOOLS}; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
+        if ! have_command "$tool"; then
             missing="${missing} ${tool}"
         fi
     done
@@ -206,7 +382,7 @@ check_host_dependencies() {
         exit 1
     fi
 
-    if [ "$SSHBUILD" = true ] && ! command -v dropbearkey >/dev/null 2>&1; then
+    if [ "$SSHBUILD" = true ] && ! have_command dropbearkey; then
         echo "❌ ERROR: dropbearkey required for --ssh (e.g. apt install dropbear-bin)"
         exit 1
     fi
@@ -265,6 +441,15 @@ build_sedunlocksrv_go() {
 }
 
 ensure_tls_certs() {
+    if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
+        require_file "${TLS_CERT_PATH}" "TLS cert file"
+        require_file "${TLS_KEY_PATH}" "TLS key file"
+        cp -f "${TLS_CERT_PATH}" sedunlocksrv/server.crt
+        cp -f "${TLS_KEY_PATH}" sedunlocksrv/server.key
+        chmod 600 sedunlocksrv/server.key
+        return 0
+    fi
+
     if [[ -f sedunlocksrv/server.crt && -f sedunlocksrv/server.key ]]; then
         return 0
     fi
@@ -288,6 +473,12 @@ cachetcfile() {
     curl -fL "${TCURL}/${remote_type}/${filename}" -o "${local_path}" || {
         [[ "${local_dir}" == "dep" ]] && touch "${local_path}"
     }
+}
+
+cleanup_mount_dir() {
+    local mount_dir="$1"
+    umount "${mount_dir}" 2>/dev/null || true
+    rm -rf "${mount_dir}"
 }
 
 # -----------------------------------------------------------------------------
@@ -337,11 +528,15 @@ fetch_sedutil_cli() {
             ;;
         *)
             local slashes depth
+            local archive_path
             slashes="${SEDUTILPATHINTAR//[^\/]/}"
             depth="${#slashes}"
-            curl -sL -H "Cache-Control: no-cache" "${SEDUTILURL}" \
-                | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" \
-                    --strip-components="${depth}" "${SEDUTILPATHINTAR}"
+            archive_path="${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTIL_ARCHIVE_NAME}"
+            if [ ! -s "${archive_path}" ]; then
+                curl -fL -H "Cache-Control: no-cache" "${SEDUTILURL}" -o "${archive_path}"
+            fi
+            bsdtar -xf "${archive_path}" -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" \
+                --strip-components="${depth}" "${SEDUTILPATHINTAR}"
             ;;
     esac
 }
@@ -369,12 +564,48 @@ stage_kernel_and_initrd() {
 
     TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
     EXTENSIONS="${EXTENSIONS} scsi-${TC_KERNEL_VERSION}.tcz"
-    EXTENSIONS="${EXTENSIONS} ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
 }
 
 # -----------------------------------------------------------------------------
 # App payload: sedutil, Go static dir, init script, optional EXCLUDE_NETDEV placeholder
 # -----------------------------------------------------------------------------
+quote_sh_value() {
+    printf "'%s'" "$(printf "%s" "${1-}" | sed "s/'/'\\\\''/g")"
+}
+
+write_runtime_network_config() {
+    local effective_ssh_curl_insecure
+
+    case "${SSH_CURL_INSECURE}" in
+        auto)
+            if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
+                effective_ssh_curl_insecure="false"
+            else
+                effective_ssh_curl_insecure="true"
+            fi
+            ;;
+        *)
+            effective_ssh_curl_insecure="${SSH_CURL_INSECURE}"
+            ;;
+    esac
+
+    cat > "${TMPDIR}/core/etc/sedunlocksrv.conf" <<EOF
+NET_MODE=$(quote_sh_value "${NET_MODE}")
+NET_IFACES=$(quote_sh_value "${NET_IFACES}")
+NET_EXCLUDE=$(quote_sh_value "${EXCLUDE_NETDEV}")
+NET_DHCP=$(quote_sh_value "${NET_DHCP}")
+IP_ADDR=$(quote_sh_value "${IP_ADDR}")
+NETMASK=$(quote_sh_value "${NETMASK}")
+GATEWAY=$(quote_sh_value "${GATEWAY}")
+DNS=$(quote_sh_value "${DNS}")
+BOND_MODE=$(quote_sh_value "${BOND_MODE}")
+BOND_MIIMON=$(quote_sh_value "${BOND_MIIMON}")
+BOND_LACP_RATE=$(quote_sh_value "${BOND_LACP_RATE}")
+BOND_XMIT_HASH_POLICY=$(quote_sh_value "${BOND_XMIT_HASH_POLICY}")
+SSH_CURL_INSECURE=$(quote_sh_value "${effective_ssh_curl_insecure}")
+EOF
+}
+
 populate_initrd_application_tree() {
     mkdir -p "${TMPDIR}/core/usr/local/sbin/"
     cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
@@ -382,8 +613,32 @@ populate_initrd_application_tree() {
         --exclude='sedunlocksrv/main.go' \
         --exclude='sedunlocksrv/go.mod' \
         'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
+    mkdir -p "${TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
+    cp ./sedunlocksrv/index.html "${TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
-    sed -i "s/::exclude_devices::/${EXCLUDE_NETDEV-}/" "${TMPDIR}/core/etc/init.d/tc-config"
+    write_runtime_network_config
+}
+
+install_bonding_module_if_needed() {
+    local tcz_name mount_dir bonding_module dest_dir
+
+    [ "${NET_MODE}" = "bond" ] || return 0
+
+    tcz_name="ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
+    cachetcfile "${tcz_name}" tcz tcz
+
+    mount_dir="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
+    mount -o loop "${CACHEDIR}/tcz/${tcz_name}" "${mount_dir}"
+    bonding_module="$(find "${mount_dir}" -path "*/kernel/drivers/net/bonding/bonding.ko*" | head -n1)"
+    if [ -z "${bonding_module}" ] || [ ! -f "${bonding_module}" ]; then
+        cleanup_mount_dir "${mount_dir}"
+        echo "❌ bonding.ko not found in ${tcz_name}"
+        exit 1
+    fi
+    dest_dir="${TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}/kernel/drivers/net/bonding"
+    mkdir -p "${dest_dir}"
+    cp -f "${bonding_module}" "${dest_dir}/"
+    cleanup_mount_dir "${mount_dir}"
 }
 
 # -----------------------------------------------------------------------------
@@ -410,7 +665,7 @@ build_kexec_tools() {
 # Merge .tcz trees + recursive .dep (same pattern as tce-load expansion)
 # -----------------------------------------------------------------------------
 install_tcz_extensions() {
-    local pending processed ext mount_dir deps
+    local ext mount_dir deps
 
     while [ -n "${EXTENSIONS}" ]; do
         deps=""
@@ -420,8 +675,7 @@ install_tcz_extensions() {
             cachetcfile "${ext}.dep" dep tcz
             mount -o loop "${CACHEDIR}/tcz/${ext}" "${mount_dir}"
             cp -r "${mount_dir}/"* "${TMPDIR}/core/"
-            umount "${mount_dir}"
-            rm -rf "${mount_dir}"
+            cleanup_mount_dir "${mount_dir}"
             deps=$(echo "${deps}" | cat - "${CACHEDIR}/dep/${ext}.dep" | sort -u)
         done
         EXTENSIONS="${deps}"
@@ -537,8 +791,10 @@ finalize_output_artifact() {
 main() {
     extract_config_path_from_args "$@"
     load_config_file
+    require_root
     parse_args "${REMAINING_ARGS[@]}"
     configure_sedutil_source
+    validate_network_settings
     apply_extension_flags
     maybe_clean_cache
 
@@ -556,6 +812,7 @@ main() {
     populate_initrd_application_tree
     build_kexec_tools
     install_tcz_extensions
+    install_bonding_module_if_needed
     apply_keymap_file
     apply_ssh_bundle
 

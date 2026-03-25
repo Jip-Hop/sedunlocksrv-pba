@@ -18,13 +18,17 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +54,25 @@ type DriveStatus struct {
 	Opal   bool   `json:"opal"`   // true if the drive supports TCG OPAL 2.x
 }
 
+// NetworkInterfaceStatus describes one network interface visible inside Tiny Core.
+// It is returned by /status so users can see the exact interface names that this
+// environment exposes (for example eth0/eth1) when choosing exclude/include lists.
+type NetworkInterfaceStatus struct {
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac,omitempty"`
+	State     string   `json:"state"`
+	Carrier   bool     `json:"carrier"`
+	Loopback  bool     `json:"loopback"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+// StatusResponse is the shared status payload consumed by the web UI, SSH UI,
+// and console TUI.
+type StatusResponse struct {
+	Drives    []DriveStatus            `json:"drives"`
+	Interfaces []NetworkInterfaceStatus `json:"interfaces"`
+}
+
 // UnlockResult is the per-drive outcome of a single unlock attempt.
 type UnlockResult struct {
 	Device  string `json:"device"`
@@ -61,6 +84,7 @@ type UnlockResult struct {
 // ssh_sed_unlock.sh uses grep to check for "error" in the raw response.
 type UnlockResponse struct {
 	Results []UnlockResult `json:"results"`
+	Token   string         `json:"token,omitempty"`
 }
 
 // PasswordChangeResult is the per-drive outcome of a password change.
@@ -120,6 +144,11 @@ var (
 	// unlock requests (e.g. web UI and SSH) could otherwise both read a value
 	// below maxAttempts and both proceed, potentially overshooting the limit.
 	mu sync.Mutex
+
+	// sessionMu protects apiSessionToken, which is required for remote state-
+	// changing actions such as boot/reboot/poweroff after a successful unlock.
+	sessionMu       sync.RWMutex
+	apiSessionToken string
 
 	// passwordPolicy is loaded once at startup from environment variables.
 	// Defaults match the README's "enterprise-grade" security requirements.
@@ -262,6 +291,125 @@ func scanDrives() []DriveStatus {
 	}
 
 	return statuses
+}
+
+// scanNetworkInterfaces returns the network interfaces visible inside the PBA.
+// This helps users map Tiny Core interface names to the hardware in the box
+// before using include/exclude options at build time.
+func scanNetworkInterfaces() []NetworkInterfaceStatus {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	statuses := make([]NetworkInterfaceStatus, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addrs, _ := iface.Addrs()
+		addresses := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			addresses = append(addresses, addr.String())
+		}
+		sort.Strings(addresses)
+
+		stateBytes, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "operstate"))
+		state := "unknown"
+		if err == nil {
+			state = strings.TrimSpace(string(stateBytes))
+		}
+
+		carrierBytes, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "carrier"))
+		carrier := false
+		if err == nil {
+			carrier = strings.TrimSpace(string(carrierBytes)) == "1"
+		}
+
+		statuses = append(statuses, NetworkInterfaceStatus{
+			Name:      iface.Name,
+			MAC:       iface.HardwareAddr.String(),
+			State:     state,
+			Carrier:   carrier,
+			Loopback:  (iface.Flags & net.FlagLoopback) != 0,
+			Addresses: addresses,
+		})
+	}
+
+	sort.Slice(statuses, func(i, j int) bool {
+		if statuses[i].Loopback != statuses[j].Loopback {
+			return !statuses[i].Loopback
+		}
+		return statuses[i].Name < statuses[j].Name
+	})
+
+	return statuses
+}
+
+func currentStatus() StatusResponse {
+	return StatusResponse{
+		Drives:     scanDrives(),
+		Interfaces: scanNetworkInterfaces(),
+	}
+}
+
+func mintSessionToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(buf)
+
+	sessionMu.Lock()
+	apiSessionToken = token
+	sessionMu.Unlock()
+
+	return token, nil
+}
+
+func validSessionToken(token string) bool {
+	if token == "" {
+		return false
+	}
+
+	sessionMu.RLock()
+	defer sessionMu.RUnlock()
+	return apiSessionToken != "" && token == apiSessionToken
+}
+
+func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
+	if !validSessionToken(r.Header.Get("X-Auth-Token")) {
+		jsonResponse(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
+		return true
+	}
+	return false
+}
+
+func anySuccessfulUnlock(results []UnlockResult) bool {
+	for _, result := range results {
+		if result.Success {
+			return true
+		}
+	}
+	return false
+}
+
+func printConsoleInterfaces() {
+	fmt.Println("\nNetwork Interfaces:")
+	for _, iface := range scanNetworkInterfaces() {
+		link := "no-link"
+		if iface.Carrier {
+			link = "link"
+		}
+		line := fmt.Sprintf("  %s  %s  %s", iface.Name, iface.State, link)
+		if iface.MAC != "" {
+			line += "  " + iface.MAC
+		}
+		if len(iface.Addresses) > 0 {
+			line += "  " + strings.Join(iface.Addresses, ", ")
+		}
+		if iface.Loopback {
+			line += "  loopback"
+		}
+		fmt.Println(line)
+	}
 }
 
 // ============================================================
@@ -476,10 +624,11 @@ func BootSystem() (*BootResult, error) {
 			kernel := kernels[len(kernels)-1]
 			initrd := initrds[len(initrds)-1]
 
-			// Reuse the current kernel's cmdline so Proxmox boots with the same
-			// parameters it was configured with (e.g. root device, console settings).
-			cmdlineBytes, _ := os.ReadFile("/proc/cmdline")
-			cmdline := strings.TrimSpace(string(cmdlineBytes))
+			cmdline, err := findBootCmdline(mountPoint, kernel)
+			if err != nil {
+				unmount()
+				return nil, err
+			}
 
 			unmount()
 
@@ -515,6 +664,96 @@ func BootSystem() (*BootResult, error) {
 	return nil, fmt.Errorf("no bootable partition")
 }
 
+func extractLinuxCmdline(line string) string {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 3 {
+		return ""
+	}
+	return strings.Join(fields[2:], " ")
+}
+
+func findBootCmdlineFromGrub(grubPath, kernel string) (string, error) {
+	data, err := os.ReadFile(grubPath)
+	if err != nil {
+		return "", err
+	}
+
+	kernelBase := filepath.Base(kernel)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "linux ") && !strings.HasPrefix(trimmed, "linuxefi ") {
+			continue
+		}
+		if kernelBase != "" && !strings.Contains(trimmed, kernelBase) {
+			continue
+		}
+		if cmdline := extractLinuxCmdline(trimmed); cmdline != "" {
+			return cmdline, nil
+		}
+	}
+
+	return "", fmt.Errorf("kernel command line not found in %s", grubPath)
+}
+
+func findBootCmdlineFromLoader(entriesDir, kernel string) (string, error) {
+	entryFiles, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
+	if err != nil || len(entryFiles) == 0 {
+		return "", fmt.Errorf("no loader entries in %s", entriesDir)
+	}
+
+	kernelBase := filepath.Base(kernel)
+	sort.Strings(entryFiles)
+	for _, entry := range entryFiles {
+		data, err := os.ReadFile(entry)
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(data), "\n")
+		kernelMatch := kernelBase == ""
+		var options string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(trimmed, "linux "):
+				kernelMatch = kernelBase == "" || strings.Contains(trimmed, kernelBase)
+			case strings.HasPrefix(trimmed, "options "):
+				options = strings.TrimSpace(strings.TrimPrefix(trimmed, "options "))
+			}
+		}
+
+		if kernelMatch && options != "" {
+			return options, nil
+		}
+	}
+
+	return "", fmt.Errorf("kernel command line not found in loader entries")
+}
+
+func findBootCmdline(mountPoint, kernel string) (string, error) {
+	candidates := []func() (string, error){
+		func() (string, error) {
+			return findBootCmdlineFromLoader(filepath.Join(mountPoint, "loader", "entries"), kernel)
+		},
+		func() (string, error) {
+			return findBootCmdlineFromGrub(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), kernel)
+		},
+		func() (string, error) {
+			return findBootCmdlineFromGrub(filepath.Join(mountPoint, "grub", "grub.cfg"), kernel)
+		},
+	}
+
+	for _, candidate := range candidates {
+		cmdline, err := candidate()
+		if err == nil && cmdline != "" {
+			return cmdline, nil
+		}
+	}
+
+	return "", fmt.Errorf("unable to determine target kernel command line from %s", mountPoint)
+}
+
 // ============================================================
 // CONSOLE TUI
 // ============================================================
@@ -524,6 +763,14 @@ func BootSystem() (*BootResult, error) {
 // shows drive status and accepts commands) from remaining visible indefinitely
 // on an unattended physical terminal.
 const privacyTimeout = 30 * time.Second
+
+const (
+	colorReset  = "\033[0m"
+	colorBlue   = "\033[38;5;32m"
+	colorPurple = "\033[38;5;91m"
+	colorOrange = "\033[38;5;208m"
+	colorDim    = "\033[38;5;245m"
+)
 
 // consoleInterface is the outermost loop of the physical terminal UI.
 // It runs in a goroutine alongside the HTTP server so both interfaces are
@@ -538,7 +785,7 @@ func consoleInterface() {
 	for {
 		// Standby screen: show current drive status and wait for a keypress.
 		fmt.Print("\033[H\033[2J") // clear screen (ANSI escape)
-		fmt.Println("🔒 PBA STANDBY")
+		fmt.Println(colorBlue + "🔒 PBA STANDBY" + colorReset)
 
 		for _, d := range scanDrives() {
 			if d.Locked {
@@ -548,7 +795,9 @@ func consoleInterface() {
 			}
 		}
 
-		fmt.Println("\nPress any key...")
+		printConsoleInterfaces()
+
+		fmt.Println("\n" + colorDim + "Press any key..." + colorReset)
 
 		// Switch stdin to raw mode so we receive individual keypresses
 		// without waiting for Enter.
@@ -574,7 +823,7 @@ func activeMenu(fd int) {
 	for {
 		// Redraw the active menu on every iteration to reflect current drive state.
 		fmt.Print("\033[H\033[2J") // clear screen
-		fmt.Println("🔑 ACTIVE MODE")
+		fmt.Println(colorBlue + "🔑 ACTIVE MODE" + colorReset)
 
 		for _, d := range scanDrives() {
 			if d.Locked {
@@ -584,7 +833,21 @@ func activeMenu(fd int) {
 			}
 		}
 
-		fmt.Println("\n[ENTER] Unlock  [B] Boot  [P] Change PW  [R] Reboot  [S] Shutdown")
+		printConsoleInterfaces()
+
+		fmt.Printf(
+			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sP%s] %sChange PW%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s\n",
+			colorDim, colorReset,
+			colorPurple, colorReset,
+			colorDim, colorReset,
+			colorBlue, colorReset,
+			colorDim, colorReset,
+			colorPurple, colorReset,
+			colorDim, colorReset,
+			colorOrange, colorReset,
+			colorDim, colorReset,
+			colorBlue, colorReset,
+		)
 
 		old, err := term.MakeRaw(fd)
 		if err != nil {
@@ -736,9 +999,7 @@ func main() {
 		if requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"drives": scanDrives(),
-		})
+		jsonResponse(w, http.StatusOK, currentStatus())
 	})
 
 	// GET /password-policy — returns the active password complexity policy.
@@ -776,7 +1037,17 @@ func main() {
 			return
 		}
 
-		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results})
+		token := ""
+		if anySuccessfulUnlock(results) {
+			var err error
+			token, err = mintSessionToken()
+			if err != nil {
+				jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session token"})
+				return
+			}
+		}
+
+		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results, Token: token})
 	})
 
 	// POST /change-password — changes the drive password on all detected drives.
@@ -821,6 +1092,9 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if requireSessionToken(w, r) {
+			return
+		}
 
 		res, err := BootSystem()
 		if err != nil {
@@ -838,6 +1112,9 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if requireSessionToken(w, r) {
+			return
+		}
 		// Send the response before sleeping, so the client receives confirmation.
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "rebooting"})
 		go func() {
@@ -850,6 +1127,9 @@ func main() {
 	// Called by index.html's shutdown() and ssh_sed_unlock.sh's S option.
 	mux.HandleFunc("/poweroff", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if requireSessionToken(w, r) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "powering off"})

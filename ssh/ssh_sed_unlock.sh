@@ -23,11 +23,27 @@
 # Auto-logout after 5 minutes of shell inactivity.
 export TMOUT=300
 
+SSH_CURL_INSECURE="true"
+[ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
+
 # Base URL for the Go server's JSON API (always localhost).
-# -s suppresses curl progress output; -k skips TLS cert verification since
-# the server uses a self-signed certificate generated at build time.
+# -s suppresses curl progress output. -k is used only when SSH_CURL_INSECURE=true,
+# which is the default for self-signed build-time certificates.
 API="https://localhost:443"
-CURL="curl -s -k"
+case "${SSH_CURL_INSECURE}" in
+    true)
+        CURL="curl -s -k"
+        ;;
+    *)
+        CURL="curl -s"
+        ;;
+esac
+AUTH_TOKEN=""
+CLR_RESET="$(printf '\033[0m')"
+CLR_BLUE="$(printf '\033[38;5;32m')"
+CLR_PURPLE="$(printf '\033[38;5;91m')"
+CLR_ORANGE="$(printf '\033[38;5;208m')"
+CLR_DIM="$(printf '\033[38;5;245m')"
 
 # ======================================================
 # HELPERS
@@ -49,6 +65,21 @@ print_drives() {
     '
 }
 
+# print_interfaces — display the network interfaces as Tiny Core currently sees them.
+# This helps users choose NET_IFACES / EXCLUDE_NETDEV values with the exact
+# interface names used inside the PBA image.
+print_interfaces() {
+    echo "$1" | jq -r '
+        .interfaces[] |
+        "  " + .name +
+        "  " + .state +
+        (if .carrier then "  link" else "  no-link" end) +
+        (if .mac != "" then "  " + .mac else "" end) +
+        (if (.addresses | length) > 0 then "  " + (.addresses | join(", ")) else "" end) +
+        (if .loopback then "  loopback" else "" end)
+    '
+}
+
 # has_error — returns 0 (true) if the JSON response contains an "error" key.
 # Uses jq -e which sets a non-zero exit code when the result is null/false,
 # so this correctly distinguishes a missing key from one with a value.
@@ -62,14 +93,22 @@ get_error() {
     echo "$1" | jq -r '.error // empty'
 }
 
+post_with_auth() {
+    if [ -n "$AUTH_TOKEN" ]; then
+        $CURL -X POST -H "X-Auth-Token: $AUTH_TOKEN" "$1"
+    else
+        $CURL -X POST "$1"
+    fi
+}
+
 # ======================================================
 # MAIN LOOP
 # ======================================================
 
 while true; do
     clear
-    echo "🔑 SED UNLOCK (SSH)"
-    echo "Auto logout: 5m | Refresh: 10s"
+    echo "${CLR_BLUE}🔑 SED UNLOCK (SSH)${CLR_RESET}"
+    echo "${CLR_DIM}Auto logout: 5m | Refresh: 10s${CLR_RESET}"
     echo
 
     # --- Drive Status Display ---
@@ -78,9 +117,12 @@ while true; do
     STATUS_JSON=$($CURL "$API/status")
     print_drives "$STATUS_JSON"
     echo
+    echo "${CLR_DIM}Network Interfaces (use these names for NET_IFACES / EXCLUDE_NETDEV):${CLR_RESET}"
+    print_interfaces "$STATUS_JSON"
+    echo
 
     # --- Menu ---
-    echo "[U] Unlock  [B] Boot  [R] Reboot  [S] Shutdown  [Q] Quit"
+    echo "[U] ${CLR_PURPLE}Unlock${CLR_RESET}  [B] ${CLR_BLUE}Boot${CLR_RESET}  [R] ${CLR_ORANGE}Reboot${CLR_RESET}  [S] ${CLR_BLUE}Shutdown${CLR_RESET}  [Q] Quit"
     echo -n "Choice: "
 
     # Wait up to 10 seconds for input. If no key is pressed, loop back to
@@ -113,6 +155,7 @@ while true; do
                 # failed attempts reached", "password cannot be blank").
                 echo "❌ $(get_error "$RESP")"
             else
+                AUTH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
                 # Show per-drive results: one line per drive indicating success
                 # or failure. Format: ✅ /dev/sda  or  ❌ /dev/sda
                 echo "$RESP" | jq -r '
@@ -128,7 +171,7 @@ while true; do
             echo -n "Boot OS? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$($CURL -X POST "$API/boot")
+                RESP=$(post_with_auth "$API/boot")
                 if has_error "$RESP"; then
                     echo "❌ $(get_error "$RESP")"
                     sleep 2
@@ -149,9 +192,14 @@ while true; do
             echo -n "Reboot? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$($CURL -X POST "$API/reboot")
-                echo "$(echo "$RESP" | jq -r '.status // "rebooting"')..."
-                exit 0
+                RESP=$(post_with_auth "$API/reboot")
+                if has_error "$RESP"; then
+                    echo "❌ $(get_error "$RESP")"
+                    sleep 2
+                else
+                    echo "$(echo "$RESP" | jq -r '.status // "rebooting"')..."
+                    exit 0
+                fi
             fi
             ;;
 
@@ -159,9 +207,14 @@ while true; do
             echo -n "Shutdown? (y/n): "
             read -r c
             if [ "$c" = "y" ]; then
-                RESP=$($CURL -X POST "$API/poweroff")
-                echo "$(echo "$RESP" | jq -r '.status // "powering off"')..."
-                exit 0
+                RESP=$(post_with_auth "$API/poweroff")
+                if has_error "$RESP"; then
+                    echo "❌ $(get_error "$RESP")"
+                    sleep 2
+                else
+                    echo "$(echo "$RESP" | jq -r '.status // "powering off"')..."
+                    exit 0
+                fi
             fi
             ;;
 
