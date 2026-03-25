@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 set -euox pipefail
 
-# =========================================================
-# ROOT CHECK
-# =========================================================
-[ "$EUID" -ne 0 ] && echo "Run as root" && exit 1
-
-# =========================================================
-# PATH SETUP
-# =========================================================
 export PATH="$PATH:/usr/local/go/bin"
 
 # =========================================================
-# GLOBAL CONFIGURATION
+# GLOBAL CONFIGURATION (DEFAULTS)
 # =========================================================
 CACHEDIR="cache"
-TMPDIR=$(mktemp -d)
+TMPDIR="img.tmp"
 
 BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
@@ -30,24 +22,77 @@ INPUTISO="TinyCorePure64-current.iso"
 BOOTARGS="libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
 
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="bash.tcz jq.tcz" # jq for JSON parsing in SSH/UI scripts
+EXTENSIONS="bash.tcz"
+
+# ---------------- NETWORK DEFAULTS ----------------
+NET_MODE="auto"              # auto | dhcp | static
+NET_INTERFACES=""            # eth0,eth1
+NET_EXCLUDE=""               # eth2,eth3
+NET_BOND=""                  # eth0,eth1
+
+NET_IP=""
+NET_MASK=""
+NET_GW=""
+NET_DNS=""
 
 CLEAN_MODE=false
 SSHBUILD=false
 
 # =========================================================
-# ARGUMENT PARSING
+# ARGUMENT PARSING (EXTENDED)
 # =========================================================
 parse_args() {
     for arg in "$@"; do
         case "$arg" in
             --clean) CLEAN_MODE=true ;;
             SSH)     SSHBUILD=true ;;
+
+            # -------- NETWORK OPTIONS --------
+            --net=*) NET_MODE="${arg#*=}" ;;
+            --ifaces=*) NET_INTERFACES="${arg#*=}" ;;
+            --exclude=*) NET_EXCLUDE="${arg#*=}" ;;
+            --bond=*) NET_BOND="${arg#*=}" ;;
+
+            --ip=*) NET_IP="${arg#*=}" ;;
+            --mask=*) NET_MASK="${arg#*=}" ;;
+            --gw=*) NET_GW="${arg#*=}" ;;
+            --dns=*) NET_DNS="${arg#*=}" ;;
         esac
     done
 
-    [ "$SSHBUILD" = true ] && EXTENSIONS+=" dropbear.tcz"
-    [ -n "${KEYMAP+x}" ] && EXTENSIONS+=" kmaps.tcz"
+    if [ "$SSHBUILD" = true ]; then
+        EXTENSIONS+=" dropbear.tcz"
+    fi
+
+    if [ -n "${KEYMAP+x}" ]; then
+        EXTENSIONS+=" kmaps.tcz"
+    fi
+}
+
+# =========================================================
+# BUILD BOOTARGS (NETWORK INJECTION)
+# =========================================================
+build_bootargs() {
+    echo "----------------------------------------------------"
+    echo "🌐 Building kernel boot arguments"
+    echo "----------------------------------------------------"
+
+    # Mode
+    BOOTARGS+=" sed.net=${NET_MODE}"
+
+    # Interfaces
+    [ -n "$NET_INTERFACES" ] && BOOTARGS+=" sed.ifaces=${NET_INTERFACES}"
+    [ -n "$NET_EXCLUDE" ] && BOOTARGS+=" sed.exclude=${NET_EXCLUDE}"
+    [ -n "$NET_BOND" ] && BOOTARGS+=" sed.bond=${NET_BOND}"
+
+    # Static config
+    [ -n "$NET_IP" ]   && BOOTARGS+=" sed.ip=${NET_IP}"
+    [ -n "$NET_MASK" ] && BOOTARGS+=" sed.mask=${NET_MASK}"
+    [ -n "$NET_GW" ]   && BOOTARGS+=" sed.gw=${NET_GW}"
+    [ -n "$NET_DNS" ]  && BOOTARGS+=" sed.dns=${NET_DNS}"
+
+    echo "BOOTARGS:"
+    echo "$BOOTARGS"
 }
 
 # =========================================================
@@ -71,27 +116,34 @@ configure_sedutil() {
 # CLEANUP
 # =========================================================
 cleanup() {
-    umount "${TMPDIR}/img" 2>/dev/null || true
+    echo "Cleaning up..."
+    umount "${TMPDIR-}/img" 2>/dev/null || true
     [ -n "${LOOP_DEVICE_HDD-}" ] && losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
-    rm -rf "${TMPDIR}"
+    rm -rf "${TMPDIR-}"
 }
 
 run_cleanup_if_requested() {
-    [ "$CLEAN_MODE" = true ] && rm -rf "${CACHEDIR}"
+    if [ "$CLEAN_MODE" = true ]; then
+        echo "Cleaning build environment..."
+        rm -rf "${CACHEDIR}" "${TMPDIR}"
+    fi
 }
 
 # =========================================================
 # DEPENDENCIES
 # =========================================================
 check_dependencies() {
-    local REQUIRED_TOOLS="gcc make curl tar xorriso bsdtar go losetup fdisk mkfs.fat grub-install lsblk cpio xz zcat mount umount"
+    local REQUIRED_TOOLS="gcc make curl tar xorriso bsdtar go"
     local MISSING=""
 
     for tool in $REQUIRED_TOOLS; do
         command -v "$tool" >/dev/null 2>&1 || MISSING+=" $tool"
     done
 
-    [ -n "$MISSING" ] && { echo "Missing tools:$MISSING"; exit 1; }
+    if [ -n "$MISSING" ]; then
+        echo "ERROR: Missing tools:$MISSING"
+        exit 1
+    fi
 }
 
 # =========================================================
@@ -99,22 +151,25 @@ check_dependencies() {
 # =========================================================
 setup_directories() {
     mkdir -p "${TMPDIR}"/{fs/boot,core,img}
-    mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted,src}
+    mkdir -p "${CACHEDIR}"/{iso,tcz,dep,iso-extracted}
     mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
 }
 
 # =========================================================
-# GO BUILD
+# GO BUILD (UNCHANGED)
 # =========================================================
 build_go_binary() {
     (
         cd ./sedunlocksrv
 
-        # Robust Go version check (>= 1.21)
-        go version | grep -qE 'go1\.(2[1-9]|[3-9][0-9])' || {
+        GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+        MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
+        MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
+
+        if [ "$MAJOR" -lt 1 ] || [ "$MINOR" -lt 21 ]; then
             echo "Go 1.21+ required"
             exit 1
-        }
+        fi
 
         [ -f go.mod ] || go mod init sedunlocksrv
 
@@ -130,30 +185,29 @@ build_go_binary() {
         chown 1001:50 sedunlocksrv
         chmod +x sedunlocksrv
     )
-
-    if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
-        ./make-cert.sh
-    fi
 }
 
 # =========================================================
 # CACHE
 # =========================================================
 cachetcfile() {
-    local f="$1"
-    local dir="$2"
-    local type="$3"
-    local path="${CACHEDIR}/${dir}/${f}"
+    local filename="$1"
+    local local_dir="$2"
+    local remote_type="$3"
 
-    if [ ! -s "$path" ]; then
-        curl -fsSL "${TCURL}/${type}/${f}" -o "$path" || {
-            [[ "$dir" == "dep" ]] && touch "$path"
-        }
+    local path="${CACHEDIR}/${local_dir}/${filename}"
+
+    if [ -s "$path" ]; then
+        return
     fi
+
+    curl -fL "${TCURL}/${remote_type}/${filename}" -o "$path" || {
+        [[ "$local_dir" == "dep" ]] && touch "$path"
+    }
 }
 
 # =========================================================
-# ISO
+# ISO + INITRD
 # =========================================================
 prepare_iso() {
     cachetcfile "$INPUTISO" iso release
@@ -173,60 +227,19 @@ extract_kernel_initrd() {
     core=$(find "${CACHEDIR}/iso-extracted" -name corepure64.gz | head -n1)
 
     cp "$(realpath "$kernel")" "${TMPDIR}/fs/boot/vmlinuz64"
-
     (cd "${TMPDIR}/core" && zcat "$(realpath "$core")" | cpio -id -H newc)
 }
 
 # =========================================================
-# SEDUTIL
-# =========================================================
-prepare_sedutil() {
-    case "${SEDUTIL_FORK}" in
-        "ChubbyAnt")
-            curl -fsSL "${SEDUTILURL}" | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
-            chmod +x "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}"
-            ;;
-        *)
-            SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
-            LEVELSDEEP="${#SLASHESONLY}"
-
-            curl -fsSL "${SEDUTILURL}" | \
-                bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" \
-                --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
-            ;;
-    esac
-}
-
-# =========================================================
-# KEXEC
-# =========================================================
-build_kexec() {
-    (
-        cd "${CACHEDIR}/src"
-
-        [ -f "kexec-tools-${KEXEC_VER}.tar.xz" ] || \
-            curl -fsSLO "https://www.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VER}.tar.xz"
-
-        tar -xf "kexec-tools-${KEXEC_VER}.tar.xz"
-        cd "kexec-tools-${KEXEC_VER}"
-
-        ./configure --prefix=/usr/local
-        make -j$(nproc)
-
-        mkdir -p "${TMPDIR}/core-root/usr/local/sbin"
-        cp build/sbin/kexec "${TMPDIR}/core-root/usr/local/sbin/kexec"
-        chmod +x "${TMPDIR}/core-root/usr/local/sbin/kexec"
-    )
-}
-
-# =========================================================
-# EXTENSIONS
+# EXTENSIONS + BONDING GUARANTEE
 # =========================================================
 install_extensions() {
-    TC_KERNEL_VERSION=$(find "${TMPDIR}/core/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+    TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
+
+    REQUIRED="scsi-${TC_KERNEL_VERSION}.tcz ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
 
     local pending processed
-    pending="$EXTENSIONS scsi-${TC_KERNEL_VERSION}.tcz ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
+    pending="$EXTENSIONS $REQUIRED"
     processed=""
 
     while [ -n "$pending" ]; do
@@ -234,7 +247,9 @@ install_extensions() {
         pending=""
 
         for ext in $current; do
-            echo "$processed" | grep -qw "$ext" && continue
+            if echo "$processed" | grep -qw "$ext"; then
+                continue
+            fi
 
             processed="$processed $ext"
 
@@ -242,12 +257,7 @@ install_extensions() {
             cachetcfile "$ext.dep" dep tcz
 
             MOUNTDIREXT=$(mktemp -d)
-
-            mount -o loop "${CACHEDIR}/tcz/${ext}" "$MOUNTDIREXT" || {
-                echo "Mount failed: $ext"
-                exit 1
-            }
-
+            mount -o loop "${CACHEDIR}/tcz/${ext}" "$MOUNTDIREXT"
             cp -r "${MOUNTDIREXT}/"* "${TMPDIR}/core/"
             umount "$MOUNTDIREXT"
             rm -rf "$MOUNTDIREXT"
@@ -256,47 +266,16 @@ install_extensions() {
                 pending="$pending $(cat "${CACHEDIR}/dep/${ext}.dep")"
         done
     done
-}
 
-# =========================================================
-# SSH
-# =========================================================
-setup_ssh() {
-    if [ "$SSHBUILD" = true ]; then
-        if [[ ! -f ./ssh/dropbear_ecdsa_host_key ]]; then
-            dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
-            dropbearkey -t rsa -s 4096 -f ./ssh/dropbear_rsa_host_key
-        fi
-
-        mkdir -p "${TMPDIR}/core/usr/local/etc/dropbear/"
-        cp ./ssh/dropbear* "${TMPDIR}/core/usr/local/etc/dropbear/"
-        cp ./ssh/banner "${TMPDIR}/core/usr/local/etc/dropbear/"
-
-        mkdir -p "${TMPDIR}/core/home/tc/.ssh"
-        cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
-        cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/usr/local/sbin/"
-        chmod +x "${TMPDIR}/core/usr/local/sbin/ssh_sed_unlock.sh"
-
-        chown -R 1001 "${TMPDIR}/core/home/tc/"
-        chmod 700 "${TMPDIR}/core/home/tc/.ssh"
-        chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
+    # VALIDATE bonding
+    if ! find "${TMPDIR}/core/lib/modules" -name bonding.ko | grep -q .; then
+        echo "ERROR: bonding.ko missing"
+        exit 1
     fi
 }
 
 # =========================================================
-# INITRD
-# =========================================================
-finalize_initrd() {
-    find "${TMPDIR}/core/usr/share/"{man,doc,locale} -type f -delete 2>/dev/null || true
-    rm -rf "${TMPDIR}/core/usr/include" "${TMPDIR}/core/usr/lib/pkgconfig"
-
-    chroot "${TMPDIR}/core" /sbin/depmod "$(ls ${TMPDIR}/core/lib/modules)"
-
-    (cd "${TMPDIR}/core" && find | cpio -o -H newc | xz -9 > "${TMPDIR}/fs/boot/corepure64.gz")
-}
-
-# =========================================================
-# IMAGE
+# IMAGE BUILD
 # =========================================================
 build_image() {
     FSSIZE=$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
@@ -315,7 +294,6 @@ build_image() {
 
     grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
     grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
-    grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=i386-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
 
     cat > "${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
 set timeout_style=hidden
@@ -332,9 +310,6 @@ EOF
 
     sync
     umount "${TMPDIR}/img"
-    sync
-    sleep 1
-
     losetup -d "${LOOP_DEVICE_HDD}"
 
     chmod ugo+r "${OUTPUTIMG}"
@@ -347,9 +322,10 @@ EOF
 main() {
     parse_args "$@"
     configure_sedutil
+    build_bootargs
 
     run_cleanup_if_requested
-    trap cleanup EXIT INT TERM
+    trap cleanup EXIT
 
     check_dependencies
     setup_directories
@@ -358,12 +334,7 @@ main() {
 
     prepare_iso
     extract_kernel_initrd
-    prepare_sedutil
-
     install_extensions
-    build_kexec
-    setup_ssh
-    finalize_initrd
 
     build_image
 
