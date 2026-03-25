@@ -238,12 +238,28 @@ apply_extension_flags() {
     fi
 }
 
-maybe_clean_cache() {
+clean_workspace_artifacts() {
+    rm -rf "${CACHEDIR}" "${BUILD_TMPDIR}"
+
+    # Build outputs and links
+    rm -f sedunlocksrv-pba-*.img "${LATEST_LINK}"
+
+    # Generated TLS and app binary
+    rm -f sedunlocksrv/server.crt sedunlocksrv/server.key sedunlocksrv/sedunlocksrv
+
+    # Generated SSH artifacts
+    rm -f ssh/dropbear_ecdsa_host_key ssh/dropbear_rsa_host_key ssh/authorized_keys
+
+    # Local build override file
+    rm -f build.conf
+}
+
+maybe_clean_workspace() {
     if [ "$CLEAN_MODE" != true ]; then
         return 0
     fi
-    echo "🧹 Cleaning up build environment and cache..."
-    rm -rf "${CACHEDIR}" "${BUILD_TMPDIR}"
+    echo "🧹 Cleaning workspace artifacts to repo-like state..."
+    clean_workspace_artifacts
 }
 
 # -----------------------------------------------------------------------------
@@ -752,7 +768,7 @@ main() {
     configure_sedutil_source
     validate_network_settings
     apply_extension_flags
-    maybe_clean_cache
+    maybe_clean_workspace
 
     trap cleanup EXIT
 
