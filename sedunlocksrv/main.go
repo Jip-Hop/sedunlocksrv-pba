@@ -408,7 +408,7 @@ func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 
 func anyUnlockedDrive() bool {
 	for _, d := range scanDrives() {
-		if !d.Locked {
+		if d.Opal && !d.Locked {
 			return true
 		}
 	}
@@ -903,6 +903,9 @@ func BootSystem() (*BootResult, error) {
 
 	var unlocked, locked []string
 	for _, d := range drives {
+		if !d.Opal {
+			continue
+		}
 		if d.Locked {
 			locked = append(locked, d.Device)
 		} else {

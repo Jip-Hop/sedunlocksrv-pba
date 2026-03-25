@@ -266,12 +266,13 @@ async function refresh() {
         ifaceHtml += `<div>${iface.name} - ${iface.state} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
     })
 
-    let opalCount = drives.filter(d => d.opal).length
-    let lockedCount = drives.filter(d => d.locked).length
+    let opalDrives = drives.filter(d => d.opal)
+    let opalCount = opalDrives.length
+    let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
     $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount}`
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
-    $("bootBtn").classList.toggle("hidden", !unlocked)
+    $("bootBtn").classList.toggle("hidden", !opalDrives.some(d => !d.locked))
 }
 
 async function postJSON(url, payload, headers) {
