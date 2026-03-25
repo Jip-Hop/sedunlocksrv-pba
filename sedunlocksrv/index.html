@@ -245,7 +245,7 @@ async function refresh() {
     let r = await fetch("/status")
     let j = await r.json()
 
-    let html = "", ifaceHtml = "", unlocked = false
+    let html = "", ifaceHtml = ""
     let drives = Array.isArray(j.drives) ? j.drives : []
     let interfaces = Array.isArray(j.interfaces) ? j.interfaces : []
 
@@ -253,7 +253,6 @@ async function refresh() {
         let icon = d.locked ? "LOCKED" : "UNLOCKED"
         let opalLabel = d.opal ? "OPAL" : "NON-OPAL"
         let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
-        if (!d.locked) unlocked = true
         html += `<div class="${color}">${d.device} - ${icon} - ${opalLabel}</div>`
     })
 
@@ -270,9 +269,10 @@ async function refresh() {
     let opalCount = opalDrives.length
     let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
-    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount}`
+    let bootSummary = j.bootReady ? `Boot-ready drives: ${(j.bootDrives || []).join(", ") || "yes"}` : "Boot-ready drives: none yet"
+    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary}`
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
-    $("bootBtn").classList.toggle("hidden", !opalDrives.some(d => !d.locked))
+    $("bootBtn").classList.toggle("hidden", !j.bootReady)
 }
 
 async function postJSON(url, payload, headers) {

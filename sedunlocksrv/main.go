@@ -62,6 +62,8 @@ type NetworkInterfaceStatus struct {
 type StatusResponse struct {
 	Drives     []DriveStatus            `json:"drives"`
 	Interfaces []NetworkInterfaceStatus `json:"interfaces"`
+	BootReady  bool                     `json:"bootReady"`
+	BootDrives []string                 `json:"bootDrives,omitempty"`
 }
 
 type DriveDiagnostics struct {
@@ -138,6 +140,8 @@ var (
 	sessionMu        sync.RWMutex
 	apiSessionToken  string
 	expertSessionTok string
+	bootStateMu      sync.RWMutex
+	startupLockedOpal = map[string]struct{}{}
 
 	passwordPolicy    = loadPolicy()
 	expertPasswordHash = loadExpertPasswordHash()
@@ -351,13 +355,54 @@ func scanNetworkInterfaces() []NetworkInterfaceStatus {
 	return statuses
 }
 
+func initializeBootState() {
+	drives := scanDrives()
+	locked := make(map[string]struct{})
+	for _, d := range drives {
+		if d.Opal && d.Locked {
+			locked[d.Device] = struct{}{}
+		}
+	}
+	bootStateMu.Lock()
+	startupLockedOpal = locked
+	bootStateMu.Unlock()
+}
+
+func startupLockedSet() map[string]struct{} {
+	bootStateMu.RLock()
+	defer bootStateMu.RUnlock()
+	out := make(map[string]struct{}, len(startupLockedOpal))
+	for dev := range startupLockedOpal {
+		out[dev] = struct{}{}
+	}
+	return out
+}
+
+func bootCandidateDrives(drives []DriveStatus) []string {
+	startupLocked := startupLockedSet()
+	candidates := make([]string, 0)
+	for _, d := range drives {
+		if !d.Opal || d.Locked {
+			continue
+		}
+		if _, ok := startupLocked[d.Device]; ok {
+			candidates = append(candidates, d.Device)
+		}
+	}
+	sort.Strings(candidates)
+	return candidates
+}
+
 // currentStatus returns a snapshot of drives and network interfaces.
 // Callers that need both should call this once and pass the result down
 // rather than calling scanDrives/scanNetworkInterfaces separately. (Size #1)
 func currentStatus() StatusResponse {
+	drives := scanDrives()
 	return StatusResponse{
-		Drives:     scanDrives(),
+		Drives:     drives,
 		Interfaces: scanNetworkInterfaces(),
+		BootReady:  len(bootCandidateDrives(drives)) > 0,
+		BootDrives: bootCandidateDrives(drives),
 	}
 }
 
@@ -407,12 +452,7 @@ func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func anyUnlockedDrive() bool {
-	for _, d := range scanDrives() {
-		if d.Opal && !d.Locked {
-			return true
-		}
-	}
-	return false
+	return len(bootCandidateDrives(scanDrives())) > 0
 }
 
 func requireSessionTokenOrUnlockedDrive(w http.ResponseWriter, r *http.Request) bool {
@@ -900,20 +940,18 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
 func BootSystem() (*BootResult, error) {
 	drives := scanDrives()
-
-	var unlocked, locked []string
+	bootCandidates := bootCandidateDrives(drives)
+	var locked []string
 	for _, d := range drives {
 		if !d.Opal {
 			continue
 		}
 		if d.Locked {
 			locked = append(locked, d.Device)
-		} else {
-			unlocked = append(unlocked, d.Device)
 		}
 	}
-	if len(unlocked) == 0 {
-		return nil, fmt.Errorf("no unlocked drives")
+	if len(bootCandidates) == 0 {
+		return nil, fmt.Errorf("boot is unavailable until a startup-locked OPAL drive is unlocked")
 	}
 
 	fullyUnlocked := len(locked) == 0
@@ -922,45 +960,41 @@ func BootSystem() (*BootResult, error) {
 		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
 	}
 
-	bootDrive := unlocked[0]
-
-	searchDevices, err := buildBootSearchDevices(bootDrive)
-	if err != nil {
-		return nil, err
-	}
-	if len(searchDevices) == 0 {
-		return nil, fmt.Errorf("no mountable boot candidates found for %s", bootDrive)
-	}
-
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
-	for _, dev := range searchDevices {
-		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
-			continue
+	for _, bootDrive := range bootCandidates {
+		searchDevices, err := buildBootSearchDevices(bootDrive)
+		if err != nil {
+			return nil, err
 		}
-		unmount := func() { exec.Command("umount", mountPoint).Run() }
-
-		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
-			unmount()
-
-			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
-				return nil, err
+		for _, dev := range searchDevices {
+			if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+				continue
 			}
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				exec.Command("kexec", "-e").Run()
-			}()
-			return &BootResult{
-				Kernel:        kernel,
-				Initrd:        initrd,
-				Cmdline:       cmdline,
-				Drives:        drives,
-				Warning:       warning,
-				FullyUnlocked: fullyUnlocked,
-			}, nil
+			unmount := func() { exec.Command("umount", mountPoint).Run() }
+
+			if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+				unmount()
+
+				if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
+					return nil, err
+				}
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					exec.Command("kexec", "-e").Run()
+				}()
+				return &BootResult{
+					Kernel:        kernel,
+					Initrd:        initrd,
+					Cmdline:       cmdline,
+					Drives:        drives,
+					Warning:       warning,
+					FullyUnlocked: fullyUnlocked,
+				}, nil
+			}
+			unmount()
 		}
-		unmount()
 	}
 	return nil, fmt.Errorf("no bootable partition")
 }
@@ -1340,6 +1374,7 @@ func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
 // ============================================================
 
 func main() {
+	initializeBootState()
 	go consoleInterface()
 	startSSHService()
 
