@@ -59,6 +59,18 @@ Add this to the end of your ~/.bashrc to ensure the go command is available:
 * chmod +x build.sh
 * ./build.sh
 
+## Build configuration (`build.conf`)
+
+Defaults live in `build.sh`. To set your own defaults without long CLI lines:
+
+1. Copy `build.conf.example` to `build.conf` (same directory as `build.sh`). `build.conf` is gitignored.
+2. Uncomment and edit variables as needed — it is a sourced bash snippet.
+3. **CLI overrides the file**: e.g. `./build.sh --ssh` forces SSH even if `build.conf` has `SSHBUILD=false`.
+
+Resolution order: **built-in defaults → `build.conf` (or `BUILD_CONFIG` env path) → `--config=FILE` (replaces path) → remaining flags**.
+
+Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
+
 
 # sedunlocksrv-pba
 Conveniently unlock your Self Encrypting Drive on startup (via HTTPS or SSH) without the need to attach monitor and keyboard.
@@ -143,7 +155,7 @@ Note that you can still unlock SED disks using the keyboard with this PBA image.
 
 ## Configuring specific keymaps on the console
 
-To use specific keymaps, build with the KEYMAP environment variable set. For example: `KEYMAP=fr-latin9`.
+To use specific keymaps, set a non-empty map name via the environment or a build flag, for example: `KEYMAP=fr-latin9 ./build.sh` or `./build.sh --keymap=fr-latin9`.
 
 ## Using other forks of `sedutil`
 
@@ -161,7 +173,7 @@ Optionally SED disks can be unlocked via SSH. To enable this feature (in additio
 
 - install dropbear (it will be used to generate dropbear host keys):`apt-get -y install dropbear`
 - create authorized_keys file in `sedunlocksrv-pba/ssh` folder. It should contain public keys of all key pairs allowed to connect to unlocking service. Have a look at provided `sedunlocksrv-pba/ssh/authorized_keys.example`
-- run build with SSH option: `./build.sh SSH`
+- run build with SSH option: `./build.sh --ssh`
 
 Usage:
 run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (if all disks have the same password they will be unlocked in one step) --> press ESC to reboot.

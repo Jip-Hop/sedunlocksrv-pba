@@ -10,16 +10,11 @@ trap "stty sane; echo; echo '[!] Terminal restored';" EXIT
 # Reduce kernel log noise
 dmesg -n 3
 
-# Hide cursor
+# Hide cursor (sedunlocksrv console TUI resets terminal as needed)
 echo -e "\e[?25l"
 
-# Minimal input mode (safer than full no-echo globally)
+# Minimal input mode until sedunlocksrv takes over (raw mode in Go)
 stty cbreak min 1
-
-# ANSI COLORS
-GREEN="$(echo -e '\033[1;32m')"
-MAGENTA="$(echo -e '\033[1;35m')"
-NORMAL="$(echo -e '\033[0;39m')"
 
 export PATH=/usr/local/sbin:/usr/local/bin:"$PATH"
 
@@ -133,36 +128,7 @@ if [ -e /home/tc/keymap ]; then
     loadkmap < "$keymapfile"
 fi
 
-# ----------------------------------------------------
-# OPAL DETECTION
-# ----------------------------------------------------
-echo "----------------------------------------------------"
-echo "🔍 Validating TCG Opal 2.0 Hardware"
-echo "----------------------------------------------------"
-
-TPM_PARAM=$(cat /sys/module/libata/parameters/allow_tpm 2>/dev/null)
-[ "$TPM_PARAM" != "1" ] && echo "⚠️ libata.allow_tpm NOT set"
-
-COMPLIANT_DEVICES=$(sedutil-cli --scan | awk '$1 ~ /\/dev\// && $2 ~ /2/ {print $1}')
-
-if [ -z "$COMPLIANT_DEVICES" ]; then
-    echo "❌ No OPAL drives found"
-
-    COUNT=30
-    while [ $COUNT -gt 0 ]; do
-        printf "\rRebooting in %ds..." $COUNT
-        sleep 1
-        COUNT=$((COUNT-1))
-    done
-
-    reboot -f
-fi
-
-for dev in $COMPLIANT_DEVICES; do
-    echo " -> $dev"
-done
-
-echo "----------------------------------------------------"
+# Drive / Opal detection and console TUI are handled in sedunlocksrv (scanDrives, consoleInterface).
 
 # ----------------------------------------------------
 # START SERVICE

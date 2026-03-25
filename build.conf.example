@@ -1,0 +1,30 @@
+# Copy to build.conf in this directory (or pass --config=/path/to/file).
+# Variables are bash snippets: quoted values for strings with spaces.
+# CLI flags override anything set here. Run with an unknown flag to print usage.
+
+# --- Paths ---
+# CACHEDIR="cache"
+# TMPDIR="img.tmp"
+
+# --- Image / Tiny Core fetch ---
+# GRUBSIZE=25
+# KEXEC_VER="2.0.28"
+# TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
+# INPUTISO="TinyCorePure64-current.iso"
+
+# --- Linux command line baked into GRUB (PBA kernel) ---
+# BOOTARGS="libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
+
+# --- Base TC extensions before SSH/keymap extras (space-separated .tcz names) ---
+# EXTENSIONS="jq.tcz"
+
+# --- Build behavior ---
+# CLEAN_MODE=false   # true: rm -rf cache and img.tmp before building
+# SSHBUILD=false     # true: same as ./build.sh --ssh
+
+# --- PBA runtime (wired into tc-config where supported) ---
+# KEYMAP=""                 # e.g. fr-latin9 → adds kmaps.tcz and /home/tc/keymap
+# EXCLUDE_NETDEV=""         # substituted into tc-config ::exclude_devices:: if present
+
+# --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
+# SEDUTIL_FORK=""           # or ChubbyAnt / chubbyant
