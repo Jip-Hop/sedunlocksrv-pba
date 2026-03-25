@@ -113,6 +113,7 @@ textarea {
 <div class="box">
     <div id="status"></div>
     <div id="statusSummary" class="small"></div>
+    <div id="buildInfo" class="small"></div>
 </div>
 
 <div class="box">
@@ -273,6 +274,7 @@ async function refresh() {
     $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
     let bootSummary = j.bootReady ? `Boot-ready drives: ${(j.bootDrives || []).join(", ") || "yes"}` : "Boot-ready drives: none yet"
     $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary}`
+    $("buildInfo").innerText = j.build ? `Build: ${j.build}` : ""
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     $("bootBtn").classList.toggle("hidden", !j.bootReady)
 }

@@ -328,10 +328,12 @@ build_sedunlocksrv_go() {
     (
         cd ./sedunlocksrv
         echo "--- Verifying Go toolchain and code ---"
-        local go_version maj min
+        local go_version maj min git_rev build_id
         go_version=$(go version | awk '{print $3}' | sed 's/go//')
         maj=$(echo "${go_version}" | cut -d. -f1)
         min=$(echo "${go_version}" | cut -d. -f2)
+        git_rev=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo "nogit")
+        build_id="${BUILD_DATE}-${git_rev}"
         if [ "${maj}" -lt 1 ] || [ "${min}" -lt 21 ]; then
             echo "❌ Go 1.21+ required (found: ${go_version})"
             exit 1
@@ -346,7 +348,7 @@ build_sedunlocksrv_go() {
             echo "❌ go build (test compile) failed"; exit 1
         fi
         echo "--- Building sedunlocksrv (linux/amd64) ---"
-        if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o sedunlocksrv; then
+        if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.buildVersion=${build_id}" -trimpath -o sedunlocksrv; then
             chown 1001:50 sedunlocksrv
             chmod +x sedunlocksrv
         else

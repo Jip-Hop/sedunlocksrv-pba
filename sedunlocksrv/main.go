@@ -67,6 +67,7 @@ type StatusResponse struct {
 	Interfaces []NetworkInterfaceStatus `json:"interfaces"`
 	BootReady  bool                     `json:"bootReady"`
 	BootDrives []string                 `json:"bootDrives,omitempty"`
+	Build      string                   `json:"build,omitempty"`
 }
 
 type DriveDiagnostics struct {
@@ -167,6 +168,8 @@ var (
 	passwordPolicy     = loadPolicy()
 	expertPasswordHash = loadExpertPasswordHash()
 )
+
+var buildVersion = "dev"
 
 type filteredHTTPLogWriter struct{}
 
@@ -416,6 +419,7 @@ func currentStatus() StatusResponse {
 		Interfaces: scanNetworkInterfaces(),
 		BootReady:  len(bootCandidateDrives(drives)) > 0,
 		BootDrives: bootCandidateDrives(drives),
+		Build:      buildVersion,
 	}
 }
 
@@ -1278,6 +1282,35 @@ func summarizeBootEntry(entry BootEntry) string {
 	return fmt.Sprintf("kernel=%s initrd=%s source=%s cmdline=%s", entry.KernelBase, initrds, trimMountPrefix("/mnt/proxmox", entry.Source), cmdline)
 }
 
+func looksLikeRootFilesystem(mountPoint string) bool {
+	required := []string{"etc", "usr", "var"}
+	for _, name := range required {
+		info, err := os.Stat(filepath.Join(mountPoint, name))
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+func synthesizeRootCmdline(device, existing string) (string, bool) {
+	device = strings.TrimSpace(device)
+	if device == "" {
+		return "", false
+	}
+
+	fields := strings.Fields(strings.TrimSpace(existing))
+	out := make([]string, 0, len(fields)+2)
+	out = append(out, "root="+device, "ro")
+	for _, field := range fields {
+		if strings.HasPrefix(field, "root=") || field == "ro" || field == "rw" {
+			continue
+		}
+		out = append(out, field)
+	}
+	return strings.Join(out, " "), true
+}
+
 func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
 	if len(files) == 0 {
 		return "", "", "", false
@@ -1530,6 +1563,12 @@ func BootSystem() (*BootResult, error) {
 				if strings.TrimSpace(cmdline) == "" || strings.TrimSpace(cmdline) != strings.TrimSpace(matchedCmdline) {
 					cmdline = matchedCmdline
 					appendBootDebug(&debug, "Matched cmdline from boot catalog for %s using %s", dev, source)
+				}
+			}
+			if looksWeakCmdline(cmdline) && looksLikeRootFilesystem(mountPoint) {
+				if synthesized, ok := synthesizeRootCmdline(dev, cmdline); ok {
+					cmdline = synthesized
+					appendBootDebug(&debug, "Synthesized root cmdline for %s", dev)
 				}
 			}
 			appendBootDebug(&debug, "Found kernel: %s", kernel)

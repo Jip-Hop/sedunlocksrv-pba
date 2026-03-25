@@ -255,3 +255,14 @@ func TestLooksWeakCmdline(t *testing.T) {
 		t.Fatal("looksWeakCmdline() treated ZFS cmdline as weak")
 	}
 }
+
+func TestSynthesizeRootCmdline(t *testing.T) {
+	got, ok := synthesizeRootCmdline("/dev/mapper/pve-root", "quiet")
+	if !ok {
+		t.Fatal("synthesizeRootCmdline() returned ok=false")
+	}
+	want := "root=/dev/mapper/pve-root ro quiet"
+	if got != want {
+		t.Fatalf("cmdline = %q, want %q", got, want)
+	}
+}
