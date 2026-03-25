@@ -131,6 +131,8 @@ textarea {
             <button class="secondary-btn hidden" id="bootBtn" onclick="boot()">Boot</button>
         </div>
         <div id="unlockResult" class="small"></div>
+        <div id="bootResult" class="small"></div>
+        <div id="bootDebug" class="mono small"></div>
         <div class="hint">
             Use <b>Boot</b> to kexec directly into the OS while keeping unlocked state.
             Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
@@ -282,7 +284,11 @@ async function postJSON(url, payload, headers) {
         body: JSON.stringify(payload || {})
     })
     let j = await r.json().catch(() => ({}))
-    if (!r.ok && j.error) throw new Error(j.error)
+    if (!r.ok) {
+        let err = new Error(j.error || "Request failed")
+        err.details = j
+        throw err
+    }
     return j
 }
 
@@ -411,7 +417,21 @@ async function expertPsidRevert() {
     }
 }
 
-function boot() { postWithFeedback("/boot") }
+async function boot() {
+    $("bootResult").innerText = ""
+    $("bootDebug").innerText = ""
+    try {
+        let j = await postJSON("/boot", {}, authHeaders())
+        $("bootResult").innerText = "Boot command accepted."
+        if (Array.isArray(j.debug) && j.debug.length) {
+            $("bootDebug").innerText = j.debug.join("\n")
+        }
+    } catch (err) {
+        $("bootResult").innerText = err.message || "Boot failed"
+        let debug = err.details && Array.isArray(err.details.debug) ? err.details.debug : []
+        $("bootDebug").innerText = debug.length ? debug.join("\n") : ""
+    }
+}
 function reboot() { postWithFeedback("/reboot") }
 function shutdown() { postWithFeedback("/poweroff") }
 

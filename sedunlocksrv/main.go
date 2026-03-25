@@ -111,6 +111,16 @@ type BootResult struct {
 	Drives        []DriveStatus `json:"drives"`
 	Warning       string        `json:"warning,omitempty"`
 	FullyUnlocked bool          `json:"fullyUnlocked"`
+	Debug         []string      `json:"debug,omitempty"`
+}
+
+type BootAttemptError struct {
+	Message string
+	Debug   []string
+}
+
+func (e BootAttemptError) Error() string {
+	return e.Message
 }
 
 // PasswordPolicy describes complexity requirements for setting a new password.
@@ -936,10 +946,15 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	return "", "", "", false
 }
 
+func appendBootDebug(debug *[]string, format string, args ...interface{}) {
+	*debug = append(*debug, fmt.Sprintf(format, args...))
+}
+
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
 func BootSystem() (*BootResult, error) {
 	drives := scanDrives()
+	debug := make([]string, 0, 32)
 	bootCandidates := bootCandidateDrives(drives)
 	var locked []string
 	for _, d := range drives {
@@ -951,34 +966,49 @@ func BootSystem() (*BootResult, error) {
 		}
 	}
 	if len(bootCandidates) == 0 {
-		return nil, fmt.Errorf("boot is unavailable until a startup-locked OPAL drive is unlocked")
+		appendBootDebug(&debug, "No startup-locked OPAL drive has transitioned to unlocked.")
+		return nil, BootAttemptError{
+			Message: "boot is unavailable until a startup-locked OPAL drive is unlocked",
+			Debug:   debug,
+		}
 	}
+	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
 
 	fullyUnlocked := len(locked) == 0
 	var warning string
 	if !fullyUnlocked {
 		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
+		appendBootDebug(&debug, warning)
 	}
 
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
 	for _, bootDrive := range bootCandidates {
+		appendBootDebug(&debug, "Inspecting boot drive: %s", bootDrive)
 		searchDevices, err := buildBootSearchDevices(bootDrive)
 		if err != nil {
 			return nil, err
 		}
+		appendBootDebug(&debug, "Mount search targets: %s", strings.Join(searchDevices, ", "))
 		for _, dev := range searchDevices {
+			appendBootDebug(&debug, "Trying mount target: %s", dev)
 			if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+				appendBootDebug(&debug, "Mount failed: %s", err)
 				continue
 			}
 			unmount := func() { exec.Command("umount", mountPoint).Run() }
+			appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 
 			if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+				appendBootDebug(&debug, "Found kernel: %s", kernel)
+				appendBootDebug(&debug, "Found initrd: %s", initrd)
+				appendBootDebug(&debug, "Found cmdline: %s", cmdline)
 				unmount()
 
 				if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
-					return nil, err
+					appendBootDebug(&debug, "kexec -l failed: %s", err)
+					return nil, BootAttemptError{Message: err.Error(), Debug: debug}
 				}
 				go func() {
 					time.Sleep(500 * time.Millisecond)
@@ -991,12 +1021,15 @@ func BootSystem() (*BootResult, error) {
 					Drives:        drives,
 					Warning:       warning,
 					FullyUnlocked: fullyUnlocked,
+					Debug:         debug,
 				}, nil
 			}
+			appendBootDebug(&debug, "No boot artifacts found on %s", dev)
 			unmount()
 		}
 	}
-	return nil, fmt.Errorf("no bootable partition")
+	appendBootDebug(&debug, "Boot search exhausted without finding a usable kernel/initrd pair.")
+	return nil, BootAttemptError{Message: "no bootable partition", Debug: debug}
 }
 
 // extractLinuxCmdline parses a GRUB "linux" or "linuxefi" line.
@@ -1579,6 +1612,13 @@ func main() {
 		}
 		res, err := BootSystem()
 		if err != nil {
+			if bootErr, ok := err.(BootAttemptError); ok {
+				jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
+					"error": bootErr.Message,
+					"debug": bootErr.Debug,
+				})
+				return
+			}
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
