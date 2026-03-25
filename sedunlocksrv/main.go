@@ -139,9 +139,6 @@ type PasswordPolicy struct {
 // ============================================================
 
 var (
-	// mu protects failedAttempts. The check, work, and increment are all
-	// done under a single lock hold to prevent TOCTOU races between
-	// concurrent unlock requests (e.g. web UI + SSH open simultaneously).
 	failedAttempts int
 	maxAttempts    = 5
 	mu             sync.Mutex
@@ -164,7 +161,6 @@ func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
 	if msg == "" {
 		return len(p), nil
 	}
-
 	benignSubstrings := []string{
 		"TLS handshake error",
 		"use of closed network connection",
@@ -177,7 +173,6 @@ func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
 			return len(p), nil
 		}
 	}
-
 	log.Printf("[http] %s", msg)
 	return len(p), nil
 }
@@ -251,9 +246,6 @@ func validatePassword(password string) error {
 // DRIVE SCANNING
 // ============================================================
 
-// scanDrives calls sedutil-cli to enumerate all drives and their lock state.
-// Each call uses a 5-second context timeout so a stalled drive or missing
-// binary never blocks the HTTP handler indefinitely.
 func scanDrives() []DriveStatus {
 	var statuses []DriveStatus
 
@@ -403,7 +395,6 @@ func bootCandidateDrives(drives []DriveStatus) []string {
 	return candidates
 }
 
-// currentStatus returns a snapshot of drives and network interfaces.
 func currentStatus() StatusResponse {
 	drives := scanDrives()
 	return StatusResponse{
@@ -545,7 +536,6 @@ func printConsoleStatus(status StatusResponse) {
 // UNLOCK
 // ============================================================
 
-// attemptUnlock tries to unlock all locked drives with the given password.
 func attemptUnlock(password string) ([]UnlockResult, error) {
 	if strings.TrimSpace(password) == "" {
 		return nil, fmt.Errorf("password cannot be blank")
@@ -603,7 +593,6 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // PASSWORD CHANGE
 // ============================================================
 
-// changePassword updates SID and Admin1 passwords on all detected drives.
 func changePassword(current, newPw string) []PasswordChangeResult {
 	var results []PasswordChangeResult
 	for _, d := range scanDrives() {
@@ -635,67 +624,82 @@ func changePassword(current, newPw string) []PasswordChangeResult {
 
 // listDevicePartitions returns all partition device paths for the given device.
 //
-// sedutil-cli reports NVMe drives as /dev/nvme0 (the controller node), but
-// partitions live under the namespace device /dev/nvme0n1. The sysfs directory
-// for a block device contains its children as subdirectories — we exploit this
-// directly rather than scanning all of /sys/class/block, which avoids the
-// fragile pkname/prefix matching that broke on NVMe.
+// sedutil-cli reports NVMe drives as /dev/nvme0 (the controller), but the
+// actual block device is the namespace, e.g. /dev/nvme0n1, and partitions are
+// nvme0n1p1, nvme0n1p2, etc.
 //
-// Layout in sysfs:
-//   /sys/class/block/nvme0/          ← controller (symlink to real path)
-//   /sys/class/block/nvme0/nvme0n1/  ← namespace block device (has "dev" file, no "partition" file)
-//   /sys/class/block/nvme0/nvme0n1/nvme0n1p1/  ← partition (has "partition" file)
-//   /sys/class/block/nvme0/nvme0n1/nvme0n1p2/
-//
-// For SATA/SAS (e.g. /dev/sda):
-//   /sys/class/block/sda/            ← block device
-//   /sys/class/block/sda/sda1/       ← partition (has "partition" file)
-//   /sys/class/block/sda/sda2/
+// We scan /sys/class/block/ (a flat directory of symlinks) and use the pkname
+// file to identify which block device is the parent of each partition. For NVMe
+// we must check pkname against both the controller name ("nvme0") AND any
+// namespace names ("nvme0n1", "nvme0n2", etc.) derived from it.
+// For SATA/SAS (sda, sdb, etc.) pkname will simply equal the base name directly.
 func listDevicePartitions(device string) ([]string, error) {
 	base := filepath.Base(device) // e.g. "nvme0" or "sda"
-	seen := map[string]struct{}{}
-	var partitions []string
 
-	// addPartitionsOf reads direct children of /sys/class/block/<blockDev>
-	// and collects those that have a "partition" file (i.e. are partitions).
-	addPartitionsOf := func(blockDev string) {
-		dir := filepath.Join("/sys/class/block", blockDev)
-		children, err := os.ReadDir(dir)
-		if err != nil {
-			return
+	// Build the set of block device names whose partitions we want.
+	// For sda this is just {"sda"}.
+	// For nvme0 this is {"nvme0", "nvme0n1", "nvme0n2", ...} — we find the
+	// namespaces by scanning /sys/class/block for entries whose name starts
+	// with base+"n" and that have a "dev" file but no "partition" file.
+	owners := map[string]struct{}{base: {}}
+
+	allEntries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range allEntries {
+		name := entry.Name()
+		// Namespace names look like nvme0n1, nvme0n2 — starts with base
+		// followed immediately by 'n' and a digit.
+		if !strings.HasPrefix(name, base+"n") {
+			continue
 		}
-		for _, child := range children {
-			name := child.Name()
-			partFile := filepath.Join(dir, name, "partition")
-			if _, err := os.Stat(partFile); err != nil {
-				// No "partition" file — not a partition, skip.
-				continue
+		// Must have a "dev" file (it's a real block device).
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
+			continue
+		}
+		// Must NOT have a "partition" file (namespaces are not partitions).
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+			continue
+		}
+		owners[name] = struct{}{}
+	}
+
+	// Now collect every entry that has a "partition" file and whose pkname
+	// is one of our owner names.
+	var partitions []string
+	seen := map[string]struct{}{}
+
+	for _, entry := range allEntries {
+		name := entry.Name()
+		// Must be a partition.
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
+			continue
+		}
+		// Read its parent name.
+		pkRaw, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
+		if err != nil {
+			// pkname unavailable — fall back to prefix match against all owners.
+			for owner := range owners {
+				if strings.HasPrefix(name, owner) {
+					dev := "/dev/" + name
+					if _, ok := seen[dev]; !ok {
+						seen[dev] = struct{}{}
+						partitions = append(partitions, dev)
+					}
+					break
+				}
 			}
+			continue
+		}
+		parent := strings.TrimSpace(string(pkRaw))
+		if _, ok := owners[parent]; ok {
 			dev := "/dev/" + name
 			if _, ok := seen[dev]; !ok {
 				seen[dev] = struct{}{}
 				partitions = append(partitions, dev)
 			}
-		}
-	}
-
-	// Pass 1: treat the device itself as a block device (covers sda, sdb, etc.)
-	addPartitionsOf(base)
-
-	// Pass 2: look for namespace children of the controller (covers nvme0 → nvme0n1).
-	// A namespace is a child of the controller that has a "dev" file but no
-	// "partition" file — distinguishing it from both the controller itself and
-	// from partitions.
-	controllerDir := filepath.Join("/sys/class/block", base)
-	children, _ := os.ReadDir(controllerDir)
-	for _, child := range children {
-		name := child.Name()
-		nsDir := filepath.Join(controllerDir, name)
-		_, hasPartition := os.Stat(filepath.Join(nsDir, "partition"))
-		_, hasDev := os.Stat(filepath.Join(nsDir, "dev"))
-		if hasPartition != nil && hasDev == nil {
-			// This child is a namespace device — collect its partitions.
-			addPartitionsOf(name)
 		}
 	}
 
@@ -1306,7 +1310,6 @@ func activeMenu(fd int) {
 // HTTP HELPERS
 // ============================================================
 
-// jsonResponse writes v as JSON with the given status code.
 func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1424,8 +1427,6 @@ func startSSHService() {
 	}()
 }
 
-// makeSystemActionHandler returns an http.HandlerFunc that runs cmd after a
-// 500ms delay and responds with {"status": label}.
 func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
