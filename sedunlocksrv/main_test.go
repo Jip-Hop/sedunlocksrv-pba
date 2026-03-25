@@ -110,7 +110,7 @@ func TestMatchBootEntryCmdlineSplitEfiAndRoot(t *testing.T) {
 		t.Fatalf("len(entries) = %d, want 1", len(entries))
 	}
 
-	cmdline, ok := matchBootEntryCmdline(entries, kernel, initrd)
+	cmdline, _, ok := matchBootEntryCmdline(entries, kernel, initrd)
 	if !ok {
 		t.Fatal("matchBootEntryCmdline() did not find cmdline for split EFI/root layout")
 	}
@@ -130,7 +130,7 @@ func TestMatchBootEntryCmdlineRequiresMatchingKernel(t *testing.T) {
 		),
 	}
 
-	if _, ok := matchBootEntryCmdline(entries, "/boot/vmlinuz-6.17.4-2-pve", "/boot/initrd.img-6.17.4-2-pve"); ok {
+	if _, _, ok := matchBootEntryCmdline(entries, "/boot/vmlinuz-6.17.4-2-pve", "/boot/initrd.img-6.17.4-2-pve"); ok {
 		t.Fatal("matchBootEntryCmdline() matched a cmdline for the wrong kernel version")
 	}
 }

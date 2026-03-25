@@ -1183,7 +1183,7 @@ func collectBootCatalog(mountPoint string) []BootEntry {
 	return entries
 }
 
-func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, bool) {
+func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, string, bool) {
 	kernelBase := filepath.Base(kernel)
 	initrdBase := filepath.Base(initrd)
 	kernelSuffix := kernelVersionSuffix(kernelBase)
@@ -1209,7 +1209,7 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 			continue
 		}
 		if matchPair(entry, false) {
-			return entry.Cmdline, true
+			return entry.Cmdline, entry.Source, true
 		}
 	}
 	for _, entry := range entries {
@@ -1217,7 +1217,7 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 			continue
 		}
 		if entry.KernelBase == kernelBase {
-			return entry.Cmdline, true
+			return entry.Cmdline, entry.Source, true
 		}
 	}
 	for _, entry := range entries {
@@ -1225,7 +1225,7 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 			continue
 		}
 		if matchPair(entry, true) {
-			return entry.Cmdline, true
+			return entry.Cmdline, entry.Source, true
 		}
 	}
 	for _, entry := range entries {
@@ -1233,10 +1233,10 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 			continue
 		}
 		if entry.KernelSuffix != "" && entry.KernelSuffix == kernelSuffix {
-			return entry.Cmdline, true
+			return entry.Cmdline, entry.Source, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
@@ -1480,10 +1480,10 @@ func BootSystem() (*BootResult, error) {
 		}
 
 		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
-			if strings.TrimSpace(cmdline) == "" {
-				if matchedCmdline, matched := matchBootEntryCmdline(bootCatalog, kernel, initrd); matched {
+			if matchedCmdline, source, matched := matchBootEntryCmdline(bootCatalog, kernel, initrd); matched {
+				if strings.TrimSpace(cmdline) == "" || strings.TrimSpace(cmdline) != strings.TrimSpace(matchedCmdline) {
 					cmdline = matchedCmdline
-					appendBootDebug(&debug, "Matched cmdline from boot catalog for %s", dev)
+					appendBootDebug(&debug, "Matched cmdline from boot catalog for %s using %s", dev, source)
 				}
 			}
 			appendBootDebug(&debug, "Found kernel: %s", kernel)
