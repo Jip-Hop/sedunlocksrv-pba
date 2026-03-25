@@ -147,13 +147,13 @@ var (
 	mu             sync.Mutex
 	unlockMu       sync.Mutex
 
-	sessionMu        sync.RWMutex
-	apiSessionToken  string
-	expertSessionTok string
-	bootStateMu      sync.RWMutex
+	sessionMu         sync.RWMutex
+	apiSessionToken   string
+	expertSessionTok  string
+	bootStateMu       sync.RWMutex
 	startupLockedOpal = map[string]struct{}{}
 
-	passwordPolicy    = loadPolicy()
+	passwordPolicy     = loadPolicy()
 	expertPasswordHash = loadExpertPasswordHash()
 )
 
@@ -253,7 +253,7 @@ func validatePassword(password string) error {
 
 // scanDrives calls sedutil-cli to enumerate all drives and their lock state.
 // Each call uses a 5-second context timeout so a stalled drive or missing
-// binary never blocks the HTTP handler indefinitely. (Fix #1)
+// binary never blocks the HTTP handler indefinitely.
 func scanDrives() []DriveStatus {
 	var statuses []DriveStatus
 
@@ -404,8 +404,6 @@ func bootCandidateDrives(drives []DriveStatus) []string {
 }
 
 // currentStatus returns a snapshot of drives and network interfaces.
-// Callers that need both should call this once and pass the result down
-// rather than calling scanDrives/scanNetworkInterfaces separately. (Size #1)
 func currentStatus() StatusResponse {
 	drives := scanDrives()
 	return StatusResponse{
@@ -548,18 +546,11 @@ func printConsoleStatus(status StatusResponse) {
 // ============================================================
 
 // attemptUnlock tries to unlock all locked drives with the given password.
-//
-// Rate limiting: the entire check-and-increment sequence is held under mu so
-// two concurrent requests cannot both pass the limit check simultaneously.
-// (Fix #2 — closes the TOCTOU race between check and increment.)
 func attemptUnlock(password string) ([]UnlockResult, error) {
 	if strings.TrimSpace(password) == "" {
 		return nil, fmt.Errorf("password cannot be blank")
 	}
 
-	// Serialize unlock workflows without holding the failed-attempt mutex while
-	// running external commands. This prevents long lock holds that block other
-	// request paths, while preserving deterministic attempt accounting.
 	unlockMu.Lock()
 	defer unlockMu.Unlock()
 
@@ -613,11 +604,6 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // ============================================================
 
 // changePassword updates SID and Admin1 passwords on all detected drives.
-//
-// Both commands are attempted and each failure is reported independently.
-// If only one of the two sedutil-cli calls fails the drive is left in a
-// split state; the error message now identifies which command failed so
-// the operator can take corrective action. (Fix #5)
 func changePassword(current, newPw string) []PasswordChangeResult {
 	var results []PasswordChangeResult
 	for _, d := range scanDrives() {
@@ -647,67 +633,69 @@ func changePassword(current, newPw string) []PasswordChangeResult {
 // BOOT
 // ============================================================
 
-func bootBlockBaseNames(device string) []string {
-	base := filepath.Base(device)
-	bases := []string{base}
+// listDevicePartitions returns all partition device paths for the given device.
+//
+// sedutil-cli reports NVMe drives as /dev/nvme0 (the controller node), but
+// partitions live under the namespace device /dev/nvme0n1. The sysfs directory
+// for a block device contains its children as subdirectories — we exploit this
+// directly rather than scanning all of /sys/class/block, which avoids the
+// fragile pkname/prefix matching that broke on NVMe.
+//
+// Layout in sysfs:
+//   /sys/class/block/nvme0/          ← controller (symlink to real path)
+//   /sys/class/block/nvme0/nvme0n1/  ← namespace block device (has "dev" file, no "partition" file)
+//   /sys/class/block/nvme0/nvme0n1/nvme0n1p1/  ← partition (has "partition" file)
+//   /sys/class/block/nvme0/nvme0n1/nvme0n1p2/
+//
+// For SATA/SAS (e.g. /dev/sda):
+//   /sys/class/block/sda/            ← block device
+//   /sys/class/block/sda/sda1/       ← partition (has "partition" file)
+//   /sys/class/block/sda/sda2/
+func listDevicePartitions(device string) ([]string, error) {
+	base := filepath.Base(device) // e.g. "nvme0" or "sda"
+	seen := map[string]struct{}{}
+	var partitions []string
 
-	// sedutil-cli reports NVMe controller nodes like /dev/nvme0, while the
-	// actual partitioned block device is usually the namespace, e.g. nvme0n1.
-	if strings.HasPrefix(base, "nvme") && !strings.Contains(base, "n1") {
-		matches, _ := filepath.Glob(filepath.Join("/sys/class/block", base+"n*"))
-		for _, match := range matches {
-			name := filepath.Base(match)
-			if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+	// addPartitionsOf reads direct children of /sys/class/block/<blockDev>
+	// and collects those that have a "partition" file (i.e. are partitions).
+	addPartitionsOf := func(blockDev string) {
+		dir := filepath.Join("/sys/class/block", blockDev)
+		children, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, child := range children {
+			name := child.Name()
+			partFile := filepath.Join(dir, name, "partition")
+			if _, err := os.Stat(partFile); err != nil {
+				// No "partition" file — not a partition, skip.
 				continue
 			}
-			bases = append(bases, name)
-		}
-	}
-
-	sort.Strings(bases)
-	uniq := make([]string, 0, len(bases))
-	seen := make(map[string]struct{}, len(bases))
-	for _, name := range bases {
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		uniq = append(uniq, name)
-	}
-	return uniq
-}
-
-func listDevicePartitions(device string) ([]string, error) {
-	bases := bootBlockBaseNames(device)
-	entries, err := os.ReadDir("/sys/class/block")
-	if err != nil {
-		return nil, err
-	}
-
-	partitions := make([]string, 0)
-	for _, entry := range entries {
-		name := entry.Name()
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
-			continue
-		}
-
-		parent, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
-		if err == nil {
-			parentName := strings.TrimSpace(string(parent))
-			for _, base := range bases {
-				if parentName == base {
-					partitions = append(partitions, "/dev/"+name)
-					break
-				}
+			dev := "/dev/" + name
+			if _, ok := seen[dev]; !ok {
+				seen[dev] = struct{}{}
+				partitions = append(partitions, dev)
 			}
-			continue
 		}
+	}
 
-		for _, base := range bases {
-			if strings.HasPrefix(name, base) {
-				partitions = append(partitions, "/dev/"+name)
-				break
-			}
+	// Pass 1: treat the device itself as a block device (covers sda, sdb, etc.)
+	addPartitionsOf(base)
+
+	// Pass 2: look for namespace children of the controller (covers nvme0 → nvme0n1).
+	// A namespace is a child of the controller that has a "dev" file but no
+	// "partition" file — distinguishing it from both the controller itself and
+	// from partitions.
+	controllerDir := filepath.Join("/sys/class/block", base)
+	children, _ := os.ReadDir(controllerDir)
+	for _, child := range children {
+		name := child.Name()
+		nsDir := filepath.Join(controllerDir, name)
+		_, hasPartition := os.Stat(filepath.Join(nsDir, "partition"))
+		_, hasDev := os.Stat(filepath.Join(nsDir, "dev"))
+		if hasPartition != nil && hasDev == nil {
+			// This child is a namespace device — collect its partitions.
+			addPartitionsOf(name)
 		}
 	}
 
@@ -816,11 +804,6 @@ func splitInitrdLine(line string) []string {
 }
 
 func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
-//	files, err := filepath.Glob(filepath.Join(mountPoint, "loader", "entries", "*.conf"))
-//	if err != nil || len(files) == 0 {
-//		return "", "", "", false
-//	}
-
 	var files []string
 	for _, dir := range []string{
 		filepath.Join(mountPoint, "loader", "entries"),
@@ -1049,7 +1032,7 @@ func BootSystem() (*BootResult, error) {
 				appendBootDebug(&debug, "Mount failed: %s", err)
 				continue
 			}
-			
+
 			if entries, err := os.ReadDir(mountPoint); err == nil {
 				names := make([]string, 0, len(entries))
 				for _, e := range entries {
@@ -1057,7 +1040,7 @@ func BootSystem() (*BootResult, error) {
 				}
 				appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
 			}
-			
+
 			unmount := func() { exec.Command("umount", mountPoint).Run() }
 			appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 
@@ -1094,7 +1077,6 @@ func BootSystem() (*BootResult, error) {
 }
 
 // extractLinuxCmdline parses a GRUB "linux" or "linuxefi" line.
-// It returns the command line plus a validity flag.
 func extractLinuxCmdline(line string) (string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) < 2 {
@@ -1106,26 +1088,13 @@ func extractLinuxCmdline(line string) (string, bool) {
 	return strings.Join(fields[2:], " "), true
 }
 
-// findBootCmdline tries three sources in priority order:
-//  1. systemd-boot loader entries  (modern Proxmox)
-//  2. grub.cfg under /boot/grub/   (legacy BIOS GRUB)
-//  3. grub.cfg under /grub/        (some EFI layouts)
-//
-// The three source-specific functions are expressed as a slice of closures
-// rather than three separate named functions, halving the boilerplate. (Size #2)
+// findBootCmdline tries loader entries then grub configs in priority order.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
 	efiGrubConfigs, _ := filepath.Glob(filepath.Join(mountPoint, "EFI", "*", "*", "grub.cfg"))
 
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
-			// systemd-boot: scan *.conf files in loader/entries/
-//			entriesDir := filepath.Join(mountPoint, "loader", "entries")
-//			files, err := filepath.Glob(filepath.Join(entriesDir, "*.conf"))
-//			if err != nil || len(files) == 0 {
-//				return "", false, fmt.Errorf("no loader entries in %s", entriesDir)
-//			}
-
 			var files []string
 			for _, dir := range []string{
 				filepath.Join(mountPoint, "loader", "entries"),
@@ -1138,7 +1107,6 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			if len(files) == 0 {
 				return "", false, fmt.Errorf("no loader entries under %s", mountPoint)
 			}
-
 			sort.Strings(files)
 			for _, f := range files {
 				data, err := os.ReadFile(f)
@@ -1162,11 +1130,12 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			return "", false, fmt.Errorf("kernel command line not found in loader entries")
 		},
 		func() (string, bool, error) {
-			// GRUB config at /boot/grub/grub.cfg
 			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), kernelBase)
 		},
 		func() (string, bool, error) {
-			// GRUB config at /grub/grub.cfg (some EFI layouts)
+			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"), kernelBase)
+		},
+		func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
 		},
 	}
@@ -1186,7 +1155,6 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 }
 
 // parseGrubCfg extracts the kernel command line from a grub.cfg file.
-// It looks for a "linux" or "linuxefi" directive that references kernelBase.
 func parseGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
@@ -1226,7 +1194,7 @@ func consoleInterface() {
 	for {
 		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔒 PBA STANDBY" + colorReset)
-		printConsoleStatus(currentStatus()) // single scan shared by drives + interfaces
+		printConsoleStatus(currentStatus())
 		fmt.Println("\n" + colorDim + "Press any key..." + colorReset)
 
 		old, err := term.MakeRaw(fd)
@@ -1246,7 +1214,7 @@ func activeMenu(fd int) {
 	for {
 		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔑 ACTIVE MODE" + colorReset)
-		printConsoleStatus(currentStatus()) // single scan shared by drives + interfaces
+		printConsoleStatus(currentStatus())
 
 		fmt.Printf(
 			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sP%s] %sChange PW%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s\n",
@@ -1339,8 +1307,6 @@ func activeMenu(fd int) {
 // ============================================================
 
 // jsonResponse writes v as JSON with the given status code.
-// The encode error is explicitly discarded — a client disconnect mid-stream
-// is not actionable and would only pollute the log. (Fix #6)
 func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1401,8 +1367,6 @@ func firstExistingPath(paths ...string) string {
 func startSSHService() {
 	dropbearBin := firstExistingPath("/usr/local/sbin/dropbear", "/usr/sbin/dropbear", "/usr/local/bin/dropbear")
 	if dropbearBin == "" {
-		// Tiny Core's dropbear.tcz ships the multi-call binary only. Create a
-		// temporary symlink so argv[0] is "dropbear" when we exec it.
 		if multi := firstExistingPath("/usr/local/bin/dropbearmulti", "/usr/bin/dropbearmulti"); multi != "" {
 			symlinkPath := "/tmp/dropbear"
 			_ = os.Remove(symlinkPath)
@@ -1432,9 +1396,9 @@ func startSSHService() {
 	}
 
 	args := []string{
-		"-R", // create host keys on first connection if needed
-		"-E", // log to stderr
-		"-F", // stay in foreground under this process supervisor
+		"-R",
+		"-E",
+		"-F",
 		"-p", "2222",
 	}
 	if ecdsaKey != "" {
@@ -1462,8 +1426,6 @@ func startSSHService() {
 
 // makeSystemActionHandler returns an http.HandlerFunc that runs cmd after a
 // 500ms delay and responds with {"status": label}.
-// Reboot and poweroff intentionally remain available even when no drive is
-// unlocked so operators can recover from bad states without local console.
 func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
@@ -1488,10 +1450,9 @@ func main() {
 
 	httpErrorLog := log.New(filteredHTTPLogWriter{}, "", 0)
 
-	// Port 80: redirect all HTTP to HTTPS.
 	go func() {
 		redirectSrv := &http.Server{
-			Addr:     ":80",
+			Addr: ":80",
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
 			}),
@@ -1504,11 +1465,8 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Static files served from ./static/ to prevent the binary, certs, and
-	// keys from being downloadable via the web interface.
 	mux.Handle("/", http.FileServer(http.Dir("static")))
 
-	// GET /status — current drive and interface state; polled every 5s by index.html.
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
 			return
@@ -1516,7 +1474,6 @@ func main() {
 		jsonResponse(w, http.StatusOK, currentStatus())
 	})
 
-	// GET /diagnostics — per-drive sedutil --query details for troubleshooting.
 	mux.HandleFunc("/diagnostics", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
 			return
@@ -1527,7 +1484,6 @@ func main() {
 		})
 	})
 
-	// GET /password-policy — active complexity policy; consumed by index.html.
 	mux.HandleFunc("/password-policy", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
 			return
@@ -1535,7 +1491,6 @@ func main() {
 		jsonResponse(w, http.StatusOK, passwordPolicy)
 	})
 
-	// POST /unlock — attempt to unlock all locked drives with the given password.
 	mux.HandleFunc("/unlock", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1564,7 +1519,6 @@ func main() {
 		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results, Token: token})
 	})
 
-	// POST /change-password — change drive password on all detected drives.
 	mux.HandleFunc("/change-password", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1589,7 +1543,6 @@ func main() {
 		})
 	})
 
-	// POST /expert/auth — unlock expert actions with a build-time password hash.
 	mux.HandleFunc("/expert/auth", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1617,7 +1570,6 @@ func main() {
 		jsonResponse(w, http.StatusOK, map[string]string{"token": token})
 	})
 
-	// POST /expert/revert-tper — destructive: resets TPer with current password.
 	mux.HandleFunc("/expert/revert-tper", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1645,7 +1597,6 @@ func main() {
 		runExpertCommand(w, "--reverttper", req.Password, req.Device)
 	})
 
-	// POST /expert/psid-revert — destructive: full erase using PSID.
 	mux.HandleFunc("/expert/psid-revert", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1677,7 +1628,6 @@ func main() {
 		runExpertCommand(w, "--yesIreallywanttoERASEALLmydatausingthePSID", req.PSID, req.Device)
 	})
 
-	// POST /boot — load and execute the Proxmox kernel via kexec.
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -1700,9 +1650,6 @@ func main() {
 		jsonResponse(w, http.StatusOK, res)
 	})
 
-	// POST /reboot  — cold reboot (re-locks drives; PBA starts again).
-	// POST /poweroff — full shutdown.
-	// Both use the makeSystemActionHandler factory. (Size #3)
 	mux.HandleFunc("/reboot", makeSystemActionHandler("rebooting", "reboot", "-nf"))
 	mux.HandleFunc("/poweroff", makeSystemActionHandler("powering off", "poweroff", "-nf"))
 
@@ -1713,5 +1660,3 @@ func main() {
 	}
 	log.Fatal(httpsSrv.ListenAndServeTLS("server.crt", "server.key"))
 }
-
-
