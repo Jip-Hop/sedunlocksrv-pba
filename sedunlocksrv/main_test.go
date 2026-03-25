@@ -76,3 +76,46 @@ func TestFindBootArtifactsRecursiveKernelFallback(t *testing.T) {
 		t.Fatalf("cmdline = %q, want empty string", gotCmdline)
 	}
 }
+
+func TestMatchBootEntryCmdlineSplitEfiAndRoot(t *testing.T) {
+	efiMount := t.TempDir()
+	rootMount := t.TempDir()
+
+	grubCfg := filepath.Join(efiMount, "EFI", "proxmox", "grub.cfg")
+	kernel := filepath.Join(rootMount, "boot", "vmlinuz-6.17.4-2-pve")
+	initrd := filepath.Join(rootMount, "boot", "initrd.img-6.17.4-2-pve")
+
+	for _, path := range []string{grubCfg, kernel, initrd} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", path, err)
+		}
+	}
+
+	cfg := "menuentry 'Proxmox VE GNU/Linux' {\n" +
+		"    linux /boot/vmlinuz-6.17.4-2-pve root=/dev/mapper/pve-root ro quiet\n" +
+		"    initrd /boot/initrd.img-6.17.4-2-pve\n" +
+		"}\n"
+	if err := os.WriteFile(grubCfg, []byte(cfg), 0o644); err != nil {
+		t.Fatalf("WriteFile(grubCfg): %v", err)
+	}
+	if err := os.WriteFile(kernel, []byte("kernel"), 0o644); err != nil {
+		t.Fatalf("WriteFile(kernel): %v", err)
+	}
+	if err := os.WriteFile(initrd, []byte("initrd"), 0o644); err != nil {
+		t.Fatalf("WriteFile(initrd): %v", err)
+	}
+
+	entries := collectBootCatalog(efiMount)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+
+	cmdline, ok := matchBootEntryCmdline(entries, kernel, initrd)
+	if !ok {
+		t.Fatal("matchBootEntryCmdline() did not find cmdline for split EFI/root layout")
+	}
+	want := "root=/dev/mapper/pve-root ro quiet"
+	if cmdline != want {
+		t.Fatalf("cmdline = %q, want %q", cmdline, want)
+	}
+}

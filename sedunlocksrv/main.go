@@ -126,6 +126,17 @@ func (e BootAttemptError) Error() string {
 	return e.Message
 }
 
+type BootEntry struct {
+	KernelRef    string
+	KernelBase   string
+	KernelSuffix string
+	InitrdRefs   []string
+	InitrdBases  []string
+	InitrdSuffix []string
+	Cmdline      string
+	Source       string
+}
+
 // PasswordPolicy describes complexity requirements for setting a new password.
 // It is NOT applied to unlock attempts — the drive may have been initialized
 // with a password that doesn't meet these requirements.
@@ -1052,6 +1063,182 @@ func splitInitrdLine(line string) []string {
 	return fields[1:]
 }
 
+func kernelVersionSuffix(base string) string {
+	switch {
+	case strings.HasPrefix(base, "vmlinuz-"):
+		return strings.TrimPrefix(base, "vmlinuz-")
+	case strings.HasPrefix(base, "linux-"):
+		return strings.TrimPrefix(base, "linux-")
+	default:
+		return ""
+	}
+}
+
+func initrdVersionSuffix(base string) string {
+	switch {
+	case strings.HasPrefix(base, "initrd.img-"):
+		return strings.TrimPrefix(base, "initrd.img-")
+	case strings.HasPrefix(base, "initramfs-"):
+		suffix := strings.TrimPrefix(base, "initramfs-")
+		suffix = strings.TrimSuffix(suffix, ".img")
+		suffix = strings.TrimSuffix(suffix, ".gz")
+		suffix = strings.TrimSuffix(suffix, ".xz")
+		return suffix
+	default:
+		return ""
+	}
+}
+
+func makeBootEntry(kernelRef string, initrdRefs []string, cmdline, source string) BootEntry {
+	entry := BootEntry{
+		KernelRef:    strings.TrimSpace(kernelRef),
+		KernelBase:   filepath.Base(strings.TrimSpace(kernelRef)),
+		KernelSuffix: kernelVersionSuffix(filepath.Base(strings.TrimSpace(kernelRef))),
+		InitrdRefs:   append([]string(nil), initrdRefs...),
+		Cmdline:      strings.TrimSpace(cmdline),
+		Source:       source,
+	}
+	for _, ref := range initrdRefs {
+		base := filepath.Base(strings.TrimSpace(ref))
+		entry.InitrdBases = append(entry.InitrdBases, base)
+		entry.InitrdSuffix = append(entry.InitrdSuffix, initrdVersionSuffix(base))
+	}
+	return entry
+}
+
+func parseLoaderEntryCatalog(files []string) []BootEntry {
+	entries := make([]BootEntry, 0)
+	sort.Strings(files)
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		var kernelRef, cmdline string
+		var initrdRefs []string
+		for _, line := range strings.Split(string(data), "\n") {
+			t := strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(t, "linux "):
+				ref, options, ok := splitKernelLine(t)
+				if !ok {
+					continue
+				}
+				kernelRef = ref
+				if options != "" {
+					cmdline = options
+				}
+			case strings.HasPrefix(t, "initrd "):
+				initrdRefs = append(initrdRefs, splitInitrdLine(t)...)
+			case strings.HasPrefix(t, "options "):
+				cmdline = strings.TrimSpace(strings.TrimPrefix(t, "options "))
+			}
+		}
+		if kernelRef == "" {
+			continue
+		}
+		entries = append(entries, makeBootEntry(kernelRef, initrdRefs, cmdline, file))
+	}
+	return entries
+}
+
+func parseGrubConfigCatalog(grubPath string) []BootEntry {
+	data, err := os.ReadFile(grubPath)
+	if err != nil {
+		return nil
+	}
+
+	entries := make([]BootEntry, 0)
+	lines := strings.Split(string(data), "\n")
+	for i := 0; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
+			continue
+		}
+		kernelRef, cmdline, ok := splitKernelLine(t)
+		if !ok {
+			continue
+		}
+		var initrdRefs []string
+		for j := i + 1; j < len(lines); j++ {
+			next := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(next, "linux ") || strings.HasPrefix(next, "linuxefi ") || strings.HasPrefix(next, "menuentry ") {
+				break
+			}
+			if strings.HasPrefix(next, "initrd ") || strings.HasPrefix(next, "initrdefi ") {
+				initrdRefs = append(initrdRefs, splitInitrdLine(next)...)
+			}
+		}
+		entries = append(entries, makeBootEntry(kernelRef, initrdRefs, cmdline, grubPath))
+	}
+	return entries
+}
+
+func collectBootCatalog(mountPoint string) []BootEntry {
+	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
+	entries := parseLoaderEntryCatalog(loaderEntries)
+	for _, grubPath := range grubConfigs {
+		entries = append(entries, parseGrubConfigCatalog(grubPath)...)
+	}
+	return entries
+}
+
+func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, bool) {
+	kernelBase := filepath.Base(kernel)
+	initrdBase := filepath.Base(initrd)
+	kernelSuffix := kernelVersionSuffix(kernelBase)
+	initrdSuffix := initrdVersionSuffix(initrdBase)
+
+	matchPair := func(entry BootEntry, bySuffix bool) bool {
+		for i := range entry.InitrdBases {
+			if bySuffix {
+				if entry.KernelSuffix != "" && entry.KernelSuffix == kernelSuffix && i < len(entry.InitrdSuffix) && entry.InitrdSuffix[i] != "" && entry.InitrdSuffix[i] == initrdSuffix {
+					return true
+				}
+				continue
+			}
+			if entry.KernelBase == kernelBase && entry.InitrdBases[i] == initrdBase {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Cmdline) == "" {
+			continue
+		}
+		if matchPair(entry, false) {
+			return entry.Cmdline, true
+		}
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Cmdline) == "" {
+			continue
+		}
+		if entry.KernelBase == kernelBase {
+			return entry.Cmdline, true
+		}
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Cmdline) == "" {
+			continue
+		}
+		if matchPair(entry, true) {
+			return entry.Cmdline, true
+		}
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Cmdline) == "" {
+			continue
+		}
+		if entry.KernelSuffix != "" && entry.KernelSuffix == kernelSuffix {
+			return entry.Cmdline, true
+		}
+	}
+	return "", false
+}
+
 func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
 	if len(files) == 0 {
 		return "", "", "", false
@@ -1268,6 +1455,7 @@ func BootSystem() (*BootResult, error) {
 		return nil, err
 	}
 	appendBootDebug(&debug, "Mount search targets: %s", strings.Join(searchDevices, ", "))
+	bootCatalog := make([]BootEntry, 0, 8)
 	for _, dev := range searchDevices {
 		appendBootDebug(&debug, "Trying mount target: %s", dev)
 		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
@@ -1285,8 +1473,19 @@ func BootSystem() (*BootResult, error) {
 
 		unmount := func() { exec.Command("umount", mountPoint).Run() }
 		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
+		entries := collectBootCatalog(mountPoint)
+		if len(entries) > 0 {
+			bootCatalog = append(bootCatalog, entries...)
+			appendBootDebug(&debug, "Cataloged %d boot entries from %s", len(entries), dev)
+		}
 
 		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+			if strings.TrimSpace(cmdline) == "" {
+				if matchedCmdline, matched := matchBootEntryCmdline(bootCatalog, kernel, initrd); matched {
+					cmdline = matchedCmdline
+					appendBootDebug(&debug, "Matched cmdline from boot catalog for %s", dev)
+				}
+			}
 			appendBootDebug(&debug, "Found kernel: %s", kernel)
 			appendBootDebug(&debug, "Found initrd: %s", initrd)
 			appendBootDebug(&debug, "Found cmdline: %s", cmdline)
