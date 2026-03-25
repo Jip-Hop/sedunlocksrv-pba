@@ -109,6 +109,10 @@ get_error() {
     echo "$1" | jq -r '.error // empty'
 }
 
+has_results() {
+    echo "$1" | jq -e '(.results // []) | length > 0' > /dev/null 2>&1
+}
+
 post_with_auth() {
     if [ -n "$AUTH_TOKEN" ]; then
         $CURL -X POST -H "X-Auth-Token: $AUTH_TOKEN" "$1"
@@ -161,10 +165,16 @@ while true; do
                 echo "Error: $(get_error "$RESP")"
             else
                 AUTH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
-                echo "$RESP" | jq -r '
-                    .results[] |
-                    "  " + (if .success then "[ok] " else "[failed] " end) + .device
-                '
+                if has_results "$RESP"; then
+                    echo "$RESP" | jq -r '
+                        .results[] |
+                        "  " + (if .success then "[ok] " else "[failed] " end) + .device
+                    '
+                elif [ -n "${AUTH_TOKEN}" ]; then
+                    echo "Unlock accepted."
+                else
+                    echo "No unlockable OPAL drives were reported."
+                fi
             fi
             sleep 2
             ;;

@@ -434,11 +434,23 @@ func anySuccessfulUnlock(results []UnlockResult) bool {
 // ============================================================
 
 func printConsoleStatus(status StatusResponse) {
-	for _, d := range status.Drives {
-		if d.Locked {
-			fmt.Println("❌", d.Device)
-		} else {
-			fmt.Println("✅", d.Device)
+	if len(status.Drives) == 0 {
+		fmt.Println("No OPAL drives detected.")
+	} else {
+		for _, d := range status.Drives {
+			lockState := "UNLOCKED"
+			if d.Locked {
+				lockState = "LOCKED"
+			}
+			opalState := "NON-OPAL"
+			if d.Opal {
+				opalState = "OPAL"
+			}
+			marker := "✅"
+			if d.Locked {
+				marker = "❌"
+			}
+			fmt.Printf("%s %s  %s  %s\n", marker, d.Device, lockState, opalState)
 		}
 	}
 	fmt.Println("\nNetwork Interfaces:")
@@ -565,6 +577,37 @@ func changePassword(current, newPw string) []PasswordChangeResult {
 // BOOT
 // ============================================================
 
+func listDevicePartitions(device string) ([]string, error) {
+	base := filepath.Base(device)
+	entries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	partitions := make([]string, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
+			continue
+		}
+
+		parent, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
+		if err == nil {
+			if strings.TrimSpace(string(parent)) == base {
+				partitions = append(partitions, "/dev/"+name)
+			}
+			continue
+		}
+
+		if strings.HasPrefix(name, base) {
+			partitions = append(partitions, "/dev/"+name)
+		}
+	}
+
+	sort.Strings(partitions)
+	return partitions, nil
+}
+
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
 func BootSystem() (*BootResult, error) {
@@ -590,23 +633,18 @@ func BootSystem() (*BootResult, error) {
 
 	bootDrive := unlocked[0]
 
-	// Use lsblk with a TYPE filter to get only partition entries,
-	// avoiding the fragile parts[1:] index assumption. (Fix #3)
-	out, err := exec.Command("lsblk", "-ln", "-o", "NAME,TYPE", bootDrive).Output()
+	partitions, err := listDevicePartitions(bootDrive)
 	if err != nil {
 		return nil, err
+	}
+	if len(partitions) == 0 {
+		return nil, fmt.Errorf("no partitions found on %s", bootDrive)
 	}
 
 	mountPoint := "/mnt/proxmox"
 	os.MkdirAll(mountPoint, 0755)
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[1] != "part" {
-			continue
-		}
-		part := "/dev/" + fields[0]
-
+	for _, part := range partitions {
 		if err := exec.Command("mount", "-r", part, mountPoint).Run(); err != nil {
 			continue
 		}
