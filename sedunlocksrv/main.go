@@ -909,6 +909,19 @@ func firstExistingPath(paths ...string) string {
 func startSSHService() {
 	dropbearBin := firstExistingPath("/usr/local/sbin/dropbear", "/usr/sbin/dropbear", "/usr/local/bin/dropbear")
 	if dropbearBin == "" {
+		// Tiny Core's dropbear.tcz ships the multi-call binary only. Create a
+		// temporary symlink so argv[0] is "dropbear" when we exec it.
+		if multi := firstExistingPath("/usr/local/bin/dropbearmulti", "/usr/bin/dropbearmulti"); multi != "" {
+			symlinkPath := "/tmp/dropbear"
+			_ = os.Remove(symlinkPath)
+			if err := os.Symlink(multi, symlinkPath); err == nil {
+				dropbearBin = symlinkPath
+			} else {
+				log.Printf("[ssh] failed to prepare dropbearmulti symlink: %v", err)
+			}
+		}
+	}
+	if dropbearBin == "" {
 		log.Println("[ssh] dropbear not present; SSH UI disabled")
 		return
 	}
