@@ -894,6 +894,67 @@ func runExpertCommand(w http.ResponseWriter, args ...string) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
+func firstExistingPath(paths ...string) string {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func startSSHService() {
+	dropbearBin := firstExistingPath("/usr/local/sbin/dropbear", "/usr/sbin/dropbear", "/usr/local/bin/dropbear")
+	if dropbearBin == "" {
+		log.Println("[ssh] dropbear not present; SSH UI disabled")
+		return
+	}
+
+	ecdsaKey := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_ecdsa_host_key",
+		"/etc/dropbear/dropbear_ecdsa_host_key",
+	)
+	rsaKey := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_rsa_host_key",
+		"/etc/dropbear/dropbear_rsa_host_key",
+	)
+	if ecdsaKey == "" && rsaKey == "" {
+		log.Println("[ssh] dropbear keys not present; SSH UI disabled")
+		return
+	}
+
+	args := []string{
+		"-R", // create host keys on first connection if needed
+		"-E", // log to stderr
+		"-F", // stay in foreground under this process supervisor
+		"-p", "2222",
+	}
+	if ecdsaKey != "" {
+		args = append(args, "-r", ecdsaKey)
+	}
+	if rsaKey != "" {
+		args = append(args, "-r", rsaKey)
+	}
+	if banner := firstExistingPath("/usr/local/etc/dropbear/banner", "/etc/dropbear/banner"); banner != "" {
+		args = append(args, "-b", banner)
+	}
+
+	cmd := exec.Command(dropbearBin, args...)
+	if err := cmd.Start(); err != nil {
+		log.Printf("[ssh] failed to start dropbear: %v", err)
+		return
+	}
+	log.Printf("[ssh] dropbear started on port 2222 (pid %d)", cmd.Process.Pid)
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.Printf("[ssh] dropbear exited: %v", err)
+		}
+	}()
+}
+
 // makeSystemActionHandler returns an http.HandlerFunc that runs cmd after a
 // 500ms delay and responds with {"status": label}.
 // Reboot and poweroff intentionally remain available even when no drive is
@@ -917,6 +978,7 @@ func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
 
 func main() {
 	go consoleInterface()
+	startSSHService()
 
 	// Port 80: redirect all HTTP to HTTPS.
 	go http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
