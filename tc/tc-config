@@ -279,6 +279,41 @@ configure_network() {
     esac
 }
 
+print_intel_700_diagnostics() {
+    local i40e_module dmesg_lines pci_lines
+
+    echo "----------------------------------------------------"
+    echo "[diag] Intel 700-series NIC diagnostics"
+
+    i40e_module="$(find /lib/modules -type f -name 'i40e.ko*' | head -n1)"
+    if [ -n "${i40e_module}" ] && [ -f "${i40e_module}" ]; then
+        echo "[diag] i40e module present: ${i40e_module}"
+    else
+        echo "[diag] i40e module not found in /lib/modules"
+    fi
+
+    if grep -q '^i40e ' /proc/modules 2>/dev/null; then
+        echo "[diag] i40e module loaded"
+    else
+        echo "[diag] i40e module not loaded"
+    fi
+
+    if have_command lspci; then
+        pci_lines="$(lspci -nn 2>/dev/null | grep -Ei 'Ethernet|Network|X710|XL710|XXV710|Intel Corporation' | head -n10)"
+        [ -n "${pci_lines}" ] && printf '%s\n' "${pci_lines}" | sed 's/^/[diag] pci: /'
+    fi
+
+    dmesg_lines="$(dmesg 2>/dev/null | grep -Ei 'i40e|X710|XL710|XXV710|firmware|NVM' | tail -n15)"
+    if [ -n "${dmesg_lines}" ]; then
+        printf '%s\n' "${dmesg_lines}" | sed 's/^/[diag] dmesg: /'
+    else
+        echo "[diag] no Intel 700-series related dmesg lines found"
+    fi
+    echo "----------------------------------------------------"
+}
+
+print_intel_700_diagnostics
+
 if configure_network; then
     echo "[net] Network configuration complete"
 else
