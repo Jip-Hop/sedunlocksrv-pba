@@ -36,60 +36,112 @@ Security and control surfaces were also expanded: `boot` and password change are
 ---
 
 ## 🛠️ Build Host Dependencies
-To prepare your build host (Proxmox, Debian, or Ubuntu) for generating the enhanced PBA image, follow this formatted summary of required tools and the Go upgrade process.
+Use a Debian/Ubuntu/Proxmox build host.
 
-Run this command to install the base utilities required for ISO extraction, image creation, and C-compilation:
-
+```bash
 sudo apt update && sudo apt install -y \
-    build-essential \
-    zlib1g-dev \
-    xorriso \
-    bsdtar \
-    curl \
-    git \
-    mtools
+  build-essential \
+  coreutils \
+  findutils \
+  util-linux \
+  mount \
+  fdisk \
+  dosfstools \
+  cpio \
+  xz-utils \
+  gzip \
+  rsync \
+  libarchive-tools \
+  grub-common \
+  grub-pc-bin \
+  grub-efi-amd64-bin \
+  grub-efi-ia32-bin \
+  xorriso \
+  curl \
+  git \
+  openssl \
+  golang-go
+```
 
+The script also checks for these commands at runtime:
+
+```text
+gcc make curl tar xorriso bsdtar go cpio xz sfdisk sed awk cut tr date
+chown chmod basename mktemp find realpath zcat rsync nproc sort cat head tail
+od touch mkdir cp rm mv mount umount chroot du dd losetup lsblk mknod mkfs.fat
+grub-install sync sleep ln env openssl
+```
+
+If you build with `--ssh`, `dropbearkey` is also required (usually package `dropbear-bin`).
 
 ## 🐹 Go 1.22+ Upgrade (Required)
-Since the new backend uses modern libraries (like slices), you must upgrade from the default apt version to the latest official Go binary:
+The Go backend requires a modern Go toolchain.
 
-* 1. Remove old Go versions:
-   - sudo apt remove golang-go && sudo apt autoremove
+1. Remove distro Go packages if needed:
+```bash
+sudo apt remove golang-go && sudo apt autoremove
+```
 
-* 2. Install Go 1.26.1:
-   - curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
-   - sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
-   - rm go1.26.1.linux-amd64.tar.gz
+2. Install official Go (example: 1.26.1):
+```bash
+curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
+rm go1.26.1.linux-amd64.tar.gz
+```
 
-* 3. Update your Environment:
-Add this to the end of your ~/.bashrc to ensure the go command is available:
-   - export PATH=$PATH:/usr/local/go/bin
-   - source ~/.bashrc
+3. Ensure Go is in `PATH`:
+```bash
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+```
 
 ## 📋 Pre-Build Checklist
+Before running `./build.sh`, verify:
+- `sedunlocksrv/server.crt` and `sedunlocksrv/server.key` exist if you are supplying custom TLS certs.
+- `ssh/authorized_keys` exists if you plan to build with `--ssh`.
+- `tc/tc-config` contains your expected network/boot behavior.
+- Expert password plan is set: either pass `--expert-password=...` or set `EXPERT_PASSWORD` in `build.conf`. If omitted, build generates a random 16-digit expert password and prints it once.
 
-* Before running ./build.sh, ensure these files are present in your repository:
-   - sedunlocksrv/server.crt & server.key: Your SSL certificates for the HTTPS interface.
-   - ssh/authorized_keys: Your public SSH keys for remote management.
-   - tc/tc-config: The customized boot script with LACP/Network logic.
+## 🚀 Build Execution
+```bash
+chmod +x build.sh
+sudo ./build.sh
+```
 
+## Build Configuration (`build.conf`)
+Defaults live in `build.sh`. To use your own defaults:
 
-## 🚀 Execution
+1. Copy `build.conf.example` to `build.conf` (same directory as `build.sh`).
+2. Uncomment and edit variables as needed (`build.conf` is a sourced Bash snippet).
+3. CLI flags override file values.
 
-* chmod +x build.sh
-* ./build.sh
+Resolution order:
+**built-in defaults → `build.conf` (or `BUILD_CONFIG`) → `--config=FILE` → remaining CLI flags**
 
-## Build configuration (`build.conf`)
-
-Defaults live in `build.sh`. To set your own defaults without long CLI lines:
-
-1. Copy `build.conf.example` to `build.conf` (same directory as `build.sh`). `build.conf` is gitignored.
-2. Uncomment and edit variables as needed — it is a sourced bash snippet.
-3. **CLI overrides the file**: e.g. `./build.sh --ssh` forces SSH even if `build.conf` has `SSHBUILD=false`.
-
-Resolution order: **built-in defaults → `build.conf` (or `BUILD_CONFIG` env path) → `--config=FILE` (replaces path) → remaining flags**.
-
-Useful flags: `--clean`, `--ssh`, `--keymap=NAME`, `--bootargs=...`, `--exclude-netdev=...`, `--net-mode=single|bond`, `--net-ifaces="eth0 eth1"`, `--net-addressing=dhcp|static`, `--ip-addr=...`, `--netmask=...`, `--gateway=...`, `--dns="..."`, `--bond-mode=4`, `--bond-miimon=100`, `--bond-lacp-rate=1`, `--bond-xmit-hash-policy=1`, `--tls-cert=/path/to/server.crt`, `--tls-key=/path/to/server.key`, `--ssh-curl-insecure=auto|true|false`, `--expert-password=...` (build input; hash stored), `--sedutil-fork=ChubbyAnt`, `--config=/path/to/file`. Run `./build.sh --help` for a short summary.
+Useful flags:
+- `--clean`: remove build artifacts and cache before building.
+- `--ssh`: include SSH unlock interface (`dropbear`) in the image.
+- `--keymap=NAME`: set Tiny Core console keymap (for example `fr-latin9`).
+- `--bootargs=...`: set kernel command line for the PBA boot entry.
+- `--exclude-netdev=...`: exclude interfaces from runtime network setup.
+- `--net-mode=single|bond`: choose single-interface mode or Linux bonding mode.
+- `--net-ifaces="eth0 eth1"`: explicit interface list to manage; empty means autodetect.
+- `--net-addressing=dhcp|static`: choose DHCP or static IPv4 runtime addressing.
+- `--ip-addr=...`: static IPv4 address when static mode is selected.
+- `--netmask=...`: static netmask when static mode is selected.
+- `--gateway=...`: default gateway for static mode.
+- `--dns="..."`: DNS server list (space-separated).
+- `--bond-mode=4`: Linux bonding mode value (default `4` / 802.3ad).
+- `--bond-miimon=100`: bond link monitor interval in milliseconds.
+- `--bond-lacp-rate=1`: LACP rate (`1` is fast).
+- `--bond-xmit-hash-policy=1`: bond transmit hash policy value.
+- `--tls-cert=/path/to/server.crt`: use custom TLS certificate.
+- `--tls-key=/path/to/server.key`: use custom TLS private key.
+- `--ssh-curl-insecure=auto|true|false`: control whether SSH helper uses `curl -k`.
+- `--expert-password=...`: set expert password input at build; runtime stores only hash.
+- `--sedutil-fork=ChubbyAnt`: switch sedutil source fork (`Drive-Trust-Alliance` default).
+- `--config=/path/to/file`: load build variables from an alternate config file.
 
 
 # sedunlocksrv-pba
