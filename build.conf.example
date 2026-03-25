@@ -4,22 +4,19 @@
 
 # --- Paths ---
 # CACHEDIR="cache"
-# TMPDIR="img.tmp"
+# BUILD_TMPDIR="img.tmp"
 
 # --- Image / Tiny Core fetch ---
-# GRUBSIZE=25
+# GRUBSIZE=32            # extra MB reserved for GRUB/EFI files; OPAL2 PBA max is typically 128MB
 # KEXEC_VER="2.0.28"
 # TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 # INPUTISO="TinyCorePure64-current.iso"
 
 # --- Linux command line baked into GRUB (PBA kernel) ---
-# BOOTARGS="libata.allow_tpm=1 net.ifnames=0 biosdevname=0"
-
-# --- Base TC extensions before SSH/keymap extras (space-separated .tcz names) ---
-# EXTENSIONS="jq.tcz"
+# BOOTARGS="libata.allow_tpm=1"
 
 # --- Build behavior ---
-# CLEAN_MODE=false   # true: rm -rf cache and img.tmp before building
+# CLEAN_MODE=false   # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
 # SSHBUILD=false     # true: same as ./build.sh --ssh
 # TLS_CERT_PATH=""   # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""    # optional custom TLS key copied to sedunlocksrv/server.key
@@ -40,8 +37,6 @@
 # BOND_MIIMON="100"         # link monitor interval in ms
 # BOND_LACP_RATE="1"        # 1 = fast LACPDU rate
 # BOND_XMIT_HASH_POLICY="1" # default transmit hash policy
-# SSH_CURL_INSECURE="true"  # runtime flag consumed by ssh_sed_unlock.sh
-# EXPERT_PASSWORD=""    # runtime uses only EXPERT_PASSWORD_HASH generated at build time
 
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
 # SEDUTIL_FORK=""           # or ChubbyAnt / chubbyant

@@ -26,7 +26,10 @@ BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
 LATEST_LINK="sedunlocksrv-pba-latest.img"
 
-GRUBSIZE=25
+# Extra MB reserved for bootloader/EFI partition content.
+# Final image size is filesystem size + GRUBSIZE + 2MB safety margin.
+# OPAL 2 PBA size limit is typically 128MB, so keep this conservative.
+GRUBSIZE=32
 KEXEC_VER="2.0.28"
 
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
@@ -694,10 +697,16 @@ repack_initrd_to_boot() {
 # Raw disk image
 # -----------------------------------------------------------------------------
 build_partitioned_disk_image() {
-    local fssize maj min part line counter
+    local fssize projected_size_mb maj min part line counter
     fssize=$(du -m --summarize --total "${BUILD_TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
+    projected_size_mb=$((fssize + GRUBSIZE + 2))
 
-    dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((fssize + GRUBSIZE + 2))
+    if [ "${projected_size_mb}" -gt 128 ]; then
+        echo "⚠ WARNING: projected PBA image size is ${projected_size_mb}MB (>128MB OPAL2 guideline)." >&2
+        echo "  Consider reducing initrd size or lowering GRUBSIZE to stay under 128MB." >&2
+    fi
+
+    dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count="${projected_size_mb}"
 
     LOOP_DEVICE_HDD=$(losetup --find --show --partscan "${OUTPUTIMG}")
 
