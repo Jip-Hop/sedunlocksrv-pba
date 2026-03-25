@@ -573,20 +573,36 @@ populate_initrd_application_tree() {
 }
 
 install_bonding_module_if_needed() {
-    local tcz_name mount_dir bonding_module dest_dir
+    local tcz_name mount_dir bonding_module dest_dir existing_module module_hits
     [ "${NET_MODE}" = "bond" ] || return 0
+
+    dest_dir="${BUILD_TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}/kernel/drivers/net/bonding"
+    existing_module="$(find "${BUILD_TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}" -type f -name 'bonding.ko*' | head -n1 || true)"
+    if [ -n "${existing_module}" ] && [ -f "${existing_module}" ]; then
+        echo "✅ bonding module already present: ${existing_module}"
+        return 0
+    fi
 
     tcz_name="ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
     cachetcfile "${tcz_name}" tcz tcz
 
     mount_dir="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
     mount -o loop "${CACHEDIR}/tcz/${tcz_name}" "${mount_dir}"
-    bonding_module="$(find "${mount_dir}" -path "*/kernel/drivers/net/bonding/bonding.ko*" | head -n1)"
-    if [ -z "${bonding_module}" ] || [ ! -f "${bonding_module}" ]; then
-        cleanup_mount_dir "${mount_dir}"
-        echo "❌ bonding.ko not found in ${tcz_name}"; exit 1
+    # Tiny Core packaging can vary slightly between releases. Search by filename
+    # first, then prefer the canonical kernel/drivers/net/bonding location.
+    bonding_module="$(find "${mount_dir}" -type f -path '*/kernel/drivers/net/bonding/bonding.ko*' | head -n1 || true)"
+    if [ -z "${bonding_module}" ]; then
+        bonding_module="$(find "${mount_dir}" -type f -name 'bonding.ko*' | head -n1 || true)"
     fi
-    dest_dir="${BUILD_TMPDIR}/core/lib/modules/${TC_KERNEL_VERSION}/kernel/drivers/net/bonding"
+    if [ -z "${bonding_module}" ] || [ ! -f "${bonding_module}" ]; then
+        module_hits="$(find "${mount_dir}/lib/modules" -type f | wc -l || true)"
+        cleanup_mount_dir "${mount_dir}"
+        echo "❌ bonding.ko not found in ${tcz_name}" >&2
+        echo "   looked under mounted extension: ${CACHEDIR}/tcz/${tcz_name}" >&2
+        echo "   module files present in extension: ${module_hits}" >&2
+        echo "   kernel version detected: ${TC_KERNEL_VERSION}" >&2
+        exit 1
+    fi
     mkdir -p "${dest_dir}"
     cp -f "${bonding_module}" "${dest_dir}/"
     cleanup_mount_dir "${mount_dir}"
