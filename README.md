@@ -33,6 +33,13 @@ Security and control surfaces were also expanded: `boot` and password change are
    - Use `Boot` for fast warm handoff via `kexec`
    - Use `Reboot` for a full hardware/firmware restart path
 
+## Operational Notes
+- `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
+- Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
+- Password change is intentionally target-based. In the web UI, select the drive(s) you want to update. In the console UI, enter the exact target device path when prompted.
+- SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
+- SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
+
 ---
 
 ## 🛠️ Build Host Dependencies
@@ -142,6 +149,8 @@ Useful flags:
 - `--expert-password=...`: set expert password input at build; runtime stores only hash.
 - `--sedutil-fork=ChubbyAnt`: switch sedutil source fork (`Drive-Trust-Alliance` default).
 - `--config=/path/to/file`: load build variables from an alternate config file.
+
+When building with `--ssh`, the generated Dropbear host keys are kept in the repository `ssh/` folder and reused in later builds. Keep those files if you want a stable SSH host fingerprint over time.
 
 
 # sedunlocksrv-pba
@@ -254,6 +263,8 @@ It uses port `2222` to avoid certificates' conflicts with booted computer and `t
 
 If you provide a custom trusted TLS certificate and key at build time with `--tls-cert` and `--tls-key` (or `TLS_CERT_PATH` / `TLS_KEY_PATH` in `build.conf`), the SSH client helper will default to verified HTTPS (`curl` without `-k`). For self-signed build-generated certificates it defaults to insecure verification bypass (`curl -k`). You can override that with `SSH_CURL_INSECURE=true|false`.
 
+The SSH host fingerprint should stay consistent across reboots. If it changes unexpectedly, first check whether the files `ssh/dropbear_ed25519_host_key`, `ssh/dropbear_ecdsa_host_key`, or `ssh/dropbear_rsa_host_key` were deleted or regenerated before the image was built.
+
 ## Excluding network device(s)
 
 By default, the PBA image auto-detects eligible network interfaces, configures them individually with DHCP, and lets the web server and SSH server listen on all configured interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
@@ -277,9 +288,15 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Flash the PBA to all the Self Encrypting Drives in your server
 - Use the same password for all the SEDs in your server (otherwise you need to enter multiple passwords during startup)
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
+- Test both `Boot` and `Reboot` on your actual hardware. Some systems behave well with `kexec`, while others still need a full firmware restart for NICs, storage, or other platform state.
+- If you plan to change SID passwords, check BIOS and TPM security settings ahead of time and verify that Block SID is not preventing the update.
 
 ## Troubleshooting
 To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
+
+- Web `Boot` and console `Boot` both use the same backend boot discovery logic, but the web flow is asynchronous. If the page shows `Booting...` for a while, wait for the machine to hand off before assuming it failed.
+- If `Boot` cannot find a kernel or initrd, inspect whether your system uses a split EFI plus LVM `/boot` or root layout. This project is designed to search those layouts, but real-world GRUB arrangements vary.
+- If password change reports that `Admin1` updated but `SID` did not, the drive may still unlock with the new password while firmware is blocking SID changes. Check Block SID settings before assuming the whole password update failed.
 
 ## Wishlist
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
