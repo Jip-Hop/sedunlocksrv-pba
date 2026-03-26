@@ -680,7 +680,8 @@ apply_keymap_file() {
 apply_ssh_bundle() {
     [ "$SSHBUILD" = true ] || return 0
 
-    if [[ ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
+    if [[ ! -f ./ssh/dropbear_ed25519_host_key || ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
+        dropbearkey -t ed25519 -f ./ssh/dropbear_ed25519_host_key
         dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
         dropbearkey -t rsa   -s 4096 -f ./ssh/dropbear_rsa_host_key
     fi

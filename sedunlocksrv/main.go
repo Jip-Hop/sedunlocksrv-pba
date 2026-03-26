@@ -741,7 +741,7 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 		adminOut, adminErr := runSedutil(20*time.Second, "--setAdmin1Pwd", current, newPw, d.Device)
 		sidOut, sidErr := runSedutil(20*time.Second, "--setSIDPassword", current, newPw, d.Device)
 
-		success := adminErr == nil
+		success := adminErr == nil && sidErr == nil
 		var detail, errMsg string
 		switch {
 		case adminErr == nil && sidErr == nil:
@@ -2166,6 +2166,7 @@ func activeMenu(fd int) {
 				break
 			}
 			fmt.Printf("\nRequirements: %s\n", passwordPolicySummary())
+			fmt.Println("BIOS note: if SID password changes fail, check firmware/TPM settings and disable Block SID for the next boot.")
 			devices := make([]string, 0, len(eligible))
 			for _, drive := range eligible {
 				devices = append(devices, drive.Device)
@@ -2316,11 +2317,15 @@ func startSSHService() {
 		"/usr/local/etc/dropbear/dropbear_ecdsa_host_key",
 		"/etc/dropbear/dropbear_ecdsa_host_key",
 	)
+	ed25519Key := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_ed25519_host_key",
+		"/etc/dropbear/dropbear_ed25519_host_key",
+	)
 	rsaKey := firstExistingPath(
 		"/usr/local/etc/dropbear/dropbear_rsa_host_key",
 		"/etc/dropbear/dropbear_rsa_host_key",
 	)
-	if ecdsaKey == "" && rsaKey == "" {
+	if ed25519Key == "" && ecdsaKey == "" && rsaKey == "" {
 		log.Println("[ssh] dropbear keys not present; SSH UI disabled")
 		return
 	}
@@ -2330,6 +2335,9 @@ func startSSHService() {
 		"-E",
 		"-F",
 		"-p", "2222",
+	}
+	if ed25519Key != "" {
+		args = append(args, "-r", ed25519Key)
 	}
 	if ecdsaKey != "" {
 		args = append(args, "-r", ecdsaKey)
