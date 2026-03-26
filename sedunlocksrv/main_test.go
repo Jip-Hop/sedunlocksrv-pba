@@ -266,3 +266,120 @@ func TestSynthesizeRootCmdline(t *testing.T) {
 		t.Fatalf("cmdline = %q, want %q", got, want)
 	}
 }
+
+func TestParseGrubConfigCatalogSkipsMemtest(t *testing.T) {
+	mountPoint := t.TempDir()
+	grubCfg := filepath.Join(mountPoint, "boot", "grub", "grub.cfg")
+	if err := os.MkdirAll(filepath.Dir(grubCfg), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", grubCfg, err)
+	}
+
+	content := "" +
+		"menuentry 'Memtest86+' {\n" +
+		"    linux /boot/memtest86+x64.efi console=ttyS0,115200\n" +
+		"}\n" +
+		"menuentry 'Proxmox VE GNU/Linux' {\n" +
+		"    linux /boot/vmlinuz-6.17.4-2-pve root=/dev/mapper/pve-root ro quiet\n" +
+		"    initrd /boot/initrd.img-6.17.4-2-pve\n" +
+		"}\n"
+	if err := os.WriteFile(grubCfg, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", grubCfg, err)
+	}
+
+	entries := parseGrubConfigCatalog(grubCfg, mountPoint)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].KernelBase != "vmlinuz-6.17.4-2-pve" {
+		t.Fatalf("kernel base = %q, want %q", entries[0].KernelBase, "vmlinuz-6.17.4-2-pve")
+	}
+}
+
+func TestParseGrubCfgFollowsConfigfileChain(t *testing.T) {
+	mountPoint := t.TempDir()
+	efiStub := filepath.Join(mountPoint, "EFI", "proxmox", "grub.cfg")
+	realGrub := filepath.Join(mountPoint, "boot", "grub", "grub.cfg")
+
+	for _, path := range []string{efiStub, realGrub} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", path, err)
+		}
+	}
+
+	stubContent := "" +
+		"search.fs_uuid abcd-1234 root lvmid/example\n" +
+		"set prefix=($root)/boot/grub\n" +
+		"configfile $prefix/grub.cfg\n"
+	if err := os.WriteFile(efiStub, []byte(stubContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", efiStub, err)
+	}
+
+	realContent := "" +
+		"menuentry 'Proxmox VE GNU/Linux' {\n" +
+		"    linux /boot/vmlinuz-6.17.4-2-pve root=/dev/mapper/pve-root ro quiet iommu=pt\n" +
+		"    initrd /boot/initrd.img-6.17.4-2-pve\n" +
+		"}\n"
+	if err := os.WriteFile(realGrub, []byte(realContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", realGrub, err)
+	}
+
+	got, ok, err := parseGrubCfg(efiStub, mountPoint, "vmlinuz-6.17.4-2-pve")
+	if err != nil {
+		t.Fatalf("parseGrubCfg() error: %v", err)
+	}
+	if !ok {
+		t.Fatal("parseGrubCfg() did not follow configfile chain")
+	}
+	want := "root=/dev/mapper/pve-root ro quiet iommu=pt"
+	if got != want {
+		t.Fatalf("cmdline = %q, want %q", got, want)
+	}
+}
+
+func TestEligiblePasswordChangeTargetsPrefersBootCandidates(t *testing.T) {
+	original := startupLockedSet()
+	bootStateMu.Lock()
+	startupLockedOpal = map[string]struct{}{
+		"/dev/nvme0": {},
+	}
+	bootStateMu.Unlock()
+	defer func() {
+		bootStateMu.Lock()
+		startupLockedOpal = original
+		bootStateMu.Unlock()
+	}()
+
+	drives := []DriveStatus{
+		{Device: "/dev/nvme0", Opal: true, Locked: false},
+		{Device: "/dev/sda", Opal: true, Locked: false},
+		{Device: "/dev/nvme1", Opal: false, Locked: false},
+	}
+
+	targets := eligiblePasswordChangeTargets(drives)
+	if len(targets) != 1 {
+		t.Fatalf("len(targets) = %d, want 1", len(targets))
+	}
+	if targets[0].Device != "/dev/nvme0" {
+		t.Fatalf("target device = %q, want %q", targets[0].Device, "/dev/nvme0")
+	}
+}
+
+func TestPasswordPolicySummaryIncludesEnabledRequirements(t *testing.T) {
+	original := passwordPolicy
+	passwordPolicy = PasswordPolicy{
+		MinLength:      14,
+		RequireUpper:   true,
+		RequireLower:   true,
+		RequireNumber:  false,
+		RequireSpecial: true,
+	}
+	defer func() {
+		passwordPolicy = original
+	}()
+
+	got := passwordPolicySummary()
+	want := "min 14 chars, uppercase, lowercase, special"
+	if got != want {
+		t.Fatalf("passwordPolicySummary() = %q, want %q", got, want)
+	}
+}

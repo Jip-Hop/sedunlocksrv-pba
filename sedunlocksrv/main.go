@@ -18,6 +18,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -63,11 +64,14 @@ type NetworkInterfaceStatus struct {
 }
 
 type StatusResponse struct {
-	Drives     []DriveStatus            `json:"drives"`
-	Interfaces []NetworkInterfaceStatus `json:"interfaces"`
-	BootReady  bool                     `json:"bootReady"`
-	BootDrives []string                 `json:"bootDrives,omitempty"`
-	Build      string                   `json:"build,omitempty"`
+	Drives            []DriveStatus            `json:"drives"`
+	Interfaces        []NetworkInterfaceStatus `json:"interfaces"`
+	BootReady         bool                     `json:"bootReady"`
+	BootDrives        []string                 `json:"bootDrives,omitempty"`
+	FailedAttempts    int                      `json:"failedAttempts"`
+	MaxAttempts       int                      `json:"maxAttempts"`
+	AttemptsRemaining int                      `json:"attemptsRemaining"`
+	Build             string                   `json:"build,omitempty"`
 }
 
 type DriveDiagnostics struct {
@@ -102,6 +106,7 @@ type PasswordChangeResult struct {
 	Device  string `json:"device"`
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 type PasswordChangeResponse struct {
@@ -414,13 +419,27 @@ func bootCandidateDrives(drives []DriveStatus) []string {
 
 func currentStatus() StatusResponse {
 	drives := scanDrives()
+	failed, max, remaining := unlockAttemptStatus()
 	return StatusResponse{
-		Drives:     drives,
-		Interfaces: scanNetworkInterfaces(),
-		BootReady:  len(bootCandidateDrives(drives)) > 0,
-		BootDrives: bootCandidateDrives(drives),
-		Build:      buildVersion,
+		Drives:            drives,
+		Interfaces:        scanNetworkInterfaces(),
+		BootReady:         len(bootCandidateDrives(drives)) > 0,
+		BootDrives:        bootCandidateDrives(drives),
+		FailedAttempts:    failed,
+		MaxAttempts:       max,
+		AttemptsRemaining: remaining,
+		Build:             buildVersion,
 	}
+}
+
+func unlockAttemptStatus() (failed, max, remaining int) {
+	mu.Lock()
+	defer mu.Unlock()
+	remaining = maxAttempts - failedAttempts
+	if remaining < 0 {
+		remaining = 0
+	}
+	return failedAttempts, maxAttempts, remaining
 }
 
 // ============================================================
@@ -530,6 +549,7 @@ func printConsoleStatus(status StatusResponse) {
 			fmt.Printf("%s %s  %s  %s\n", marker, d.Device, lockState, opalState)
 		}
 	}
+	fmt.Printf("\nUnlock attempts: %d/%d failed (%d remaining)\n", status.FailedAttempts, status.MaxAttempts, status.AttemptsRemaining)
 	fmt.Println("\nNetwork Interfaces:")
 	for _, iface := range status.Interfaces {
 		link := "no-link"
@@ -612,29 +632,153 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // PASSWORD CHANGE
 // ============================================================
 
-func changePassword(current, newPw string) []PasswordChangeResult {
-	var results []PasswordChangeResult
-	for _, d := range scanDrives() {
-		err1 := exec.Command("sedutil-cli", "--setsidpassword", current, newPw, d.Device).Run()
-		err2 := exec.Command("sedutil-cli", "--setadmin1password", current, newPw, d.Device).Run()
+func passwordPolicySummary() string {
+	parts := []string{fmt.Sprintf("min %d chars", passwordPolicy.MinLength)}
+	if passwordPolicy.RequireUpper {
+		parts = append(parts, "uppercase")
+	}
+	if passwordPolicy.RequireLower {
+		parts = append(parts, "lowercase")
+	}
+	if passwordPolicy.RequireNumber {
+		parts = append(parts, "number")
+	}
+	if passwordPolicy.RequireSpecial {
+		parts = append(parts, "special")
+	}
+	return strings.Join(parts, ", ")
+}
 
-		var errMsg string
+func eligiblePasswordChangeTargets(drives []DriveStatus) []DriveStatus {
+	startupLocked := startupLockedSet()
+	targets := make([]DriveStatus, 0)
+	for _, d := range drives {
+		if !d.Opal || d.Locked {
+			continue
+		}
+		if _, ok := startupLocked[d.Device]; ok {
+			targets = append(targets, d)
+		}
+	}
+	if len(targets) > 0 {
+		return targets
+	}
+	for _, d := range drives {
+		if d.Opal && !d.Locked {
+			targets = append(targets, d)
+		}
+	}
+	return targets
+}
+
+func selectPasswordChangeTargets(selected []string) ([]DriveStatus, error) {
+	eligible := eligiblePasswordChangeTargets(scanDrives())
+	if len(eligible) == 0 {
+		return nil, fmt.Errorf("no unlocked OPAL drives are eligible for password change")
+	}
+
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("select at least one target drive for password change")
+	}
+
+	eligibleByDevice := make(map[string]DriveStatus, len(eligible))
+	for _, drive := range eligible {
+		eligibleByDevice[drive.Device] = drive
+	}
+
+	seen := make(map[string]struct{}, len(selected))
+	targets := make([]DriveStatus, 0, len(selected))
+	for _, raw := range selected {
+		device := strings.TrimSpace(raw)
+		if device == "" {
+			continue
+		}
+		if _, ok := seen[device]; ok {
+			continue
+		}
+		drive, ok := eligibleByDevice[device]
+		if !ok {
+			return nil, fmt.Errorf("%s is not an unlocked OPAL drive eligible for password change", device)
+		}
+		seen[device] = struct{}{}
+		targets = append(targets, drive)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("select at least one target drive for password change")
+	}
+	return targets, nil
+}
+
+func trimSedutilOutput(out string) string {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return ""
+	}
+	out = strings.Join(strings.Fields(out), " ")
+	if len(out) > 220 {
+		return out[:217] + "..."
+	}
+	return out
+}
+
+func changePassword(current, newPw string, selected []string) ([]PasswordChangeResult, error) {
+	current = strings.TrimSpace(current)
+	newPw = strings.TrimSpace(newPw)
+	if current == "" {
+		return nil, fmt.Errorf("current password is required")
+	}
+	if newPw == "" {
+		return nil, fmt.Errorf("new password is required")
+	}
+
+	targets, err := selectPasswordChangeTargets(selected)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []PasswordChangeResult
+	for _, d := range targets {
+		adminOut, adminErr := runSedutil(20*time.Second, "--setAdmin1Pwd", current, newPw, d.Device)
+		sidOut, sidErr := runSedutil(20*time.Second, "--setSIDPassword", current, newPw, d.Device)
+
+		success := adminErr == nil
+		var detail, errMsg string
 		switch {
-		case err1 != nil && err2 != nil:
-			errMsg = "failed to update SID and Admin1 passwords"
-		case err1 != nil:
-			errMsg = "SID password update failed (drive may be in split state — Admin1 was updated)"
-		case err2 != nil:
-			errMsg = "Admin1 password update failed (drive may be in split state — SID was updated)"
+		case adminErr == nil && sidErr == nil:
+			detail = "updated Admin1 and SID passwords"
+		case adminErr == nil && sidErr != nil:
+			detail = "updated Admin1 password; SID update failed"
+			if extra := trimSedutilOutput(sidOut); extra != "" {
+				detail += ": " + extra
+			}
+		case adminErr != nil && sidErr == nil:
+			errMsg = "Admin1 password update failed; unlock will still require the old password"
+			if extra := trimSedutilOutput(adminOut); extra != "" {
+				errMsg += ": " + extra
+			}
+			detail = "SID password updated"
+		default:
+			errMsg = "failed to update Admin1 and SID passwords"
+			extras := make([]string, 0, 2)
+			if extra := trimSedutilOutput(adminOut); extra != "" {
+				extras = append(extras, "Admin1: "+extra)
+			}
+			if extra := trimSedutilOutput(sidOut); extra != "" {
+				extras = append(extras, "SID: "+extra)
+			}
+			if len(extras) > 0 {
+				errMsg += " (" + strings.Join(extras, " | ") + ")"
+			}
 		}
 
 		results = append(results, PasswordChangeResult{
 			Device:  d.Device,
-			Success: err1 == nil && err2 == nil,
+			Success: success,
 			Error:   errMsg,
+			Detail:  detail,
 		})
 	}
-	return results
+	return results, nil
 }
 
 // ============================================================
@@ -1078,6 +1222,11 @@ func kernelVersionSuffix(base string) string {
 	}
 }
 
+func isMemtestKernelBase(base string) bool {
+	base = strings.ToLower(strings.TrimSpace(base))
+	return strings.Contains(base, "memtest")
+}
+
 func initrdVersionSuffix(base string) string {
 	switch {
 	case strings.HasPrefix(base, "initrd.img-"):
@@ -1094,10 +1243,12 @@ func initrdVersionSuffix(base string) string {
 }
 
 func makeBootEntry(kernelRef string, initrdRefs []string, cmdline, source string) BootEntry {
+	kernelRef = strings.TrimSpace(kernelRef)
+	kernelBase := filepath.Base(kernelRef)
 	entry := BootEntry{
-		KernelRef:    strings.TrimSpace(kernelRef),
-		KernelBase:   filepath.Base(strings.TrimSpace(kernelRef)),
-		KernelSuffix: kernelVersionSuffix(filepath.Base(strings.TrimSpace(kernelRef))),
+		KernelRef:    kernelRef,
+		KernelBase:   kernelBase,
+		KernelSuffix: kernelVersionSuffix(kernelBase),
 		InitrdRefs:   append([]string(nil), initrdRefs...),
 		Cmdline:      strings.TrimSpace(cmdline),
 		Source:       source,
@@ -1141,12 +1292,119 @@ func parseLoaderEntryCatalog(files []string) []BootEntry {
 		if kernelRef == "" {
 			continue
 		}
+		if isMemtestKernelBase(filepath.Base(kernelRef)) {
+			continue
+		}
 		entries = append(entries, makeBootEntry(kernelRef, initrdRefs, cmdline, file))
 	}
 	return entries
 }
 
-func parseGrubConfigCatalog(grubPath string) []BootEntry {
+func trimGrubValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, `"'`)
+	return raw
+}
+
+func expandGrubVars(s string, vars map[string]string) string {
+	out := s
+	for i := 0; i < 4; i++ {
+		next := out
+		for key, value := range vars {
+			next = strings.ReplaceAll(next, "${"+key+"}", value)
+			next = strings.ReplaceAll(next, "$"+key, value)
+		}
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
+func resolveGrubConfigRef(mountPoint, ref string, vars map[string]string) string {
+	ref = expandGrubVars(trimGrubValue(ref), vars)
+	if ref == "" {
+		return ""
+	}
+	ref = strings.TrimPrefix(ref, "(")
+	if idx := strings.Index(ref, ")"); idx >= 0 {
+		ref = ref[idx+1:]
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if !strings.HasPrefix(ref, "/") {
+		ref = "/" + ref
+	}
+	path := filepath.Clean(filepath.Join(mountPoint, filepath.FromSlash(ref)))
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func grubConfigChain(grubPath, mountPoint string) []string {
+	visited := make(map[string]struct{})
+	var out []string
+
+	var walk func(path string)
+	walk = func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := visited[path]; ok {
+			return
+		}
+		visited[path] = struct{}{}
+		out = append(out, path)
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+
+		vars := map[string]string{
+			"prefix": filepath.ToSlash(strings.TrimPrefix(filepath.Dir(path), mountPoint)),
+			"root":   "",
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			t := strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(t, "set "):
+				assignment := strings.TrimSpace(strings.TrimPrefix(t, "set "))
+				key, value, ok := strings.Cut(assignment, "=")
+				if !ok {
+					continue
+				}
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				vars[key] = trimGrubValue(expandGrubVars(value, vars))
+			case strings.HasPrefix(t, "configfile "):
+				ref := strings.TrimSpace(strings.TrimPrefix(t, "configfile "))
+				if next := resolveGrubConfigRef(mountPoint, ref, vars); next != "" {
+					walk(next)
+				}
+			}
+		}
+	}
+
+	walk(grubPath)
+	return out
+}
+
+func parseGrubConfigCatalog(grubPath, mountPoint string) []BootEntry {
+	var entries []BootEntry
+	for _, path := range grubConfigChain(grubPath, mountPoint) {
+		entries = append(entries, parseSingleGrubConfigCatalog(path)...)
+	}
+	return entries
+}
+
+func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
 		return nil
@@ -1173,6 +1431,9 @@ func parseGrubConfigCatalog(grubPath string) []BootEntry {
 				initrdRefs = append(initrdRefs, splitInitrdLine(next)...)
 			}
 		}
+		if isMemtestKernelBase(filepath.Base(kernelRef)) {
+			continue
+		}
 		entries = append(entries, makeBootEntry(kernelRef, initrdRefs, cmdline, grubPath))
 	}
 	return entries
@@ -1182,7 +1443,7 @@ func collectBootCatalog(mountPoint string) []BootEntry {
 	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 	entries := parseLoaderEntryCatalog(loaderEntries)
 	for _, grubPath := range grubConfigs {
-		entries = append(entries, parseGrubConfigCatalog(grubPath)...)
+		entries = append(entries, parseGrubConfigCatalog(grubPath, mountPoint)...)
 	}
 	return entries
 }
@@ -1358,6 +1619,15 @@ func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool)
 }
 
 func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
+	for _, path := range grubConfigChain(grubPath, mountPoint) {
+		if kernel, initrd, cmdline, ok := findBootFromSingleGrubConfig(path, mountPoint); ok {
+			return kernel, initrd, cmdline, true
+		}
+	}
+	return "", "", "", false
+}
+
+func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
 		return "", "", "", false
@@ -1729,13 +1999,13 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			return "", false, fmt.Errorf("kernel command line not found in loader entries")
 		},
 		func() (string, bool, error) {
-			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), kernelBase)
+			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), mountPoint, kernelBase)
 		},
 		func() (string, bool, error) {
-			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"), kernelBase)
+			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"), mountPoint, kernelBase)
 		},
 		func() (string, bool, error) {
-			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), kernelBase)
+			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), mountPoint, kernelBase)
 		},
 		func() (string, bool, error) {
 			return parseKernelCmdlineFile(mountPoint)
@@ -1747,7 +2017,7 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 	for _, grubPath := range grubConfigs {
 		path := grubPath
 		candidates = append(candidates, func() (string, bool, error) {
-			return parseGrubCfg(path, kernelBase)
+			return parseGrubCfg(path, mountPoint, kernelBase)
 		})
 	}
 
@@ -1759,8 +2029,18 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 	return "", fmt.Errorf("unable to determine target kernel command line from %s", mountPoint)
 }
 
-// parseGrubCfg extracts the kernel command line from a grub.cfg file.
-func parseGrubCfg(grubPath, kernelBase string) (string, bool, error) {
+// parseGrubCfg extracts the kernel command line from a grub.cfg file and any
+// configfile targets reachable within the mounted filesystem.
+func parseGrubCfg(grubPath, mountPoint, kernelBase string) (string, bool, error) {
+	for _, path := range grubConfigChain(grubPath, mountPoint) {
+		if cmdline, found, err := parseSingleGrubCfg(path, kernelBase); err == nil && found {
+			return cmdline, true, nil
+		}
+	}
+	return "", false, fmt.Errorf("kernel command line not found in %s", grubPath)
+}
+
+func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
 		return "", false, err
@@ -1879,6 +2159,26 @@ func activeMenu(fd int) {
 			time.Sleep(2 * time.Second)
 
 		case "P":
+			eligible := eligiblePasswordChangeTargets(scanDrives())
+			if len(eligible) == 0 {
+				fmt.Println("\n❌ No unlocked OPAL drives are eligible for password change.")
+				time.Sleep(3 * time.Second)
+				break
+			}
+			fmt.Printf("\nRequirements: %s\n", passwordPolicySummary())
+			devices := make([]string, 0, len(eligible))
+			for _, drive := range eligible {
+				devices = append(devices, drive.Device)
+			}
+			fmt.Printf("Target device (%s): ", strings.Join(devices, ", "))
+			reader := bufio.NewReader(os.Stdin)
+			deviceLine, _ := reader.ReadString('\n')
+			deviceLine = strings.TrimSpace(deviceLine)
+			if deviceLine == "" {
+				fmt.Println("\n❌ target device is required")
+				time.Sleep(2 * time.Second)
+				break
+			}
 			fmt.Print("\nCurrent: ")
 			curr, _ := term.ReadPassword(fd)
 			fmt.Print("\nNew: ")
@@ -1896,7 +2196,33 @@ func activeMenu(fd int) {
 				time.Sleep(2 * time.Second)
 				break
 			}
-			changePassword(string(curr), string(newP))
+			results, err := changePassword(string(curr), string(newP), []string{deviceLine})
+			if err != nil {
+				fmt.Println("\n❌", err)
+				time.Sleep(3 * time.Second)
+				break
+			}
+			fmt.Println()
+			anySuccess := false
+			for _, result := range results {
+				if result.Success {
+					anySuccess = true
+					fmt.Printf("✅ %s: %s\n", result.Device, result.Detail)
+					continue
+				}
+				msg := result.Error
+				if msg == "" {
+					msg = "password change failed"
+				}
+				if result.Detail != "" {
+					msg += " (" + result.Detail + ")"
+				}
+				fmt.Printf("❌ %s: %s\n", result.Device, msg)
+			}
+			if !anySuccess {
+				fmt.Println("❌ No drive accepted the new unlock password.")
+			}
+			time.Sleep(4 * time.Second)
 
 		case "R":
 			exec.Command("reboot", "-nf").Run()
@@ -2129,8 +2455,9 @@ func main() {
 			return
 		}
 		var req struct {
-			CurrentPassword string `json:"currentPassword"`
-			NewPassword     string `json:"newPassword"`
+			CurrentPassword string   `json:"currentPassword"`
+			NewPassword     string   `json:"newPassword"`
+			Devices         []string `json:"devices"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -2140,8 +2467,13 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		results, err := changePassword(req.CurrentPassword, req.NewPassword, req.Devices)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		jsonResponse(w, http.StatusOK, PasswordChangeResponse{
-			Results: changePassword(req.CurrentPassword, req.NewPassword),
+			Results: results,
 		})
 	})
 
@@ -2170,6 +2502,16 @@ func main() {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]string{"token": token})
+	})
+
+	mux.HandleFunc("/expert/status", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]bool{
+			"configured":    expertPasswordHash != "",
+			"authenticated": validExpertToken(r.Header.Get("X-Expert-Token")),
+		})
 	})
 
 	mux.HandleFunc("/expert/revert-tper", func(w http.ResponseWriter, r *http.Request) {

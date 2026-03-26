@@ -249,9 +249,6 @@ clean_workspace_artifacts() {
 
     # Generated TLS and app binary
     rm -f sedunlocksrv/server.crt sedunlocksrv/server.key sedunlocksrv/sedunlocksrv
-
-    # Generated SSH artifacts
-    rm -f ssh/dropbear_ecdsa_host_key ssh/dropbear_rsa_host_key
 }
 
 maybe_clean_workspace() {

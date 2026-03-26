@@ -34,6 +34,7 @@ button:hover {
 button:disabled {
     opacity: 0.5;
     transform: none;
+    cursor: default;
 }
 input, textarea {
     width: 100%;
@@ -128,12 +129,13 @@ textarea {
             <input type="checkbox" id="showUnlock"> Show Password
         </label>
         <div class="row">
-            <button class="primary-btn" onclick="unlock()">Unlock</button>
+            <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
             <button class="secondary-btn hidden" id="bootBtn" onclick="boot()">Boot</button>
         </div>
         <div id="unlockResult" class="small"></div>
         <div id="bootResult" class="small"></div>
         <div id="bootDebug" class="mono small"></div>
+        <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
         <div class="hint">
             Use <b>Boot</b> to kexec directly into the OS while keeping unlocked state.
             Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
@@ -141,13 +143,16 @@ textarea {
         </div>
     </div>
     <div class="row">
-        <button class="warm-btn" onclick="reboot()">Reboot</button>
-        <button class="secondary-btn" onclick="shutdown()">Shutdown</button>
+        <button class="warm-btn" id="rebootBtn" onclick="reboot()">Reboot</button>
+        <button class="secondary-btn" id="shutdownBtn" onclick="shutdown()">Shutdown</button>
     </div>
+    <div id="systemActionResult" class="small"></div>
 </div>
 
 <div id="changeTab" class="hidden">
     <div class="box">
+        <div class="small">Target drives</div>
+        <div id="changeTargets" class="small"></div>
         <input id="cur" type="password" placeholder="Current Password">
         <input id="new" type="password" placeholder="New Password">
         <input id="conf" type="password" placeholder="Confirm Password">
@@ -155,7 +160,8 @@ textarea {
             <input type="checkbox" id="showChange"> Show Passwords
         </label>
         <div id="policy" class="small"></div>
-        <button class="primary-btn" onclick="changePw()">Update Password</button>
+        <button class="primary-btn" id="changeBtn" onclick="changePw()">Update Password</button>
+        <div id="changeResult" class="small"></div>
         <div class="hint">You must unlock at least one drive first in this boot session before changing passwords.</div>
     </div>
 </div>
@@ -175,6 +181,7 @@ textarea {
     <div class="box danger">
         <div class="warn"><b>Expert Mode</b>: these operations can permanently destroy data or ownership metadata.</div>
         <div class="hint">Use this only when standard unlock paths cannot recover the drive.</div>
+        <div id="expertStatus" class="small">Expert actions are locked.</div>
         <input id="expertPw" type="password" placeholder="Expert Password">
         <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
     </div>
@@ -209,6 +216,45 @@ const $ = id => document.getElementById(id)
 let policy = {}
 let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
 let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
+let bootInFlight = false
+let systemActionInFlight = false
+
+function selectedChangeDevices() {
+    return Array.from(document.querySelectorAll("input[name='changeDevice']:checked")).map(el => el.value)
+}
+
+function renderChangeTargets(status) {
+    let drives = Array.isArray(status.drives) ? status.drives : []
+    let eligible = drives.filter(d => d.opal && !d.locked)
+    let previouslySelected = selectedChangeDevices()
+    let defaultSelected = previouslySelected.length ? previouslySelected : (status.bootDrives || [])
+    if (!eligible.length) {
+        $("changeTargets").innerHTML = "<div class='warn'>Unlock an OPAL drive first to choose password-change targets.</div>"
+        return
+    }
+    $("changeTargets").innerHTML = eligible.map(d => {
+        let checked = defaultSelected.includes(d.device) ? "checked" : ""
+        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${d.device}" ${checked}> ${d.device}</label>`
+    }).join("")
+}
+
+function setBootUiBusy(busy) {
+    bootInFlight = busy
+    $("bootBtn").disabled = busy
+    $("unlockBtn").disabled = busy
+    $("rebootBtn").disabled = busy
+    $("shutdownBtn").disabled = busy
+    $("bootTransition").classList.toggle("hidden", !busy)
+    $("bootBtn").innerText = busy ? "Booting..." : "Boot"
+}
+
+function setSystemActionBusy(action) {
+    systemActionInFlight = !!action
+    $("rebootBtn").disabled = !!action
+    $("shutdownBtn").disabled = !!action
+    $("rebootBtn").innerText = action === "reboot" ? "Rebooting..." : "Reboot"
+    $("shutdownBtn").innerText = action === "shutdown" ? "Shutting down..." : "Shutdown"
+}
 
 function showTab(name) {
     const tabs = {
@@ -223,6 +269,7 @@ function showTab(name) {
         $(tabs[k][1]).classList.toggle("active", visible)
     })
     if (name === "diag") loadDiagnostics()
+    if (name === "expert") syncExpertState()
 }
 
 function authHeaders() {
@@ -245,6 +292,7 @@ async function loadPolicy() {
 }
 
 async function refresh() {
+    if (bootInFlight) return
     let r = await fetch("/status")
     let j = await r.json()
 
@@ -273,10 +321,12 @@ async function refresh() {
     let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
     let bootSummary = j.bootReady ? `Boot-ready drives: ${(j.bootDrives || []).join(", ") || "yes"}` : "Boot-ready drives: none yet"
-    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary}`
+    let attemptsSummary = `Failed unlock attempts: ${j.failedAttempts || 0}/${j.maxAttempts || 0} (${j.attemptsRemaining || 0} remaining)`
+    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary} | ${attemptsSummary}`
     $("buildInfo").innerText = j.build ? `Build: ${j.build}` : ""
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     $("bootBtn").classList.toggle("hidden", !j.bootReady)
+    renderChangeTargets(j)
 }
 
 async function postJSON(url, payload, headers) {
@@ -295,15 +345,12 @@ async function postJSON(url, payload, headers) {
 }
 
 async function postWithFeedback(url) {
-    try {
-        return await postJSON(url, {}, authHeaders())
-    } catch (err) {
-        alert(err.message || "Request failed")
-        return {}
-    }
+    return postJSON(url, {}, authHeaders())
 }
 
 async function unlock() {
+    if ($("unlockBtn").disabled) return
+    $("unlockBtn").disabled = true
     try {
         let j = await postJSON("/unlock", {password: $("pw").value})
         if (j.token) {
@@ -328,22 +375,46 @@ async function unlock() {
         alert(err.message || "Unlock failed")
     }
     $("pw").value = ""
+    $("unlockBtn").disabled = false
     refresh()
 }
 
 async function changePw() {
+    if ($("changeBtn").disabled) return
     let cur = $("cur").value
     let nw = $("new").value
     let cf = $("conf").value
+    let devices = selectedChangeDevices()
     if (nw !== cf) {
         alert("Password mismatch")
         return
     }
+    if (!devices.length) {
+        alert("Select at least one target drive.")
+        return
+    }
+    $("changeBtn").disabled = true
+    $("changeResult").innerText = "Applying password update..."
     try {
-        await postJSON("/change-password", {currentPassword: cur, newPassword: nw}, authHeaders())
-        alert("Password updated")
+        let j = await postJSON("/change-password", {currentPassword: cur, newPassword: nw, devices}, authHeaders())
+        let results = Array.isArray(j.results) ? j.results : []
+        let ok = results.filter(r => r.success)
+        let bad = results.filter(r => !r.success)
+        let lines = []
+        ok.forEach(r => lines.push(`${r.device}: ${r.detail || "password updated"}`))
+        bad.forEach(r => lines.push(`${r.device}: ${r.error || "password change failed"}`))
+        $("changeResult").innerText = lines.join(" | ") || "No eligible OPAL drives reported."
+        if (!ok.length) {
+            alert("Password change did not update any unlockable drive.")
+        }
     } catch (err) {
+        $("changeResult").innerText = err.message || "Password change failed"
         alert(err.message || "Password change failed")
+    } finally {
+        $("changeBtn").disabled = false
+        $("cur").value = ""
+        $("new").value = ""
+        $("conf").value = ""
     }
 }
 
@@ -378,10 +449,40 @@ async function expertLogin() {
         expertToken = j.token
         sessionStorage.setItem("sedunlocksrvExpertToken", expertToken)
         $("expertActions").classList.remove("hidden")
+        $("expertStatus").innerText = "Expert actions unlocked for this session."
         $("expertPw").value = ""
         appendExpertOutput("Expert mode authenticated.")
+        syncExpertState()
     } catch (err) {
         alert(err.message || "Expert authentication failed")
+    }
+}
+
+async function syncExpertState() {
+    try {
+        let r = await fetch("/expert/status", {headers: expertHeaders()})
+        let j = await r.json()
+        let configured = !!j.configured
+        let authenticated = !!j.authenticated
+        if (!configured) {
+            $("expertStatus").innerText = "Expert mode is not configured on this image."
+            $("expertActions").classList.add("hidden")
+            expertToken = ""
+            sessionStorage.removeItem("sedunlocksrvExpertToken")
+            return
+        }
+        if (!authenticated) {
+            $("expertStatus").innerText = "Expert actions are locked."
+            $("expertActions").classList.add("hidden")
+            expertToken = ""
+            sessionStorage.removeItem("sedunlocksrvExpertToken")
+            return
+        }
+        $("expertStatus").innerText = "Expert actions unlocked for this session."
+        $("expertActions").classList.remove("hidden")
+    } catch (err) {
+        $("expertStatus").innerText = "Unable to verify expert session state."
+        $("expertActions").classList.add("hidden")
     }
 }
 
@@ -420,35 +521,74 @@ async function expertPsidRevert() {
 }
 
 async function boot() {
+    if (bootInFlight) return
     $("bootResult").innerText = ""
     $("bootDebug").innerText = ""
+    $("bootResult").innerText = "Preparing OS handoff..."
+    setBootUiBusy(true)
     try {
         let j = await postJSON("/boot", {}, authHeaders())
-        $("bootResult").innerText = "Boot command accepted."
+        $("bootResult").innerText = "Boot command accepted. Starting OS handoff..."
         if (Array.isArray(j.debug) && j.debug.length) {
             $("bootDebug").innerText = j.debug.join("\n")
         }
     } catch (err) {
+        setBootUiBusy(false)
         $("bootResult").innerText = err.message || "Boot failed"
         let debug = err.details && Array.isArray(err.details.debug) ? err.details.debug : []
         $("bootDebug").innerText = debug.length ? debug.join("\n") : ""
     }
 }
-function reboot() { postWithFeedback("/reboot") }
-function shutdown() { postWithFeedback("/poweroff") }
+async function reboot() {
+    if (systemActionInFlight || bootInFlight) return
+    $("systemActionResult").innerText = "Requesting reboot..."
+    setSystemActionBusy("reboot")
+    try {
+        let j = await postWithFeedback("/reboot")
+        $("systemActionResult").innerText = j.status ? `Reboot requested: ${j.status}.` : "Reboot requested."
+    } catch (err) {
+        $("systemActionResult").innerText = err.message || "Reboot request failed"
+        setSystemActionBusy("")
+    }
+}
+async function shutdown() {
+    if (systemActionInFlight || bootInFlight) return
+    $("systemActionResult").innerText = "Requesting shutdown..."
+    setSystemActionBusy("shutdown")
+    try {
+        let j = await postWithFeedback("/poweroff")
+        $("systemActionResult").innerText = j.status ? `Shutdown requested: ${j.status}.` : "Shutdown requested."
+    } catch (err) {
+        $("systemActionResult").innerText = err.message || "Shutdown request failed"
+        setSystemActionBusy("")
+    }
+}
 
 $("showUnlock").onchange = e => {
     $("pw").type = e.target.checked ? "text" : "password"
 }
+$("pw").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+        e.preventDefault()
+        unlock()
+    }
+})
 $("showChange").onchange = e => {
     ["cur", "new", "conf"].forEach(id => {
         $(id).type = e.target.checked ? "text" : "password"
     })
 }
-
-if (expertToken) $("expertActions").classList.remove("hidden")
+;["cur", "new", "conf"].forEach(id => {
+    $(id).addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+            e.preventDefault()
+            changePw()
+        }
+    })
+})
 loadPolicy()
 refresh()
+syncExpertState()
 setInterval(refresh, 5000)
 </script>
 
