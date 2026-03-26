@@ -478,6 +478,15 @@ func startBootLaunch() error {
 	return nil
 }
 
+func recordBootLaunchDebug(line string) {
+	bootStateMu.Lock()
+	defer bootStateMu.Unlock()
+	if !bootLaunchState.InProgress {
+		return
+	}
+	bootLaunchState.Debug = append(bootLaunchState.Debug, line)
+}
+
 func startupLockedSet() map[string]struct{} {
 	bootStateMu.RLock()
 	defer bootStateMu.RUnlock()
@@ -1811,7 +1820,9 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 }
 
 func appendBootDebug(debug *[]string, format string, args ...interface{}) {
-	*debug = append(*debug, fmt.Sprintf(format, args...))
+	line := fmt.Sprintf(format, args...)
+	*debug = append(*debug, line)
+	recordBootLaunchDebug(line)
 }
 
 // BootSystem mounts the first unlocked drive's bootable partition, loads the

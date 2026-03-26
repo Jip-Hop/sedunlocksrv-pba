@@ -268,6 +268,9 @@ function stopBootStatusPolling() {
 async function checkBootStatus() {
     let r = await fetch("/boot-status")
     let j = await r.json()
+    if (Array.isArray(j.debug) && j.debug.length) {
+        $("bootDebug").innerText = j.debug.join("\n")
+    }
     if (j.inProgress) {
         $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
         return
