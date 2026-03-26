@@ -95,6 +95,13 @@ textarea {
 .warm-btn      { background: #e37933; border-color: #e37933; }
 .danger-btn    { background: #9e2a2b; border-color: #9e2a2b; }
 .mono { white-space: pre-wrap; word-break: break-word; }
+.doc-image {
+    width: 100%;
+    max-width: 720px;
+    display: block;
+    margin: 10px auto 0;
+    border: 1px solid #444;
+}
 @media (max-width: 700px) {
     .tab button { flex: 1 1 100%; }
 }
@@ -163,6 +170,8 @@ textarea {
         <button class="primary-btn" id="changeBtn" onclick="changePw()">Update Password</button>
         <div id="changeResult" class="small"></div>
         <div class="hint">This updates Admin1 and SID on the selected drive(s). If SID password changes fail, check firmware or TPM settings and disable Block SID for the next boot. You must unlock at least one drive first in this boot session before changing passwords.</div>
+        <div class="hint">Example BIOS path: TPM or security settings with <b>Disable Block SID</b> set to <b>Disabled</b>, then accept the one-time change on the next boot.</div>
+        <img class="doc-image" src="/block-sid-bios.png" alt="Example BIOS setting showing Disable Block SID set to Disabled">
     </div>
 </div>
 
@@ -218,6 +227,7 @@ let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
 let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
 let bootInFlight = false
 let systemActionInFlight = false
+let bootStatusPoller = null
 
 function selectedChangeDevices() {
     return Array.from(document.querySelectorAll("input[name='changeDevice']:checked")).map(el => el.value)
@@ -246,6 +256,36 @@ function setBootUiBusy(busy) {
     $("shutdownBtn").disabled = busy
     $("bootTransition").classList.toggle("hidden", !busy)
     $("bootBtn").innerText = busy ? "Booting..." : "Boot"
+}
+
+function stopBootStatusPolling() {
+    if (bootStatusPoller) {
+        clearInterval(bootStatusPoller)
+        bootStatusPoller = null
+    }
+}
+
+async function checkBootStatus() {
+    let r = await fetch("/boot-status")
+    let j = await r.json()
+    if (j.inProgress) {
+        $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
+        return
+    }
+    if (j.accepted) {
+        if (j.result && Array.isArray(j.result.debug) && j.result.debug.length) {
+            $("bootDebug").innerText = j.result.debug.join("\n")
+        }
+        $("bootResult").innerText = "Boot command accepted. Starting OS handoff..."
+        stopBootStatusPolling()
+        return
+    }
+    if (j.error) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = j.error
+        $("bootDebug").innerText = Array.isArray(j.debug) && j.debug.length ? j.debug.join("\n") : ""
+        stopBootStatusPolling()
+    }
 }
 
 function setSystemActionBusy(action) {
@@ -527,11 +567,17 @@ async function boot() {
     $("bootResult").innerText = "Preparing OS handoff..."
     setBootUiBusy(true)
     try {
-        let j = await postJSON("/boot", {}, authHeaders())
-        $("bootResult").innerText = "Boot command accepted. Starting OS handoff..."
-        if (Array.isArray(j.debug) && j.debug.length) {
-            $("bootDebug").innerText = j.debug.join("\n")
-        }
+        await postJSON("/boot", {}, authHeaders())
+        $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
+        stopBootStatusPolling()
+        bootStatusPoller = setInterval(() => {
+            checkBootStatus().catch(err => {
+                setBootUiBusy(false)
+                $("bootResult").innerText = err.message || "Boot failed"
+                stopBootStatusPolling()
+            })
+        }, 750)
+        checkBootStatus()
     } catch (err) {
         setBootUiBusy(false)
         $("bootResult").innerText = err.message || "Boot failed"

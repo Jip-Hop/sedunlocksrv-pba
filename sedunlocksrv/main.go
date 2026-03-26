@@ -123,6 +123,14 @@ type BootResult struct {
 	Debug         []string      `json:"debug,omitempty"`
 }
 
+type BootLaunchStatus struct {
+	InProgress bool        `json:"inProgress"`
+	Accepted   bool        `json:"accepted"`
+	Error      string      `json:"error,omitempty"`
+	Debug      []string    `json:"debug,omitempty"`
+	Result     *BootResult `json:"result,omitempty"`
+}
+
 type BootAttemptError struct {
 	Message string
 	Debug   []string
@@ -169,6 +177,7 @@ var (
 	expertSessionTok  string
 	bootStateMu       sync.RWMutex
 	startupLockedOpal = map[string]struct{}{}
+	bootLaunchState   BootLaunchStatus
 
 	passwordPolicy     = loadPolicy()
 	expertPasswordHash = loadExpertPasswordHash()
@@ -390,6 +399,83 @@ func initializeBootState() {
 	bootStateMu.Lock()
 	startupLockedOpal = locked
 	bootStateMu.Unlock()
+}
+
+func currentBootLaunchStatus() BootLaunchStatus {
+	bootStateMu.RLock()
+	defer bootStateMu.RUnlock()
+	status := bootLaunchState
+	if status.Debug != nil {
+		status.Debug = append([]string(nil), status.Debug...)
+	}
+	if status.Result != nil {
+		resultCopy := *status.Result
+		if resultCopy.Debug != nil {
+			resultCopy.Debug = append([]string(nil), resultCopy.Debug...)
+		}
+		if resultCopy.Drives != nil {
+			resultCopy.Drives = append([]DriveStatus(nil), resultCopy.Drives...)
+		}
+		status.Result = &resultCopy
+	}
+	return status
+}
+
+func resetBootLaunchStateLocked() {
+	bootLaunchState = BootLaunchStatus{}
+}
+
+func beginBootLaunch() error {
+	bootStateMu.Lock()
+	defer bootStateMu.Unlock()
+	if bootLaunchState.InProgress {
+		return fmt.Errorf("boot is already in progress")
+	}
+	resetBootLaunchStateLocked()
+	bootLaunchState.InProgress = true
+	return nil
+}
+
+func finishBootLaunch(result *BootResult, err error) {
+	bootStateMu.Lock()
+	defer bootStateMu.Unlock()
+	bootLaunchState.InProgress = false
+	if err != nil {
+		bootLaunchState.Accepted = false
+		bootLaunchState.Result = nil
+		if bootErr, ok := err.(BootAttemptError); ok {
+			bootLaunchState.Error = bootErr.Message
+			bootLaunchState.Debug = append([]string(nil), bootErr.Debug...)
+			return
+		}
+		bootLaunchState.Error = err.Error()
+		bootLaunchState.Debug = nil
+		return
+	}
+	bootLaunchState.Accepted = true
+	bootLaunchState.Error = ""
+	bootLaunchState.Debug = nil
+	if result != nil {
+		resultCopy := *result
+		if resultCopy.Debug != nil {
+			resultCopy.Debug = append([]string(nil), resultCopy.Debug...)
+		}
+		if resultCopy.Drives != nil {
+			resultCopy.Drives = append([]DriveStatus(nil), resultCopy.Drives...)
+		}
+		bootLaunchState.Result = &resultCopy
+	}
+}
+
+func startBootLaunch() error {
+	if err := beginBootLaunch(); err != nil {
+		return err
+	}
+	go func() {
+		result, err := BootSystem()
+		finishBootLaunch(result, err)
+	}()
+	return nil
 }
 
 func startupLockedSet() map[string]struct{} {
@@ -2587,19 +2673,18 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		res, err := BootSystem()
-		if err != nil {
-			if bootErr, ok := err.(BootAttemptError); ok {
-				jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-					"error": bootErr.Message,
-					"debug": bootErr.Debug,
-				})
-				return
-			}
-			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if err := startBootLaunch(); err != nil {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		jsonResponse(w, http.StatusOK, res)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "boot requested"})
+	})
+
+	mux.HandleFunc("/boot-status", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		jsonResponse(w, http.StatusOK, currentBootLaunchStatus())
 	})
 
 	mux.HandleFunc("/reboot", makeSystemActionHandler("rebooting", "reboot", "-nf"))
