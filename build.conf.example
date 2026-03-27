@@ -39,5 +39,13 @@
 # BOND_LACP_RATE="1"            # 1 = fast LACPDU rate
 # BOND_XMIT_HASH_POLICY="1"     # default transmit hash policy
 
+# --- Password Policy (applies to web UI and console password change) ---
+# PASSWORD_COMPLEXITY_ON="true" # true/false to enable/disable password complexity enforcement
+# MIN_PASSWORD_LENGTH="12"      # minimum password length (when complexity is on)
+# REQUIRE_UPPER="true"          # require uppercase letters (A-Z)
+# REQUIRE_LOWER="true"          # require lowercase letters (a-z)
+# REQUIRE_NUMBER="true"         # require numeric digits (0-9)
+# REQUIRE_SPECIAL="true"        # require special characters
+
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
 # SEDUTIL_FORK=""               # or ChubbyAnt / chubbyant

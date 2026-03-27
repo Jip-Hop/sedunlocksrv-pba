@@ -496,3 +496,149 @@ func TestListDeviceNodesEmptyOnMissingDevice(t *testing.T) {
 		t.Fatalf("listDeviceNodes() should fail on nonexistent device, got err=nil")
 	}
 }
+
+// ============================================================
+// PASSWORD COMPLEXITY POLICY TESTS
+// ============================================================
+
+func TestPasswordPolicyComplexityDisabled(t *testing.T) {
+	// Save original values
+	original := passwordPolicy
+	originalEnv := os.Getenv("PASSWORD_COMPLEXITY_ON")
+	defer func() {
+		passwordPolicy = original
+		if originalEnv != "" {
+			os.Setenv("PASSWORD_COMPLEXITY_ON", originalEnv)
+		} else {
+			os.Unsetenv("PASSWORD_COMPLEXITY_ON")
+		}
+	}()
+
+	// Test with complexity OFF
+	os.Setenv("PASSWORD_COMPLEXITY_ON", "false")
+	os.Unsetenv("MIN_PASSWORD_LENGTH")
+	os.Unsetenv("REQUIRE_UPPER")
+	os.Unsetenv("REQUIRE_LOWER")
+	os.Unsetenv("REQUIRE_NUMBER")
+	os.Unsetenv("REQUIRE_SPECIAL")
+
+	policy := loadPolicy()
+	if policy.MinLength != 0 {
+		t.Fatalf("MinLength = %d, want 0 (complexity disabled)", policy.MinLength)
+	}
+	if policy.RequireUpper || policy.RequireLower || policy.RequireNumber || policy.RequireSpecial {
+		t.Fatal("Password requirements should all be false when complexity is disabled")
+	}
+
+	// Verify summary shows "no complexity requirements"
+	passwordPolicy = policy
+	summary := passwordPolicySummary()
+	if summary != "no complexity requirements" {
+		t.Fatalf("summary = %q, want %q", summary, "no complexity requirements")
+	}
+
+	// Simple password should pass validation when complexity is off
+	if err := validatePassword("x"); err != nil {
+		t.Fatalf("Simple password failed validation when complexity should be off: %v", err)
+	}
+}
+
+func TestPasswordPolicyComplexityEnabledWithDefaults(t *testing.T) {
+	original := passwordPolicy
+	defer func() {
+		passwordPolicy = original
+	}()
+
+	// Clear env vars to use defaults
+	os.Unsetenv("PASSWORD_COMPLEXITY_ON")
+	os.Unsetenv("MIN_PASSWORD_LENGTH")
+	os.Unsetenv("REQUIRE_UPPER")
+	os.Unsetenv("REQUIRE_LOWER")
+	os.Unsetenv("REQUIRE_NUMBER")
+	os.Unsetenv("REQUIRE_SPECIAL")
+
+	policy := loadPolicy()
+	if policy.MinLength != 12 {
+		t.Fatalf("MinLength = %d, want 12 (default)", policy.MinLength)
+	}
+	if !policy.RequireUpper || !policy.RequireLower || !policy.RequireNumber || !policy.RequireSpecial {
+		t.Fatal("All requirements should be true by default")
+	}
+}
+
+func TestPasswordPolicyCustomRequirements(t *testing.T) {
+	original := passwordPolicy
+	defer func() {
+		passwordPolicy = original
+	}()
+
+	// Test with custom settings
+	os.Setenv("PASSWORD_COMPLEXITY_ON", "true")
+	os.Setenv("MIN_PASSWORD_LENGTH", "20")
+	os.Setenv("REQUIRE_UPPER", "true")
+	os.Setenv("REQUIRE_LOWER", "false")
+	os.Setenv("REQUIRE_NUMBER", "true")
+	os.Setenv("REQUIRE_SPECIAL", "false")
+
+	policy := loadPolicy()
+	if policy.MinLength != 20 {
+		t.Fatalf("MinLength = %d, want 20", policy.MinLength)
+	}
+	if !policy.RequireUpper || policy.RequireLower || !policy.RequireNumber || policy.RequireSpecial {
+		t.Fatal("Policy settings don't match configured values")
+	}
+
+	passwordPolicy = policy
+	summary := passwordPolicySummary()
+	if summary != "min 20 chars, uppercase, number" {
+		t.Fatalf("summary = %q, want %q", summary, "min 20 chars, uppercase, number")
+	}
+}
+
+func TestPasswordComplexityOffAcceptsSimplePassword(t *testing.T) {
+	original := passwordPolicy
+	defer func() {
+		passwordPolicy = original
+	}()
+
+	// Disable complexity
+	os.Setenv("PASSWORD_COMPLEXITY_ON", "off")
+	passwordPolicy = loadPolicy()
+
+	// Even a single character should be valid
+	if err := validatePassword("a"); err != nil {
+		t.Fatalf("Single character failed with complexity off: %v", err)
+	}
+}
+
+func TestPasswordComplexityBooleanVariationsSyntax(t *testing.T) {
+	original := passwordPolicy
+	defer func() {
+		passwordPolicy = original
+	}()
+
+	testCases := []struct {
+		envValue string
+		expected bool
+	}{
+		{"true", true},
+		{"false", false},
+		{"on", true},
+		{"off", false},
+		{"TRUE", true},
+		{"FALSE", false},
+		{"ON", true},
+		{"OFF", false},
+	}
+
+	for _, tc := range testCases {
+		os.Setenv("PASSWORD_COMPLEXITY_ON", tc.envValue)
+		policy := loadPolicy()
+
+		// Track if complexity is enabled by checking if MinLength > 0
+		isEnabled := policy.MinLength > 0 || policy.RequireUpper || policy.RequireLower || policy.RequireNumber || policy.RequireSpecial
+		if isEnabled != tc.expected {
+			t.Fatalf("envValue=%q: isEnabled=%v, want %v", tc.envValue, isEnabled, tc.expected)
+		}
+	}
+}

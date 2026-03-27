@@ -61,6 +61,13 @@ SSH_CURL_INSECURE="auto"
 EXPERT_PASSWORD=""
 EXPERT_PASSWORD_HASH=""
 
+PASSWORD_COMPLEXITY_ON="true"
+MIN_PASSWORD_LENGTH="12"
+REQUIRE_UPPER="true"
+REQUIRE_LOWER="true"
+REQUIRE_NUMBER="true"
+REQUIRE_SPECIAL="true"
+
 SEDUTIL_FORK=""
 SEDUTILURL=""
 SEDUTILPATHINTAR=""
@@ -152,6 +159,9 @@ print_usage() {
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
     echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
     echo "          [--expert-password=VALUE]  # if omitted, a random 16-digit password is generated" >&2
+    echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
+    echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
+    echo "          [--require-number=true|false] [--require-special=true|false]" >&2
     echo "          [--gateway=ADDR] [--dns=ADDRS] [--sedutil-fork=ChubbyAnt]" >&2
 }
 
@@ -185,6 +195,12 @@ parse_args() {
             --tls-key=*)             TLS_KEY_PATH="${arg#*=}" ;;
             --ssh-curl-insecure=*)   SSH_CURL_INSECURE="${arg#*=}" ;;
             --expert-password=*)     EXPERT_PASSWORD="${arg#*=}" ;;
+            --password-complexity=*)  PASSWORD_COMPLEXITY_ON="${arg#*=}" ;;
+            --min-password-length=*)  MIN_PASSWORD_LENGTH="${arg#*=}" ;;
+            --require-upper=*)        REQUIRE_UPPER="${arg#*=}" ;;
+            --require-lower=*)        REQUIRE_LOWER="${arg#*=}" ;;
+            --require-number=*)       REQUIRE_NUMBER="${arg#*=}" ;;
+            --require-special=*)      REQUIRE_SPECIAL="${arg#*=}" ;;
             --bond-mode=*)           BOND_MODE="${arg#*=}" ;;
             --bond-miimon=*)         BOND_MIIMON="${arg#*=}" ;;
             --bond-lacp-rate=*)      BOND_LACP_RATE="${arg#*=}" ;;
@@ -218,6 +234,22 @@ validate_network_settings() {
     require_numeric "BOND_MIIMON"           "${BOND_MIIMON}"
     require_numeric "BOND_LACP_RATE"        "${BOND_LACP_RATE}"
     require_numeric "BOND_XMIT_HASH_POLICY" "${BOND_XMIT_HASH_POLICY}"
+
+    # Password complexity validation
+    case "${PASSWORD_COMPLEXITY_ON}" in
+        on|off|true|false) ;;
+        *) echo "PASSWORD_COMPLEXITY_ON must be on/off or true/false (current: ${PASSWORD_COMPLEXITY_ON})" >&2; exit 1 ;;
+    esac
+
+    require_numeric "MIN_PASSWORD_LENGTH" "${MIN_PASSWORD_LENGTH}"
+
+    for policy_var in REQUIRE_UPPER REQUIRE_LOWER REQUIRE_NUMBER REQUIRE_SPECIAL; do
+        policy_val="$(eval echo \$${policy_var})"
+        case "${policy_val}" in
+            true|false) ;;
+            *) echo "${policy_var} must be true or false (current: ${policy_val})" >&2; exit 1 ;;
+        esac
+    done
 
     if { [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_KEY_PATH}" ]; } || \
        { [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; }; then
@@ -543,6 +575,12 @@ BOND_LACP_RATE=$(quote_sh_value "${BOND_LACP_RATE}")
 BOND_XMIT_HASH_POLICY=$(quote_sh_value "${BOND_XMIT_HASH_POLICY}")
 SSH_CURL_INSECURE=$(quote_sh_value "${effective_ssh_curl_insecure}")
 EXPERT_PASSWORD_HASH=$(quote_sh_value "${EXPERT_PASSWORD_HASH}")
+PASSWORD_COMPLEXITY_ON=$(quote_sh_value "${PASSWORD_COMPLEXITY_ON}")
+MIN_PASSWORD_LENGTH=$(quote_sh_value "${MIN_PASSWORD_LENGTH}")
+REQUIRE_UPPER=$(quote_sh_value "${REQUIRE_UPPER}")
+REQUIRE_LOWER=$(quote_sh_value "${REQUIRE_LOWER}")
+REQUIRE_NUMBER=$(quote_sh_value "${REQUIRE_NUMBER}")
+REQUIRE_SPECIAL=$(quote_sh_value "${REQUIRE_SPECIAL}")
 EOF
 }
 

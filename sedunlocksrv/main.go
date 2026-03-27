@@ -236,7 +236,7 @@ func loadPolicy() PasswordPolicy {
 		if v == "" {
 			return def
 		}
-		return v == "true"
+		return strings.ToLower(v) == "true" || strings.ToLower(v) == "on"
 	}
 	getInt := func(k string, def int) int {
 		if i, err := strconv.Atoi(os.Getenv(k)); err == nil {
@@ -244,6 +244,22 @@ func loadPolicy() PasswordPolicy {
 		}
 		return def
 	}
+	
+	// Check if password complexity is globally disabled
+	complexityEnabled := getBool("PASSWORD_COMPLEXITY_ON", true)
+	
+	// If complexity is disabled, return a policy with no requirements
+	if !complexityEnabled {
+		return PasswordPolicy{
+			MinLength:      0,
+			RequireUpper:   false,
+			RequireLower:   false,
+			RequireNumber:  false,
+			RequireSpecial: false,
+		}
+	}
+	
+	// Otherwise, apply the configured requirements
 	return PasswordPolicy{
 		MinLength:      getInt("MIN_PASSWORD_LENGTH", 12),
 		RequireUpper:   getBool("REQUIRE_UPPER", true),
@@ -746,7 +762,19 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // ============================================================
 
 func passwordPolicySummary() string {
-	parts := []string{fmt.Sprintf("min %d chars", passwordPolicy.MinLength)}
+	// If all complexity requirements are disabled, return a simple message
+	if passwordPolicy.MinLength == 0 &&
+		!passwordPolicy.RequireUpper &&
+		!passwordPolicy.RequireLower &&
+		!passwordPolicy.RequireNumber &&
+		!passwordPolicy.RequireSpecial {
+		return "no complexity requirements"
+	}
+
+	parts := make([]string, 0)
+	if passwordPolicy.MinLength > 0 {
+		parts = append(parts, fmt.Sprintf("min %d chars", passwordPolicy.MinLength))
+	}
 	if passwordPolicy.RequireUpper {
 		parts = append(parts, "uppercase")
 	}
@@ -758,6 +786,10 @@ func passwordPolicySummary() string {
 	}
 	if passwordPolicy.RequireSpecial {
 		parts = append(parts, "special")
+	}
+
+	if len(parts) == 0 {
+		return "no complexity requirements"
 	}
 	return strings.Join(parts, ", ")
 }

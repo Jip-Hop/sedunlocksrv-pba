@@ -51,9 +51,21 @@ BOND_MIIMON="100"
 BOND_LACP_RATE="1"
 BOND_XMIT_HASH_POLICY="1"
 EXPERT_PASSWORD_HASH=""
+PASSWORD_COMPLEXITY_ON="true"
+MIN_PASSWORD_LENGTH="12"
+REQUIRE_UPPER="true"
+REQUIRE_LOWER="true"
+REQUIRE_NUMBER="true"
+REQUIRE_SPECIAL="true"
 
 [ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
 export EXPERT_PASSWORD_HASH
+export PASSWORD_COMPLEXITY_ON
+export MIN_PASSWORD_LENGTH
+export REQUIRE_UPPER
+export REQUIRE_LOWER
+export REQUIRE_NUMBER
+export REQUIRE_SPECIAL
 
 normalize_bool() {
     case "$1" in
