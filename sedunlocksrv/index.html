@@ -279,7 +279,8 @@ async function checkBootStatus() {
         if (j.result && Array.isArray(j.result.debug) && j.result.debug.length) {
             $("bootDebug").innerText = j.result.debug.join("\n")
         }
-        $("bootResult").innerText = "Boot command accepted. Starting OS handoff..."
+        setBootUiBusy(false)
+        $("bootResult").innerText = "OS handoff initiated successfully. System will restart..."
         stopBootStatusPolling()
         return
     }
@@ -573,13 +574,21 @@ async function boot() {
         await postJSON("/boot", {}, authHeaders())
         $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
         stopBootStatusPolling()
+        // Poll for status with longer interval to avoid interfering with kexec
         bootStatusPoller = setInterval(() => {
             checkBootStatus().catch(err => {
-                setBootUiBusy(false)
-                $("bootResult").innerText = err.message || "Boot failed"
-                stopBootStatusPolling()
+                // Network errors expected after successful kexec
+                if (err.message.includes('fetch') || err.message.includes('network')) {
+                    setBootUiBusy(false)
+                    $("bootResult").innerText = "OS handoff in progress..."
+                    stopBootStatusPolling()
+                } else {
+                    setBootUiBusy(false)
+                    $("bootResult").innerText = err.message || "Boot failed"
+                    stopBootStatusPolling()
+                }
             })
-        }, 750)
+        }, 2000)  // Poll every 2 seconds instead of 750ms
         checkBootStatus()
     } catch (err) {
         setBootUiBusy(false)

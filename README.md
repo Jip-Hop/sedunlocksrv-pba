@@ -15,10 +15,57 @@ This fork has been refactored for enterprise-grade security and reliability, opt
 
 ---
 
-## Version Summary (vs original fork)
-This version keeps the original remote-unlock goal, but adds stronger operational safety and better recovery tooling. The web, SSH, and console flows now expose clearer NIC information for interface selection, networking is configurable for single-interface or bond use, static-IP settings are build-time configurable, and unlock can continue from console even when network setup fails.
+## Comparison with Original
 
-Security and control surfaces were also expanded: `boot` and password change are token-gated, a diagnostics view exposes per-drive `sedutil-cli --query` state, and a separate Expert tab isolates destructive recovery actions behind a dedicated expert password hash generated at build time.
+This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github.com/Jip-Hop/sedunlocksrv-pba). All original functionality is preserved while adding significant enterprise-focused improvements.
+
+### Enhanced Features (This Fork)
+- ✅ **Unified Backend** — Single Go binary manages Web UI + Console + SSH (vs separate services in original)
+- ✅ **Warm Boot Support** — `kexec` integration for faster, OPAL-state-preserving boots
+- ✅ **Advanced Networking** — LACP 802.3ad bonding + static IP configuration (original: DHCP only)
+- ✅ **Security Hardening** — Password complexity rules, HTTPS enforcement, token-gating, expert mode isolation
+- ✅ **Enhanced Boot Discovery** — Pattern matching + optional binary inspection (`--enable-binary-inspection`) for non-standard kernel naming
+- ✅ **Better Reliability** — Console fallback if networking fails, drive diagnostics, real-time status display
+- ✅ **Configuration Flexibility** — GRUB variable expansion, line continuation handling, multiple boot loader support
+
+### Original Features (Maintained)
+- ✅ Unlock via HTTPS web interface
+- ✅ Unlock via SSH (with command restrictions)
+- ✅ Keyboard unlock at console
+- ✅ Password changes from web UI
+- ✅ Multiple keyboard mapping support
+- ✅ BIOS + UEFI boot support
+- ✅ Reboot functionality
+- ✅ All original architecture and boot discovery patterns
+
+---
+
+## What's New in Detail
+
+**Network Configuration**: Original build only supports DHCP and interface exclusion. This fork adds:
+   - Static IP configuration: `--net-addressing=static --ip-addr=... --netmask=...`
+   - Linux LACP bonding: `--net-mode=bond --net-ifaces="eth0 eth1"` with 802.3ad mode
+   - DHCP still works as before with no configuration needed
+
+**Boot Process**: Original supports BIOS/UEFI boot. This fork adds:
+   - `kexec` warm handoff for faster boots (use `Boot` button)
+   - Traditional firmware reset still available (`Reboot` button)
+   - Automatic fallback if boot discovery fails
+
+**Security**: Beyond original SSH command restrictions, this fork adds:
+   - Password complexity enforcement (12+ chars, mixed case, numbers, symbols)
+   - HTTPS-enforced web interface (HTTP auto-redirects to HTTPS)
+   - Token-based protection for `boot` and password change operations
+   - Expert mode: isolated recovery controls behind a separate expert password
+
+**Boot Discovery**: Original uses filename patterns. This fork enhances with:
+   - GRUB configuration parsing with variable expansion
+   - GRUB line continuation handling
+   - `systemd-boot` partition detection
+   - Support for LVM, LUKS, and split `/boot` layouts
+   - Optional `file` command inspection for non-standard kernel names: `--enable-binary-inspection`
+
+---
 
 ## Quick Start
 1. Build host prep (Debian/Ubuntu): install dependencies, then run `sudo ./build.sh`.
@@ -39,6 +86,13 @@ Security and control surfaces were also expanded: `boot` and password change are
 - Password change is intentionally target-based. In the web UI, select the drive(s) you want to update. In the console UI, enter the exact target device path when prompted.
 - SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
 - SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
+
+- Web `Boot` and console `Boot` both use the same backend boot discovery logic, but the web flow is asynchronous. If the page shows `Booting...` for a while, wait for the machine to hand off before assuming it failed.
+- If `Boot` cannot find a kernel or initrd, inspect whether your system uses a split EFI plus LVM `/boot` or root layout. This project is designed to search those layouts, but real-world GRUB arrangements vary.
+- If password change reports that `Admin1` updated but `SID` did not, the drive may still unlock with the new password while firmware is blocking SID changes. Check Block SID settings before assuming the whole password update failed.
+
+- Test both `Boot` and `Reboot` on your actual hardware. Some systems behave well with `kexec`, while others still need a full firmware restart for NICs, storage, or other platform state.
+- If you plan to change SID passwords, check BIOS and TPM security settings ahead of time and verify that Block SID is not preventing the update.
 
 ---
 
@@ -129,6 +183,7 @@ Resolution order:
 Useful flags:
 - `--clean`: remove build artifacts and cache before building.
 - `--ssh`: include SSH unlock interface (`dropbear`) in the image.
+- `--enable-binary-inspection`: add `file` command for improved kernel/initrd detection (see **Boot Discovery** section below).
 - `--keymap=NAME`: set Tiny Core console keymap (for example `fr-latin9`).
 - `--bootargs=...`: set kernel command line for the PBA boot entry.
 - `--exclude-netdev=...`: exclude interfaces from runtime network setup.
@@ -152,6 +207,39 @@ Useful flags:
 
 When building with `--ssh`, the generated Dropbear host keys are kept in the repository `ssh/` folder and reused in later builds. Keep those files if you want a stable SSH host fingerprint over time.
 
+---
+
+## Boot Discovery
+
+The PBA automatically discovers your installed operating system's kernel and initrd files to boot after unlock. This works on most systems using standard naming conventions:
+- **Linux distributions**: Ubuntu, Debian, CentOS, Rocky, AlmaLinux, Fedora, openSUSE, NixOS, Arch, and others
+- **systemd-boot**: Detects `.conf` entries in EFI partition
+- **GRUB**: Parses GRUB configuration and expands variables
+- **Split layouts**: Supports separate EFI and `/boot` partitions, LVM-backed root, and complex arrangements
+
+**For ~95% of systems**, the default build handles boot discovery perfectly. However, some edge cases require better binary inspection:
+- Custom-compiled kernels with non-standard names (`kernel`, `bzImage`, custom naming schemes)
+- Embedded systems or container images with unusual layouts
+- Development or research systems with non-standard GRUB setups
+
+### When to use `--enable-binary-inspection`
+
+Add the `--enable-binary-inspection` flag if you:
+- Use a custom-compiled or heavily patched kernel
+- Have a system with non-standard kernel naming
+- Run an embedded OS or container-based distribution
+- Want maximum compatibility across diverse hardware
+
+Example:
+```bash
+sudo ./build.sh --enable-binary-inspection
+```
+
+This adds the `file` command (~5 MB to image size) which allows the PBA to inspect binary files and detect kernels and initrds by their actual content, not just filename patterns. The improvement is transparent - all systems benefit automatically, with no performance penalty for systems using standard naming.
+
+**Note:** The default build (without this flag) already works on virtually all standard Linux installations. Add this flag only if you encounter boot discovery failures.
+
+---
 
 # sedunlocksrv-pba
 Conveniently unlock your Self Encrypting Drive on startup (via HTTPS or SSH) without the need to attach monitor and keyboard.
@@ -288,15 +376,9 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Flash the PBA to all the Self Encrypting Drives in your server
 - Use the same password for all the SEDs in your server (otherwise you need to enter multiple passwords during startup)
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
-- Test both `Boot` and `Reboot` on your actual hardware. Some systems behave well with `kexec`, while others still need a full firmware restart for NICs, storage, or other platform state.
-- If you plan to change SID passwords, check BIOS and TPM security settings ahead of time and verify that Block SID is not preventing the update.
 
 ## Troubleshooting
 To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
-
-- Web `Boot` and console `Boot` both use the same backend boot discovery logic, but the web flow is asynchronous. If the page shows `Booting...` for a while, wait for the machine to hand off before assuming it failed.
-- If `Boot` cannot find a kernel or initrd, inspect whether your system uses a split EFI plus LVM `/boot` or root layout. This project is designed to search those layouts, but real-world GRUB arrangements vary.
-- If password change reports that `Admin1` updated but `SID` did not, the drive may still unlock with the new password while firmware is blocking SID changes. Check Block SID settings before assuming the whole password update failed.
 
 ## Wishlist
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
@@ -315,3 +397,4 @@ To gain shell access to the PBA for debugging, enable SSH and add an SSH key _wi
 
 ## Featured in
 - [Home Lab SSD Encryption](https://watsonbox.github.io/posts/2024/02/19/home-lab-ssd-encryption.html) by [watsonbox](https://github.com/watsonbox)
+

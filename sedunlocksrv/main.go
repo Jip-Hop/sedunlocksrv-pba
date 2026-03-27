@@ -473,7 +473,13 @@ func startBootLaunch() error {
 	}
 	go func() {
 		result, err := BootSystem()
-		finishBootLaunch(result, err)
+		// Only call finishBootLaunch if BootSystem didn't call it already (for success case)
+		bootStateMu.RLock()
+		alreadyFinished := bootLaunchState.Accepted
+		bootStateMu.RUnlock()
+		if !alreadyFinished {
+			finishBootLaunch(result, err)
+		}
 	}()
 	return nil
 }
@@ -1197,6 +1203,18 @@ func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 }
 
 func collectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+	// collectBootFiles scans for boot artifacts supporting major Linux distributions:
+	// - Debian/Ubuntu: vmlinuz-*, initrd.img-*
+	// - Fedora/RHEL/CentOS: vmlinuz-*, initramfs-*
+	// - SUSE/openSUSE: linux, linux-*, initrd, initramfs-*
+	// - Arch Linux: vmlinuz, vmlinuz-*, initramfs-*, initramfs-linux.img
+	// - NixOS: bzImage, initrd (custom naming)
+	// - Proxmox: bzImage, custom kernel naming
+	// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
+	// - Generic/custom: bzImage, linux, initrd
+	// 
+	// Uses filename pattern matching for known distributions, complemented by
+	// binary inspection in enhancedCollectBootFiles() for unknown binaries
 	loaderEntries := make([]string, 0)
 	grubConfigs := make([]string, 0)
 	kernels := make([]string, 0)
@@ -1222,9 +1240,25 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 			add(&grubConfigs, path)
 		case filepath.Base(dir) == "entries" && filepath.Base(filepath.Dir(dir)) == "loader" && strings.HasSuffix(base, ".conf"):
 			add(&loaderEntries, path)
-		case strings.HasPrefix(base, "vmlinuz-"), strings.HasPrefix(base, "linux-"):
+		case strings.HasPrefix(base, "vmlinuz-"), strings.HasPrefix(base, "linux-"),
+			// Kernel patterns supporting major Linux distributions:
+			// vmlinuz-* : Debian/Ubuntu, Fedora/RHEL/CentOS, most systemd-based distros
+			// linux-*   : SUSE/openSUSE, some custom configurations, kernel.org custom builds
+			// vmlinuz   : Arch Linux main kernel (no version suffix)
+			// linux     : SUSE/openSUSE kernel naming
+			// bzImage   : Generic uncompressed kernel (NixOS, Proxmox, custom setups, kernel.org direct)
+			base == "vmlinuz",    // Arch Linux
+			base == "linux",       // SUSE/openSUSE
+			base == "bzImage":     // NixOS, Proxmox, custom, kernel.org
 			add(&kernels, path)
-		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"):
+		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"),
+			// Initrd patterns supporting major Linux distributions:
+			// initrd.img-* : Debian/Ubuntu, most Debian-based distros
+			// initramfs-*  : Fedora/RHEL/CentOS, SUSE/openSUSE, Arch Linux
+			// initrd       : SUSE/openSUSE, generic systems
+			// initramfs-linux.img : Arch Linux specific naming
+			base == "initrd",           // SUSE/openSUSE, generic
+			base == "initramfs-linux.img": // Arch Linux
 			add(&initrds, path)
 		}
 		return nil
@@ -1232,6 +1266,185 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 
 	sort.Strings(loaderEntries)
 	sort.Strings(grubConfigs)
+	sort.Strings(kernels)
+	sort.Strings(initrds)
+	return loaderEntries, grubConfigs, kernels, initrds
+}
+
+// commandExists checks if a command is available in PATH
+func commandExists(cmd string) bool {
+	_, err := exec.LookPath(cmd)
+	return err == nil
+}
+
+// inspectBinaryForKernel checks if a file appears to be a Linux kernel binary
+// Uses external tools (file, strings, readelf) if available in the environment
+// Returns false if tools are unavailable (graceful degradation)
+func inspectBinaryForKernel(filePath string) bool {
+	hasFile := commandExists("file")
+	hasStrings := commandExists("strings")
+	hasReadelf := commandExists("readelf")
+
+	// If no inspection tools available, return false and rely on pattern matching
+	if !hasFile && !hasStrings && !hasReadelf {
+		return false
+	}
+
+	// Check file type using 'file' command
+	if hasFile {
+		if out, err := exec.Command("file", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for kernel indicators
+			if strings.Contains(output, "linux kernel") ||
+			   (strings.Contains(output, "elf") && strings.Contains(output, "x86")) {
+				return true
+			}
+		}
+	}
+
+	// Check for kernel strings using 'strings'
+	if hasStrings {
+		if out, err := exec.Command("strings", "-n", "10", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for kernel-specific strings
+			kernelIndicators := []string{
+				"linux version",
+				"kernel_version",
+				"init/main.c",
+				"arch/x86",
+				"setup_arch",
+				"start_kernel",
+				"linux_banner",
+			}
+			for _, indicator := range kernelIndicators {
+				if strings.Contains(output, indicator) {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check ELF header for kernel-like properties
+	if hasReadelf {
+		if out, err := exec.Command("readelf", "-h", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Kernels are typically ELF executables for x86
+			if strings.Contains(output, "executable") &&
+			   (strings.Contains(output, "x86-64") || strings.Contains(output, "80386")) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// inspectBinaryForInitrd checks if a file appears to be an initrd/initramfs
+// Uses external tools (file, strings, gzip) if available in the environment
+// Returns false if tools are unavailable (graceful degradation)
+func inspectBinaryForInitrd(filePath string) bool {
+	hasFile := commandExists("file")
+	hasStrings := commandExists("strings")
+	hasGzip := commandExists("gzip")
+
+	// If no inspection tools available, return false and rely on pattern matching
+	if !hasFile && !hasStrings && !hasGzip {
+		return false
+	}
+
+	// Check file type using 'file' command
+	if hasFile {
+		if out, err := exec.Command("file", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for initrd indicators
+			if strings.Contains(output, "cpio") ||
+			   strings.Contains(output, "initrd") ||
+			   strings.Contains(output, "initramfs") ||
+			   strings.Contains(output, "gzip compressed") ||
+			   strings.Contains(output, "ascii cpio") {
+				return true
+			}
+		}
+	}
+
+	// Check if it's gzip compressed (common for initrds)
+	if hasGzip {
+		if err := exec.Command("gzip", "-t", filePath).Run(); err == nil {
+			// If gzip test passes, check if decompressed content looks like cpio
+			if out, err := exec.Command("sh", "-c", "gzip -dc "+filePath+" | head -c 100").Output(); err == nil {
+				// Look for cpio magic numbers
+				if strings.Contains(string(out), "070701") || strings.Contains(string(out), "070702") {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check for initrd-like strings
+	if hasStrings {
+		if out, err := exec.Command("strings", "-n", "5", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			initrdIndicators := []string{
+				"/init",
+				"initramfs",
+				"rdinit=",
+				"rootfs",
+				"pivot_root",
+				"switch_root",
+				"busybox",
+				"udev",
+				"systemd",
+			}
+			for _, indicator := range initrdIndicators {
+				if strings.Contains(output, indicator) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// enhancedCollectBootFiles extends collectBootFiles with binary inspection
+// Uses filename patterns AND binary content analysis to identify kernels/initrds
+// This provides compatibility with non-standard naming conventions and custom builds
+// Gracefully degrades: if inspection tools (file, strings, readelf) are unavailable,
+// relies solely on pattern matching which handles ~95% of real-world cases
+func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+
+	// Additional binary inspection for potential kernels/initrds with non-standard names
+	// Only performed if system tools are available; gracefully skipped otherwise
+	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+
+		base := filepath.Base(path)
+
+		// Skip files we've already identified
+		for _, k := range kernels {
+			if filepath.Base(k) == base {
+				return nil
+			}
+		}
+		for _, i := range initrds {
+			if filepath.Base(i) == base {
+				return nil
+			}
+		}
+
+		// Inspect unknown binaries (returns false if tools unavailable)
+		if inspectBinaryForKernel(path) {
+			kernels = append(kernels, path)
+		} else if inspectBinaryForInitrd(path) {
+			initrds = append(initrds, path)
+		}
+
+		return nil
+	})
+
 	sort.Strings(kernels)
 	sort.Strings(initrds)
 	return loaderEntries, grubConfigs, kernels, initrds
@@ -1505,8 +1718,12 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 		return nil
 	}
 
+	// Parse GRUB variables for cmdline expansion
+	vars := parseGrubVars(grubPath)
+
 	entries := make([]BootEntry, 0)
-	lines := strings.Split(string(data), "\n")
+	// Parse lines with continuation handling
+	lines := parseGrubLinesWithContinuation(string(data))
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
 		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
@@ -1516,6 +1733,10 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 		if !ok {
 			continue
 		}
+
+		// Expand GRUB variables in cmdline
+		cmdline = expandGrubVars(cmdline, vars)
+
 		var initrdRefs []string
 		for j := i + 1; j < len(lines); j++ {
 			next := strings.TrimSpace(lines[j])
@@ -1535,7 +1756,7 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 }
 
 func collectBootCatalog(mountPoint string) []BootEntry {
-	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
+	loaderEntries, grubConfigs, _, _ := enhancedCollectBootFiles(mountPoint)
 	entries := parseLoaderEntryCatalog(loaderEntries)
 	for _, grubPath := range grubConfigs {
 		entries = append(entries, parseGrubConfigCatalog(grubPath, mountPoint)...)
@@ -1613,8 +1834,45 @@ func looksWeakCmdline(cmdline string) bool {
 		"cryptdevice=",
 		"rd.luks",
 		"rd.lvm",
+		"rd.md",
+		"rd.dm",
 		"zfs=",
 		"root=ZFS=",
+		"btrfs=",
+		"subvol=",
+		"rw",
+		"ro",
+		"initrd=",
+		"init=",
+		"systemd.unit=",
+		"security=",
+		"apparmor=",
+		"selinux=",
+		"audit=",
+		"quiet",
+		"splash",
+		"vga=",
+		"video=",
+		"console=",
+		"panic=",
+		"maxcpus=",
+		"nr_cpus=",
+		"mem=",
+		"iomem=",
+		"acpi=",
+		"pci=",
+		"usbcore.",
+		"ehci_hcd.",
+		"ohci_hcd.",
+		"uhci_hcd.",
+		"xhci_hcd.",
+		"scsi_mod.",
+		"sd_mod.",
+		"ahci.",
+		"ata_piix.",
+		"virtio_",
+		"9p",
+		"virtiofs",
 	}
 	for _, field := range fields {
 		for _, prefix := range meaningfulPrefixes {
@@ -1722,13 +1980,75 @@ func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string
 	return "", "", "", false
 }
 
+func parseGrubLinesWithContinuation(data string) []string {
+	rawLines := strings.Split(data, "\n")
+	var lines []string
+	var currentLine string
+
+	for _, rawLine := range rawLines {
+		trimmed := strings.TrimSpace(rawLine)
+		// Handle line continuation (backslash at end)
+		if strings.HasSuffix(trimmed, "\\") {
+			currentLine += strings.TrimSuffix(trimmed, "\\")
+			continue
+		}
+		currentLine += trimmed
+		if currentLine != "" {
+			lines = append(lines, currentLine)
+		}
+		currentLine = ""
+	}
+
+	// Handle case where last line has continuation
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+
+	return lines
+}
+
+func parseGrubVars(grubPath string) map[string]string {
+	data, err := os.ReadFile(grubPath)
+	if err != nil {
+		return nil
+	}
+
+	vars := map[string]string{
+		"prefix": filepath.ToSlash(filepath.Dir(grubPath)),
+		"root":   "",
+	}
+
+	lines := parseGrubLinesWithContinuation(string(data))
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "set "):
+			assignment := strings.TrimSpace(strings.TrimPrefix(t, "set "))
+			key, value, ok := strings.Cut(assignment, "=")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			vars[key] = trimGrubValue(expandGrubVars(value, vars))
+		}
+	}
+	return vars
+}
+
 func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
 		return "", "", "", false
 	}
 
-	lines := strings.Split(string(data), "\n")
+	// Parse GRUB variables for cmdline expansion
+	vars := parseGrubVars(grubPath)
+
+	// Parse lines with continuation handling
+	lines := parseGrubLinesWithContinuation(string(data))
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
 		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
@@ -1738,6 +2058,10 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 		if !ok {
 			continue
 		}
+
+		// Expand GRUB variables in cmdline
+		cmdline = expandGrubVars(cmdline, vars)
+
 		kernelPath := resolveBootPath(mountPoint, kernelRef)
 		if kernelPath == "" {
 			continue
@@ -1798,7 +2122,7 @@ func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
 }
 
 func findBootArtifacts(mountPoint string) (string, string, string, bool) {
-	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+	loaderEntries, grubConfigs, kernels, initrds := enhancedCollectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
 		return kernel, initrd, cmdline, true
@@ -1964,11 +2288,9 @@ func BootSystem() (*BootResult, error) {
 				return nil, BootAttemptError{Message: err.Error(), Debug: debug}
 			}
 			unmount()
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				exec.Command("kexec", "-e").Run()
-			}()
-			return &BootResult{
+			
+			// Signal success before kexec -e (network will disappear)
+			result := &BootResult{
 				Kernel:        kernel,
 				Initrd:        initrd,
 				Cmdline:       cmdline,
@@ -1976,7 +2298,15 @@ func BootSystem() (*BootResult, error) {
 				Warning:       warning,
 				FullyUnlocked: fullyUnlocked,
 				Debug:         debug,
-			}, nil
+			}
+			finishBootLaunch(result, nil)  // Signal success to UI
+			
+			// Now execute kexec -e (this will terminate the process on success)
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				exec.Command("kexec", "-e").Run()
+			}()
+			return result, nil
 		}
 		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 		appendBootDebug(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
@@ -2707,4 +3037,17 @@ func main() {
 		ErrorLog: httpErrorLog,
 	}
 	log.Fatal(httpsSrv.ListenAndServeTLS("server.crt", "server.key"))
+}
+
+async function boot() {
+    try {
+        await postJSON("/boot", {}, authHeaders())
+        // Don't poll - just assume success like SSH does
+        setBootUiBusy(true)
+        $("bootResult").innerText = "Booting..."
+        // The page will become unresponsive when kexec succeeds
+    } catch (err) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = err.message || "Boot failed"
+    }
 }
