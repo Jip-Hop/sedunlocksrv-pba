@@ -42,6 +42,7 @@ EXTENSIONS="jq.tcz lvm2.tcz"
 CLEAN_MODE=false
 SSHBUILD=false
 KEYMAP=""
+ENABLE_BINARY_INSPECTION=false
 EXCLUDE_NETDEV=""
 NET_MODE="single"
 NET_IFACES=""
@@ -144,8 +145,8 @@ require_root() {
 
 print_usage() {
     echo "Usage: $0 [--config=FILE] [--clean] [--ssh] [--keymap=NAME]" >&2
-    echo "          [--bootargs=KERNEL_CMDLINE] [--exclude-netdev=DEVS]" >&2
-    echo "          [--net-mode=bond|single] [--net-ifaces=DEVS]" >&2
+    echo "          [--enable-binary-inspection] [--bootargs=KERNEL_CMDLINE]" >&2
+    echo "          [--exclude-netdev=DEVS] [--net-mode=bond|single] [--net-ifaces=DEVS]" >&2
     echo "          [--net-addressing=dhcp|static] [--ip-addr=ADDR] [--netmask=MASK]" >&2
     echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
@@ -160,6 +161,7 @@ parse_args() {
             --help|-h)               print_usage; exit 0 ;;
             --clean)                 CLEAN_MODE=true ;;
             --ssh)                   SSHBUILD=true ;;
+            --enable-binary-inspection) ENABLE_BINARY_INSPECTION=true ;;
             --keymap=*)              KEYMAP="${arg#*=}" ;;
             --bootargs=*)            BOOTARGS="${arg#*=}" ;;
             --exclude-netdev=*)      EXCLUDE_NETDEV="${arg#*=}" ;;
@@ -238,6 +240,9 @@ apply_extension_flags() {
     fi
     if [ -n "${KEYMAP:-}" ]; then
         EXTENSIONS="${EXTENSIONS} kmaps.tcz"
+    fi
+    if [ "$ENABLE_BINARY_INSPECTION" = true ]; then
+        EXTENSIONS="${EXTENSIONS} file.tcz"
     fi
 }
 

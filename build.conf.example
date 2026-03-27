@@ -18,6 +18,7 @@
 # --- Build behavior ---
 # CLEAN_MODE=false              # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
 # SSHBUILD=false                # true: same as ./build.sh --ssh
+# ENABLE_BINARY_INSPECTION=false # true: adds file.tcz (~5MB) for improved kernel/initrd detection on non-standard systems
 # TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key
 # SSH_CURL_INSECURE="auto"      # auto: false when custom TLS cert/key are used, else true
