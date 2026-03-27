@@ -2308,6 +2308,7 @@ func BootSystem() (*BootResult, error) {
 				Debug:         debug,
 			}
 			finishBootLaunch(result, nil)  // Signal success to UI
+<<<<<<< HEAD
 			// Signal main() to shut down the HTTP server and fire kexec -e.
 			// We must not call kexec -e here — doing so from inside a live
 			// HTTP server goroutine causes it to fail silently because the Go
@@ -2324,6 +2325,14 @@ func BootSystem() (*BootResult, error) {
 				}
 			}
 			// Unreachable on success — kexec -e replaces the kernel.
+=======
+			
+			// Now execute kexec -e (this will terminate the process on success)
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				exec.Command("kexec", "-e").Run()
+			}()
+>>>>>>> d642011d9571d02cc5dd3ab5b422b5387812924f
 			return result, nil
 		}
 		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
@@ -3087,6 +3096,19 @@ func main() {
 	}
 	// kexec -e succeeded — the kernel has been replaced. Never reached.
 	select {}
+}
+
+async function boot() {
+    try {
+        await postJSON("/boot", {}, authHeaders())
+        // Don't poll - just assume success like SSH does
+        setBootUiBusy(true)
+        $("bootResult").innerText = "Booting..."
+        // The page will become unresponsive when kexec succeeds
+    } catch (err) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = err.message || "Boot failed"
+    }
 }
 
 async function boot() {
