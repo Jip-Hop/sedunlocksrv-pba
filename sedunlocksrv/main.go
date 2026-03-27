@@ -3110,16 +3110,3 @@ async function boot() {
         $("bootResult").innerText = err.message || "Boot failed"
     }
 }
-
-async function boot() {
-    try {
-        await postJSON("/boot", {}, authHeaders())
-        // Don't poll - just assume success like SSH does
-        setBootUiBusy(true)
-        $("bootResult").innerText = "Booting..."
-        // The page will become unresponsive when kexec succeeds
-    } catch (err) {
-        setBootUiBusy(false)
-        $("bootResult").innerText = err.message || "Boot failed"
-    }
-}
