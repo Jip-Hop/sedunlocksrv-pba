@@ -481,13 +481,7 @@ func startBootLaunch() error {
 	}
 	go func() {
 		result, err := BootSystem()
-		// Only call finishBootLaunch if BootSystem didn't call it already (for success case)
-		bootStateMu.RLock()
-		alreadyFinished := bootLaunchState.Accepted
-		bootStateMu.RUnlock()
-		if !alreadyFinished {
-			finishBootLaunch(result, err)
-		}
+		finishBootLaunch(result, err)
 	}()
 	return nil
 }
@@ -1220,7 +1214,7 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 	// - Proxmox: bzImage, custom kernel naming
 	// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
 	// - Generic/custom: bzImage, linux, initrd
-	// 
+	//
 	// Uses filename pattern matching for known distributions, complemented by
 	// binary inspection in enhancedCollectBootFiles() for unknown binaries
 	loaderEntries := make([]string, 0)
@@ -1255,9 +1249,9 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 			// vmlinuz   : Arch Linux main kernel (no version suffix)
 			// linux     : SUSE/openSUSE kernel naming
 			// bzImage   : Generic uncompressed kernel (NixOS, Proxmox, custom setups, kernel.org direct)
-			base == "vmlinuz",    // Arch Linux
-			base == "linux",       // SUSE/openSUSE
-			base == "bzImage":     // NixOS, Proxmox, custom, kernel.org
+			base == "vmlinuz", // Arch Linux
+			base == "linux",   // SUSE/openSUSE
+			base == "bzImage": // NixOS, Proxmox, custom, kernel.org
 			add(&kernels, path)
 		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"),
 			// Initrd patterns supporting major Linux distributions:
@@ -1265,7 +1259,7 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 			// initramfs-*  : Fedora/RHEL/CentOS, SUSE/openSUSE, Arch Linux
 			// initrd       : SUSE/openSUSE, generic systems
 			// initramfs-linux.img : Arch Linux specific naming
-			base == "initrd",           // SUSE/openSUSE, generic
+			base == "initrd",              // SUSE/openSUSE, generic
 			base == "initramfs-linux.img": // Arch Linux
 			add(&initrds, path)
 		}
@@ -1304,7 +1298,7 @@ func inspectBinaryForKernel(filePath string) bool {
 			output := strings.ToLower(string(out))
 			// Look for kernel indicators
 			if strings.Contains(output, "linux kernel") ||
-			   (strings.Contains(output, "elf") && strings.Contains(output, "x86")) {
+				(strings.Contains(output, "elf") && strings.Contains(output, "x86")) {
 				return true
 			}
 		}
@@ -1338,7 +1332,7 @@ func inspectBinaryForKernel(filePath string) bool {
 			output := strings.ToLower(string(out))
 			// Kernels are typically ELF executables for x86
 			if strings.Contains(output, "executable") &&
-			   (strings.Contains(output, "x86-64") || strings.Contains(output, "80386")) {
+				(strings.Contains(output, "x86-64") || strings.Contains(output, "80386")) {
 				return true
 			}
 		}
@@ -1366,10 +1360,10 @@ func inspectBinaryForInitrd(filePath string) bool {
 			output := strings.ToLower(string(out))
 			// Look for initrd indicators
 			if strings.Contains(output, "cpio") ||
-			   strings.Contains(output, "initrd") ||
-			   strings.Contains(output, "initramfs") ||
-			   strings.Contains(output, "gzip compressed") ||
-			   strings.Contains(output, "ascii cpio") {
+				strings.Contains(output, "initrd") ||
+				strings.Contains(output, "initramfs") ||
+				strings.Contains(output, "gzip compressed") ||
+				strings.Contains(output, "ascii cpio") {
 				return true
 			}
 		}
@@ -2296,7 +2290,7 @@ func BootSystem() (*BootResult, error) {
 				return nil, BootAttemptError{Message: err.Error(), Debug: debug}
 			}
 			unmount()
-			
+
 			// Signal success before kexec -e (network will disappear)
 			result := &BootResult{
 				Kernel:        kernel,
@@ -2307,7 +2301,7 @@ func BootSystem() (*BootResult, error) {
 				FullyUnlocked: fullyUnlocked,
 				Debug:         debug,
 			}
-			finishBootLaunch(result, nil)  // Signal success to UI
+			finishBootLaunch(result, nil) // Signal success to UI
 			// Signal main() to shut down the HTTP server and fire kexec -e.
 			// We must not call kexec -e here — doing so from inside a live
 			// HTTP server goroutine causes it to fail silently because the Go
@@ -3087,17 +3081,4 @@ func main() {
 	}
 	// kexec -e succeeded — the kernel has been replaced. Never reached.
 	select {}
-}
-
-async function boot() {
-    try {
-        await postJSON("/boot", {}, authHeaders())
-        // Don't poll - just assume success like SSH does
-        setBootUiBusy(true)
-        $("bootResult").innerText = "Booting..."
-        // The page will become unresponsive when kexec succeeds
-    } catch (err) {
-        setBootUiBusy(false)
-        $("bootResult").innerText = err.message || "Boot failed"
-    }
 }
