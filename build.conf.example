@@ -3,12 +3,12 @@
 # CLI flags override anything set here. Run with an unknown flag to print usage.
 
 # --- Paths ---
-# CACHEDIR="cache"
-# BUILD_TMPDIR="img.tmp"
+# CACHEDIR="cache"              #
+# BUILD_TMPDIR="img.tmp"        #
 
 # --- Image / Tiny Core fetch ---
-# GRUBSIZE=32            # extra MB reserved for GRUB/EFI files; OPAL2 PBA max is typically 128MB
-# KEXEC_VER="2.0.28"
+# GRUBSIZE=32                   # extra MB reserved for GRUB/EFI files; OPAL2 PBA max is typically 128MB
+# KEXEC_VER="2.0.28"            # version of kexex to download from kernel.org
 # TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 # INPUTISO="TinyCorePure64-current.iso"
 
@@ -16,27 +16,27 @@
 # BOOTARGS="libata.allow_tpm=1"
 
 # --- Build behavior ---
-# CLEAN_MODE=false   # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
-# SSHBUILD=false     # true: same as ./build.sh --ssh
-# TLS_CERT_PATH=""   # optional custom TLS cert copied to sedunlocksrv/server.crt
-# TLS_KEY_PATH=""    # optional custom TLS key copied to sedunlocksrv/server.key
-# SSH_CURL_INSECURE="auto"  # auto: false when custom TLS cert/key are used, else true
-# EXPERT_PASSWORD=""    # optional plain input for build-time hashing; if empty build.sh generates random 16-digit
+# CLEAN_MODE=false              # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
+# SSHBUILD=false                # true: same as ./build.sh --ssh
+# TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
+# TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key
+# SSH_CURL_INSECURE="auto"      # auto: false when custom TLS cert/key are used, else true
+# EXPERT_PASSWORD=""            # optional plain input for build-time hashing; if empty build.sh generates random 16-digit
 
 # --- PBA runtime (wired into tc-config where supported) ---
-# KEYMAP=""                 # e.g. fr-latin9 → adds kmaps.tcz and /home/tc/keymap
-# EXCLUDE_NETDEV=""         # interfaces to skip entirely, e.g. "eth0 eno2"
-# NET_MODE="single"         # single | bond
-# NET_IFACES=""             # interfaces to manage, e.g. "eth0 eth1"; empty = autodetect
-# NET_DHCP="true"           # true = DHCP, false = static IPv4
-# IP_ADDR="192.168.10.230"  # used when NET_DHCP=false
-# NETMASK="255.255.255.0"   # used when NET_DHCP=false
-# GATEWAY="192.168.10.253"  # optional, used when NET_DHCP=false
-# DNS="192.168.10.252"      # optional, one or more DNS servers separated by spaces
-# BOND_MODE="4"             # explicit bond mode default: 4 = 802.3ad/LACP
-# BOND_MIIMON="100"         # link monitor interval in ms
-# BOND_LACP_RATE="1"        # 1 = fast LACPDU rate
-# BOND_XMIT_HASH_POLICY="1" # default transmit hash policy
+# KEYMAP=""                     # e.g. fr-latin9 → adds kmaps.tcz and /home/tc/keymap
+# EXCLUDE_NETDEV=""             # interfaces to skip entirely, e.g. "eth0 eno2"
+# NET_MODE="single"             # single | bond
+# NET_IFACES=""                 # interfaces to manage, e.g. "eth0 eth1"; empty = autodetect
+# NET_DHCP="true"               # true = DHCP, false = static IPv4
+# IP_ADDR="192.168.10.2"        # used when NET_DHCP=false
+# NETMASK="255.255.255.0"       # used when NET_DHCP=false
+# GATEWAY="192.168.10.1"        # optional, used when NET_DHCP=false
+# DNS="192.168.10.1"            # optional, one or more DNS servers separated by spaces
+# BOND_MODE="4"                 # explicit bond mode default: 4 = 802.3ad/LACP
+# BOND_MIIMON="100"             # link monitor interval in ms
+# BOND_LACP_RATE="1"            # 1 = fast LACPDU rate
+# BOND_XMIT_HASH_POLICY="1"     # default transmit hash policy
 
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
-# SEDUTIL_FORK=""           # or ChubbyAnt / chubbyant
+# SEDUTIL_FORK=""               # or ChubbyAnt / chubbyant
