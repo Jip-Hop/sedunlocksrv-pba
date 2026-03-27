@@ -904,21 +904,29 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 // actual block device is the namespace, e.g. /dev/nvme0n1, and partitions are
 // nvme0n1p1, nvme0n1p2, etc.
 //
-// We scan /sys/class/block/ (a flat directory of symlinks) and use the pkname
-// file to identify which block device is the parent of each partition. For NVMe
-// we must check pkname against both the controller name ("nvme0") AND any
-// namespace names ("nvme0n1", "nvme0n2", etc.) derived from it.
-// For SATA/SAS (sda, sdb, etc.) pkname will simply equal the base name directly.
+// We scan /sys/class/block/ and use the pkname file to identify which block
+// device is the parent of each partition. For NVMe, we include the controller
+// name ("nvme0") AND any namespace names ("nvme0n1", "nvme0n2", etc.).
+// For SATA/SAS (sda, sdb, etc.), pkname simply equals the base name.
 func listDevicePartitions(device string) ([]string, error) {
 	base := filepath.Base(device) // e.g. "nvme0" or "sda"
 
-	// Build the set of block device names whose partitions we want.
-	// For sda this is just {"sda"}.
-	// For nvme0 this is {"nvme0", "nvme0n1", "nvme0n2", ...} — we find the
-	// namespaces by scanning /sys/class/block for entries whose name starts
-	// with base+"n" and that have a "dev" file but no "partition" file.
-	owners := map[string]struct{}{base: {}}
+	// Helper to check if a block device is a partition (has "partition" file).
+	isPartition := func(name string) bool {
+		_, err := os.Stat(filepath.Join("/sys/class/block", name, "partition"))
+		return err == nil
+	}
 
+	// Helper to check if a block device exists and is not a partition.
+	isBlockDevice := func(name string) bool {
+		_, err := os.Stat(filepath.Join("/sys/class/block", name, "dev"))
+		return err == nil && !isPartition(name)
+	}
+
+	// Find all owner devices: the base device plus any NVMe namespaces.
+	// For SATA (sda): owners = {sda}
+	// For NVMe (nvme0): owners = {nvme0, nvme0n1, nvme0n2, ...}
+	owners := []string{base}
 	allEntries, err := os.ReadDir("/sys/class/block")
 	if err != nil {
 		return nil, err
@@ -926,55 +934,46 @@ func listDevicePartitions(device string) ([]string, error) {
 
 	for _, entry := range allEntries {
 		name := entry.Name()
-		// Namespace names look like nvme0n1, nvme0n2 — starts with base
-		// followed immediately by 'n' and a digit.
-		if !strings.HasPrefix(name, base+"n") {
-			continue
+		// Check only candidates matching the namespace pattern (base+"n" + digit).
+		if strings.HasPrefix(name, base+"n") && isBlockDevice(name) {
+			owners = append(owners, name)
 		}
-		// Must have a "dev" file (it's a real block device).
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
-			continue
-		}
-		// Must NOT have a "partition" file (namespaces are not partitions).
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
-			continue
-		}
-		owners[name] = struct{}{}
 	}
+	sort.Strings(owners) // For deterministic fallback matching
 
-	// Now collect every entry that has a "partition" file and whose pkname
-	// is one of our owner names.
+	// Collect partitions whose pkname matches one of our owners.
 	var partitions []string
-	seen := map[string]struct{}{}
-
 	for _, entry := range allEntries {
 		name := entry.Name()
-		// Must be a partition.
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
+		if !isPartition(name) {
 			continue
 		}
-		// Read its parent name.
+
+		// Read parent device name from pkname file.
 		pkRaw, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
-		if err != nil {
-			// pkname unavailable — fall back to prefix match against all owners.
-			for owner := range owners {
+		var parent string
+		if err == nil {
+			parent = strings.TrimSpace(string(pkRaw))
+		}
+
+		// If pkname fails, fall back to prefix matching (rare, but handles edge cases).
+		// Use a sorted owner list to ensure deterministic behavior.
+		if parent == "" {
+			for _, owner := range owners {
 				if strings.HasPrefix(name, owner) {
-					dev := "/dev/" + name
-					if _, ok := seen[dev]; !ok {
-						seen[dev] = struct{}{}
-						partitions = append(partitions, dev)
-					}
+					parent = owner
 					break
 				}
 			}
-			continue
 		}
-		parent := strings.TrimSpace(string(pkRaw))
-		if _, ok := owners[parent]; ok {
-			dev := "/dev/" + name
-			if _, ok := seen[dev]; !ok {
-				seen[dev] = struct{}{}
-				partitions = append(partitions, dev)
+
+		// Add partition if its parent is one of our owners.
+		if parent != "" {
+			for _, owner := range owners {
+				if parent == owner {
+					partitions = append(partitions, "/dev/"+name)
+					break
+				}
 			}
 		}
 	}
@@ -992,7 +991,8 @@ func listDeviceNodes(device string) ([]string, error) {
 		return nil, err
 	}
 
-	seen := map[string]struct{}{"/dev/" + base: {}}
+	// Find NVMe namespaces: entries starting with base+"n" that are block
+	// devices but not partitions.
 	for _, entry := range allEntries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, base+"n") {
@@ -1004,12 +1004,7 @@ func listDeviceNodes(device string) ([]string, error) {
 		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
 			continue
 		}
-		dev := "/dev/" + name
-		if _, ok := seen[dev]; ok {
-			continue
-		}
-		seen[dev] = struct{}{}
-		nodes = append(nodes, dev)
+		nodes = append(nodes, "/dev/"+name)
 	}
 
 	sort.Strings(nodes)
