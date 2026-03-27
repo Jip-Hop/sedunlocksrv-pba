@@ -58,6 +58,23 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Token-based protection for `boot` and password change operations
    - Expert mode: isolated recovery controls behind a separate expert password
 
+**Password Complexity Configuration**: Customize unlock password requirements at build time:
+   - `--password-complexity=on|off` — Master switch (default: on)
+   - `--min-password-length=N` — Minimum chars (default: 12)
+   - `--require-upper=true|false` — Uppercase A-Z (default: true)
+   - `--require-lower=true|false` — Lowercase a-z (default: true)
+   - `--require-number=true|false` — Digits 0-9 (default: true)
+   - `--require-special=true|false` — Special chars (default: true)
+   
+   **Examples:**
+   ```bash
+   ./build.sh --password-complexity=off              # No requirements
+   ./build.sh --min-password-length=20               # Strict length only
+   ./build.sh                                        # Default (12+ chars, all types)
+   ```
+   
+   Requirements are displayed in console TUI (`P` menu) and web API (`/password-policy`). See [PASSWORD_POLICY_CONFIG.md](PASSWORD_POLICY_CONFIG.md) for detailed configuration guide.
+
 **Boot Discovery**: Original uses filename patterns. This fork enhances with:
    - GRUB configuration parsing with variable expansion
    - GRUB line continuation handling
@@ -69,8 +86,9 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 
 ## Quick Start
 1. Build host prep (Debian/Ubuntu): install dependencies, then run `sudo ./build.sh`.
-2. Optional build config: copy `build.conf.example` to `build.conf`, set values such as network mode, TLS cert/key, and optional `EXPERT_PASSWORD` (input only; build stores hash).
+2. Optional build config: copy `build.conf.example` to `build.conf`, set values such as network mode, TLS cert/key, optional `EXPERT_PASSWORD`, and password complexity settings.
 3. Build image: `sudo ./build.sh --ssh` (if you want SSH UI) or `sudo ./build.sh` (web + console only).
+   - **Password complexity example:** `sudo ./build.sh --password-complexity=off --min-password-length=16 --require-upper=false`
 4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, then enable locking per your OPAL workflow.
 5. Boot target machine into PBA and unlock drives from:
    - Web UI: `https://<pba-ip>/`
@@ -83,6 +101,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
+- **Password change**: Requirements configured at build time are enforced when users change passwords. In the web UI, requirements are shown before password entry. In the console UI, requirements are displayed when pressing `P` for password change. See [PASSWORD_POLICY_CONFIG.md](PASSWORD_POLICY_CONFIG.md) for details.
 - Password change is intentionally target-based. In the web UI, select the drive(s) you want to update. In the console UI, enter the exact target device path when prompted.
 - SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
 - SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
