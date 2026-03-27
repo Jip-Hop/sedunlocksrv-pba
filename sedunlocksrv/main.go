@@ -18,6 +18,16 @@
 package main
 
 import (
+	"bytes"
+    "compress/gzip"
+    "io"
+    //"io/fs"
+    //"os"
+    //"path/filepath"
+    //"sort"
+    //"strings"
+    // ... your other existing imports
+
 	"bufio"
 	"bytes"
 	"context"
@@ -1204,24 +1214,138 @@ func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 	return devices, nil
 }
 
-func collectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
-	// collectBootFiles scans for boot artifacts supporting major Linux distributions:
-	// - Debian/Ubuntu: vmlinuz-*, initrd.img-*
-	// - Fedora/RHEL/CentOS: vmlinuz-*, initramfs-*
-	// - SUSE/openSUSE: linux, linux-*, initrd, initramfs-*
-	// - Arch Linux: vmlinuz, vmlinuz-*, initramfs-*, initramfs-linux.img
-	// - NixOS: bzImage, initrd (custom naming)
-	// - Proxmox: bzImage, custom kernel naming
-	// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
-	// - Generic/custom: bzImage, linux, initrd
-	//
-	// Uses filename pattern matching for known distributions, complemented by
-	// binary inspection in enhancedCollectBootFiles() for unknown binaries
+
+// isLinuxKernel detects Linux kernel images using pure Go.
+// Checks ELF magic (uncompressed vmlinux) + strong embedded strings.
+func isLinuxKernel(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Size filter — see explanation below
+	if info, err := f.Stat(); err == nil {
+		size := info.Size()
+		if size < 4*1024*1024 || size > 512*1024*1024 { // 4 MiB – 512 MiB
+			return false
+		}
+	}
+
+	// Read only the front portion (headers + strings live early)
+	data, err := io.ReadAll(io.LimitReader(f, 256*1024))
+	if err != nil || len(data) == 0 {
+		return false
+	}
+
+	s := strings.ToLower(string(data))
+
+	return bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) || // uncompressed vmlinux
+		strings.Contains(s, "linux version") ||
+		strings.Contains(s, "start_kernel") ||
+		strings.Contains(s, "linux_banner") ||
+		strings.Contains(s, "init/main.c") ||
+		strings.Contains(s, "setup_arch") ||
+		strings.Contains(s, "kernel version") ||
+		strings.Contains(s, "linux,version") ||
+		strings.Contains(s, "compiled") ||
+		strings.Contains(s, "gcc version") ||
+		strings.Contains(s, "smpboot") ||
+		strings.Contains(s, "boot_command_line") ||
+		strings.Contains(s, "rest_init") ||
+		strings.Contains(s, "sched_init") ||
+		strings.Contains(s, "early_param")
+}
+
+// isInitrd detects initrd / initramfs images using pure Go (no external commands).
+// Supports the most common formats: gzip-compressed cpio (vast majority of modern distros)
+// and raw/uncompressed cpio. Includes improved magic checks and a lightweight string fallback.
+func isInitrd(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Size filter — see explanation below
+	if info, err := f.Stat(); err == nil {
+		size := info.Size()
+		if size < 2*1024*1024 || size > 600*1024*1024 { // 2 MiB – 600 MiB
+			return false
+		}
+	}
+
+	// Read first 512 bytes for magic number detection
+	header := make([]byte, 512)
+	n, _ := io.ReadFull(f, header)
+	if n == 0 {
+		return false
+	}
+	header = header[:n]
+
+	// 1. Gzip-compressed cpio (by far the most common case)
+	if len(header) >= 3 && header[0] == 0x1f && header[1] == 0x8b && header[2] == 0x08 {
+		// Valid gzip header in /boot → extremely likely an initrd
+		// Optional deeper check: peek for cpio magic after decompression
+		f.Seek(0, 0)
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return true
+		}
+		defer gz.Close()
+
+		cpioHeader := make([]byte, 6)
+		if n, _ := io.ReadFull(gz, cpioHeader); n >= 6 {
+			magic := string(cpioHeader)
+			if magic == "070701" || magic == "070702" {
+				return true
+			}
+		}
+		return true // gzip alone is a very strong signal
+	}
+
+	// 2. Raw (uncompressed) cpio archive
+	if len(header) >= 6 {
+		magic := string(header[:6])
+		if magic == "070701" || magic == "070702" {
+			return true
+		}
+	}
+
+	// 3. Lightweight fallback: string scan on first 64 KiB (rarely needed)
+	f.Seek(0, 0)
+	data, _ := io.ReadAll(io.LimitReader(f, 64*1024))
+	s := strings.ToLower(string(data))
+
+	return strings.Contains(s, "initramfs") ||
+		strings.Contains(s, "/init") ||
+		strings.Contains(s, "switch_root") ||
+		strings.Contains(s, "pivot_root") ||
+		strings.Contains(s, "rdinit=") ||
+		strings.Contains(s, "initrd") // extra common term
+}
+
+// enhancedCollectBootFiles scans for boot artifacts supporting major Linux distributions:
+// - Debian/Ubuntu: vmlinuz-*, initrd.img-*
+// - Fedora/RHEL/CentOS: vmlinuz-*, initramfs-*
+// - SUSE/openSUSE: linux, linux-*, initrd, initramfs-*
+// - Arch Linux: vmlinuz, vmlinuz-*, initramfs-*, initramfs-linux.img
+// - NixOS: bzImage, initrd (custom naming)
+// - Proxmox: bzImage, custom kernel naming
+// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
+// - Generic/custom: bzImage, linux, initrd
+//
+// Uses filename pattern matching for known distributions, complemented by
+// binary inspection for unknown binaries
+// Pure Go → no external process spawning, much faster, more reliable.
+func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
 	loaderEntries := make([]string, 0)
 	grubConfigs := make([]string, 0)
 	kernels := make([]string, 0)
 	initrds := make([]string, 0)
+
 	seen := make(map[string]struct{})
+
 	add := func(out *[]string, path string) {
 		if _, ok := seen[path]; ok {
 			return
@@ -1237,32 +1361,51 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 
 		base := filepath.Base(path)
 		dir := filepath.Dir(path)
+
+		// === Filename-based detection (exact logic from original collectBootFiles) ===
 		switch {
 		case strings.EqualFold(base, "grub.cfg"):
 			add(&grubConfigs, path)
-		case filepath.Base(dir) == "entries" && filepath.Base(filepath.Dir(dir)) == "loader" && strings.HasSuffix(base, ".conf"):
+			return nil
+
+		case filepath.Base(dir) == "entries" &&
+			filepath.Base(filepath.Dir(dir)) == "loader" &&
+			strings.HasSuffix(base, ".conf"):
 			add(&loaderEntries, path)
-		case strings.HasPrefix(base, "vmlinuz-"), strings.HasPrefix(base, "linux-"),
-			// Kernel patterns supporting major Linux distributions:
-			// vmlinuz-* : Debian/Ubuntu, Fedora/RHEL/CentOS, most systemd-based distros
-			// linux-*   : SUSE/openSUSE, some custom configurations, kernel.org custom builds
-			// vmlinuz   : Arch Linux main kernel (no version suffix)
-			// linux     : SUSE/openSUSE kernel naming
-			// bzImage   : Generic uncompressed kernel (NixOS, Proxmox, custom setups, kernel.org direct)
-			base == "vmlinuz", // Arch Linux
-			base == "linux",   // SUSE/openSUSE
-			base == "bzImage": // NixOS, Proxmox, custom, kernel.org
+			return nil
+
+		// Kernel filename patterns
+		case strings.HasPrefix(base, "vmlinuz-"),
+			strings.HasPrefix(base, "linux-"),
+			base == "vmlinuz",
+			base == "linux",
+			base == "bzImage":
 			add(&kernels, path)
-		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"),
-			// Initrd patterns supporting major Linux distributions:
-			// initrd.img-* : Debian/Ubuntu, most Debian-based distros
-			// initramfs-*  : Fedora/RHEL/CentOS, SUSE/openSUSE, Arch Linux
-			// initrd       : SUSE/openSUSE, generic systems
-			// initramfs-linux.img : Arch Linux specific naming
-			base == "initrd",              // SUSE/openSUSE, generic
-			base == "initramfs-linux.img": // Arch Linux
+			return nil
+
+		// Initrd filename patterns
+		case strings.HasPrefix(base, "initrd.img-"),
+			strings.HasPrefix(base, "initramfs-"),
+			base == "initrd",
+			base == "initramfs-linux.img":
+			add(&initrds, path)
+			return nil
+		}
+
+		// === Pure-Go binary inspection for files that didn't match known names ===
+		// Only check larger files to avoid wasting time on tiny ones
+		if info, err := d.Info(); err == nil {
+			if info.Size() < 4*1024*1024 { // too small for kernel or modern initrd
+				return nil
+			}
+		}
+
+		if isLinuxKernel(path) {
+			add(&kernels, path)
+		} else if isInitrd(path) {
 			add(&initrds, path)
 		}
+
 		return nil
 	})
 
@@ -1270,185 +1413,7 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 	sort.Strings(grubConfigs)
 	sort.Strings(kernels)
 	sort.Strings(initrds)
-	return loaderEntries, grubConfigs, kernels, initrds
-}
 
-// commandExists checks if a command is available in PATH
-func commandExists(cmd string) bool {
-	_, err := exec.LookPath(cmd)
-	return err == nil
-}
-
-// inspectBinaryForKernel checks if a file appears to be a Linux kernel binary
-// Uses external tools (file, strings, readelf) if available in the environment
-// Returns false if tools are unavailable (graceful degradation)
-func inspectBinaryForKernel(filePath string) bool {
-	hasFile := commandExists("file")
-	hasStrings := commandExists("strings")
-	hasReadelf := commandExists("readelf")
-
-	// If no inspection tools available, return false and rely on pattern matching
-	if !hasFile && !hasStrings && !hasReadelf {
-		return false
-	}
-
-	// Check file type using 'file' command
-	if hasFile {
-		if out, err := exec.Command("file", filePath).Output(); err == nil {
-			output := strings.ToLower(string(out))
-			// Look for kernel indicators
-			if strings.Contains(output, "linux kernel") ||
-				(strings.Contains(output, "elf") && strings.Contains(output, "x86")) {
-				return true
-			}
-		}
-	}
-
-	// Check for kernel strings using 'strings'
-	if hasStrings {
-		if out, err := exec.Command("strings", "-n", "10", filePath).Output(); err == nil {
-			output := strings.ToLower(string(out))
-			// Look for kernel-specific strings
-			kernelIndicators := []string{
-				"linux version",
-				"kernel_version",
-				"init/main.c",
-				"arch/x86",
-				"setup_arch",
-				"start_kernel",
-				"linux_banner",
-			}
-			for _, indicator := range kernelIndicators {
-				if strings.Contains(output, indicator) {
-					return true
-				}
-			}
-		}
-	}
-
-	// Check ELF header for kernel-like properties
-	if hasReadelf {
-		if out, err := exec.Command("readelf", "-h", filePath).Output(); err == nil {
-			output := strings.ToLower(string(out))
-			// Kernels are typically ELF executables for x86
-			if strings.Contains(output, "executable") &&
-				(strings.Contains(output, "x86-64") || strings.Contains(output, "80386")) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// inspectBinaryForInitrd checks if a file appears to be an initrd/initramfs
-// Uses external tools (file, strings, gzip) if available in the environment
-// Returns false if tools are unavailable (graceful degradation)
-func inspectBinaryForInitrd(filePath string) bool {
-	hasFile := commandExists("file")
-	hasStrings := commandExists("strings")
-	hasGzip := commandExists("gzip")
-
-	// If no inspection tools available, return false and rely on pattern matching
-	if !hasFile && !hasStrings && !hasGzip {
-		return false
-	}
-
-	// Check file type using 'file' command
-	if hasFile {
-		if out, err := exec.Command("file", filePath).Output(); err == nil {
-			output := strings.ToLower(string(out))
-			// Look for initrd indicators
-			if strings.Contains(output, "cpio") ||
-				strings.Contains(output, "initrd") ||
-				strings.Contains(output, "initramfs") ||
-				strings.Contains(output, "gzip compressed") ||
-				strings.Contains(output, "ascii cpio") {
-				return true
-			}
-		}
-	}
-
-	// Check if it's gzip compressed (common for initrds)
-	if hasGzip {
-		if err := exec.Command("gzip", "-t", filePath).Run(); err == nil {
-			// If gzip test passes, check if decompressed content looks like cpio
-			if out, err := exec.Command("sh", "-c", "gzip -dc "+filePath+" | head -c 100").Output(); err == nil {
-				// Look for cpio magic numbers
-				if strings.Contains(string(out), "070701") || strings.Contains(string(out), "070702") {
-					return true
-				}
-			}
-		}
-	}
-
-	// Check for initrd-like strings
-	if hasStrings {
-		if out, err := exec.Command("strings", "-n", "5", filePath).Output(); err == nil {
-			output := strings.ToLower(string(out))
-			initrdIndicators := []string{
-				"/init",
-				"initramfs",
-				"rdinit=",
-				"rootfs",
-				"pivot_root",
-				"switch_root",
-				"busybox",
-				"udev",
-				"systemd",
-			}
-			for _, indicator := range initrdIndicators {
-				if strings.Contains(output, indicator) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
-// enhancedCollectBootFiles extends collectBootFiles with binary inspection
-// Uses filename patterns AND binary content analysis to identify kernels/initrds
-// This provides compatibility with non-standard naming conventions and custom builds
-// Gracefully degrades: if inspection tools (file, strings, readelf) are unavailable,
-// relies solely on pattern matching which handles ~95% of real-world cases
-func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
-	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
-
-	// Additional binary inspection for potential kernels/initrds with non-standard names
-	// Only performed if system tools are available; gracefully skipped otherwise
-	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d == nil || d.IsDir() {
-			return nil
-		}
-
-		base := filepath.Base(path)
-
-		// Skip files we've already identified
-		for _, k := range kernels {
-			if filepath.Base(k) == base {
-				return nil
-			}
-		}
-		for _, i := range initrds {
-			if filepath.Base(i) == base {
-				return nil
-			}
-		}
-
-		// Inspect unknown binaries (returns false if tools unavailable)
-		if inspectBinaryForKernel(path) {
-			kernels = append(kernels, path)
-		} else if inspectBinaryForInitrd(path) {
-			initrds = append(initrds, path)
-		}
-
-		return nil
-	})
-
-	sort.Strings(kernels)
-	sort.Strings(initrds)
 	return loaderEntries, grubConfigs, kernels, initrds
 }
 
