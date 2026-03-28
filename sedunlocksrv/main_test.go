@@ -32,7 +32,7 @@ func TestFindBootArtifactsRecursiveEFIGrubLayout(t *testing.T) {
 		t.Fatalf("WriteFile(grubCfg): %v", err)
 	}
 
-	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(mountPoint)
+	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(mountPoint, "/dev/test")
 	if !ok {
 		t.Fatal("findBootArtifacts() did not find EFI boot artifacts")
 	}
@@ -62,7 +62,7 @@ func TestFindBootArtifactsRecursiveKernelFallback(t *testing.T) {
 		}
 	}
 
-	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(mountPoint)
+	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(mountPoint, "/dev/test")
 	if !ok {
 		t.Fatal("findBootArtifacts() did not match recursive kernel/initrd pair")
 	}
@@ -219,7 +219,7 @@ func TestSplitBootPrefersCatalogOverWeakFallback(t *testing.T) {
 		t.Fatalf("WriteFile(grubDefaults): %v", err)
 	}
 
-	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(rootMount)
+	gotKernel, gotInitrd, gotCmdline, ok := findBootArtifacts(rootMount, "/dev/test")
 	if !ok {
 		t.Fatal("findBootArtifacts() did not find root boot artifacts")
 	}
