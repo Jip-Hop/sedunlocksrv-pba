@@ -1724,37 +1724,52 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	return "", "", "", false
 }
 
-// ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
-// Returns a slice of BootKernelInfo for selection by the user.
-func ListAvailableBootKernels() ([]BootKernelInfo, error) {
+func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
+	debug := make([]string, 0, 64)
+	appendDebug := func(format string, args ...interface{}) {
+		debug = append(debug, fmt.Sprintf(format, args...))
+	}
+
 	drives := scanDrives()
 	bootCandidates := bootCandidateDrives(drives)
+	appendDebug("Boot candidates: %s", strings.Join(bootCandidates, ", "))
 
 	if len(bootCandidates) == 0 {
-		return nil, fmt.Errorf("no startup-locked OPAL drive has transitioned to unlocked")
+		return nil, debug, fmt.Errorf("no startup-locked OPAL drive has transitioned to unlocked")
 	}
 
 	mountPoint := "/mnt/proxmox"
-	os.MkdirAll(mountPoint, 0755)
+	_ = os.MkdirAll(mountPoint, 0755)
 
 	// Activate LVM in case kernels are on LVM volumes
 	activateLVM()
 
 	searchDevices, err := buildBootSearchDevices(bootCandidates)
 	if err != nil {
-		return nil, err
+		appendDebug("buildBootSearchDevices failed: %v", err)
+		return nil, debug, err
 	}
+	appendDebug("Search devices: %s", strings.Join(searchDevices, ", "))
 
 	kernels := make([]BootKernelInfo, 0, 8)
 
 	for _, dev := range searchDevices {
+		appendDebug("Trying mount target: %s", dev)
 		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+			appendDebug("Mount failed for %s: %v", dev, err)
 			continue
 		}
-		defer exec.Command("umount", mountPoint).Run()
+
+		unmount := func() {
+			if err := exec.Command("umount", mountPoint).Run(); err != nil {
+				appendDebug("Unmount failed for %s: %v", dev, err)
+			}
+		}
+		appendDebug("Mounted %s on %s", dev, mountPoint)
 
 		// Collect all boot entries from this mount
 		entries := collectBootCatalog(mountPoint)
+		appendDebug("Boot catalog entries on %s: %d", dev, len(entries))
 
 		// Also collect raw kernels/initrds for matching
 		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
@@ -1762,6 +1777,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 			initrdName := filepath.Base(rawInitrd)
 			kernels = append(kernels, BootKernelInfo{
 				Index:      len(kernels),
+				Device:     dev,
 				Kernel:     rawKernel,
 				KernelName: name,
 				Initrd:     rawInitrd,
@@ -1769,6 +1785,9 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 				Cmdline:    cmdline,
 				Source:     "discovered",
 			})
+			appendDebug("Discovered kernel/initrd on %s: %s | %s", dev, rawKernel, rawInitrd)
+		} else {
+			appendDebug("No raw kernel/initrd pair discovered on %s", dev)
 		}
 
 		// Add entries from boot catalog as alternatives
@@ -1776,6 +1795,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 			if entry.KernelRef != "" && len(entry.InitrdRefs) > 0 {
 				kernels = append(kernels, BootKernelInfo{
 					Index:      len(kernels),
+					Device:     dev,
 					Kernel:     entry.KernelRef,
 					KernelName: filepath.Base(entry.KernelRef),
 					Initrd:     entry.InitrdRefs[0],
@@ -1786,25 +1806,34 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 			}
 		}
 
-		// Only process first successful mount
-		break
+		appendDebug("Kernel candidates accumulated so far: %d", len(kernels))
+		unmount()
 	}
 
 	if len(kernels) == 0 {
-		return nil, fmt.Errorf("no kernels found on boot devices")
+		appendDebug("Boot search exhausted with zero kernels")
+		return nil, debug, fmt.Errorf("no kernels found on boot devices")
 	}
 
-	return kernels, nil
+	appendDebug("Boot search finished with %d kernel candidates", len(kernels))
+	return kernels, debug, nil
+}
+
+// ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
+// Returns a slice of BootKernelInfo for selection by the user.
+func ListAvailableBootKernels() ([]BootKernelInfo, error) {
+	kernels, _, err := listAvailableBootKernelsWithDebug()
+	return kernels, err
 }
 
 // BootSystemWithKernel boots with a specific kernel selected by index.
 // If kernelIndex < 0, uses the first available kernel.
 func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
-	kernels, err := ListAvailableBootKernels()
+	kernels, discoverDebug, err := listAvailableBootKernelsWithDebug()
 	if err != nil {
 		return nil, BootAttemptError{
 			Message: err.Error(),
-			Debug:   []string{err.Error()},
+			Debug:   append(discoverDebug, err.Error()),
 		}
 	}
 
@@ -1844,8 +1873,31 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 		}
 	}
 
+	for _, line := range discoverDebug {
+		appendBootDebug(&debug, "kernel-discovery: %s", line)
+	}
 	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
 	appendBootDebug(&debug, "Selected kernel index %d: %s (%s)", kernelIndex, selected.KernelName, selected.Cmdline)
+
+	if selected.Device == "" {
+		appendBootDebug(&debug, "Selected kernel has no source device metadata")
+		return nil, BootAttemptError{
+			Message: "selected kernel source is unknown",
+			Debug:   debug,
+		}
+	}
+
+	mountPoint := "/mnt/proxmox"
+	_ = os.MkdirAll(mountPoint, 0755)
+	if err := exec.Command("mount", "-r", selected.Device, mountPoint).Run(); err != nil {
+		appendBootDebug(&debug, "Failed to mount selected device %s: %v", selected.Device, err)
+		return nil, BootAttemptError{
+			Message: fmt.Sprintf("failed to mount selected boot device: %v", err),
+			Debug:   debug,
+		}
+	}
+	unmount := func() { _ = exec.Command("umount", mountPoint).Run() }
+	defer unmount()
 
 	fullyUnlocked := len(locked) == 0
 	var warning string
@@ -1894,6 +1946,7 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 		appendBootDebug(&debug, "kexec -l failed: %s", err)
 		return nil, BootAttemptError{Message: err.Error(), Debug: debug}
 	}
+	unmount()
 
 	appendBootDebug(&debug, "kexec -l succeeded.")
 	result := &BootResult{
@@ -1906,14 +1959,14 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 		Debug:         debug,
 	}
 
-	// Signal successful load and prepare for transfer of control
-	go func() {
-		close(kexecReady)
-		if err := exec.Command("kexec", "-e").Run(); err != nil {
-			kexecFailed <- err
+	// Signal main() to shut down HTTPS cleanly and execute kexec -e.
+	close(kexecReady)
+	if err := <-kexecFailed; err != nil {
+		return nil, BootAttemptError{
+			Message: fmt.Sprintf("kexec -e failed: %v", err),
+			Debug:   debug,
 		}
-	}()
-
+	}
 	return result, nil
 }
 
@@ -2835,12 +2888,12 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		kernels, err := ListAvailableBootKernels()
+		kernels, debug, err := listAvailableBootKernelsWithDebug()
 		if err != nil {
-			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]interface{}{"error": err.Error(), "debug": debug})
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]interface{}{"kernels": kernels})
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"kernels": kernels, "debug": debug})
 	})
 
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {

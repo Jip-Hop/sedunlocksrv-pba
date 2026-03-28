@@ -111,6 +111,7 @@ type BootEntry struct {
 // BootKernelInfo describes a discovered kernel available for boot selection
 type BootKernelInfo struct {
 	Index      int    `json:"index"`
+	Device     string `json:"-"`
 	Kernel     string `json:"kernel"`
 	KernelName string `json:"kernelName"` // e.g., "vmlinuz-6.8.12-9-pve"
 	Initrd     string `json:"initrd"`
