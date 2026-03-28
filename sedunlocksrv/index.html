@@ -779,7 +779,7 @@ async function boot() {
     try {
         $("bootResult").innerText = "Checking available kernels..."
         const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 6000)
+        const timer = setTimeout(() => controller.abort(), 20000)  // 20 seconds for kernel discovery (filesystem walk + cmdline extraction)
         let r = await fetch("/boot-list", { method: "GET", headers: authHeaders(), signal: controller.signal })
         clearTimeout(timer)
         if (r.ok) {

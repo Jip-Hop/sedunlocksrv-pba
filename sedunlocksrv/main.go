@@ -2227,8 +2227,12 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 		func() (string, bool, error) {
 			var bestCmdline string
 			var bestFound bool
+			var foundStrong bool // Flag to signal early exit
 
 			_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+				if foundStrong {
+					return filepath.SkipDir // Already found strong cmdline, stop walking
+				}
 				if err != nil || d == nil || d.IsDir() {
 					return nil
 				}
@@ -2236,11 +2240,12 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 				// Check for grub.cfg files
 				if filepath.Base(path) == "grub.cfg" {
 					if cmdline, found, err := parseGrubCfg(path, mountPoint, kernelBase); err == nil && found && cmdline != "" {
-						// If not weak, return immediately
+						// If not weak, mark strong and stop searching
 						if !looksWeakCmdline(cmdline) {
 							bestCmdline = cmdline
 							bestFound = true
-							return filepath.SkipDir // early exit
+							foundStrong = true
+							return filepath.SkipDir // Stop walking
 						}
 						// Otherwise save and keep walking
 						if bestCmdline == "" {
