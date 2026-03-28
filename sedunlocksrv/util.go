@@ -2,14 +2,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -87,8 +86,27 @@ func firstExistingPath(paths ...string) string {
 }
 
 func haveRuntimeCommand(cmd string) bool {
-	out, _ := exec.Command("bash", "-c", "which "+cmd).CombinedOutput()
-	return bytes.Contains(out, []byte(cmd))
+	_, err := exec.LookPath(cmd)
+	return err == nil
+}
+
+func availableRAMBytes() (int64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "MemAvailable:" {
+			continue
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return kb * 1024, nil
+	}
+	return 0, fmt.Errorf("MemAvailable not found in /proc/meminfo")
 }
 
 // ============================================================

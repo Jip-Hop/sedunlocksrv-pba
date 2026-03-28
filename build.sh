@@ -618,11 +618,11 @@ prepare_expert_password_hash() {
 populate_initrd_application_tree() {
     mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/"
     cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${BUILD_TMPDIR}/core/usr/local/sbin/"
-    rsync -avr \
-        --exclude='sedunlocksrv/main.go' \
-        --exclude='sedunlocksrv/go.mod' \
-        'sedunlocksrv' "${BUILD_TMPDIR}/core/usr/local/sbin/"
     mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
+    cp ./sedunlocksrv/sedunlocksrv "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp ./sedunlocksrv/server.crt "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp ./sedunlocksrv/server.key "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
     write_runtime_network_config

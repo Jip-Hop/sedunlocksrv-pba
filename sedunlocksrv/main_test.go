@@ -483,17 +483,22 @@ func TestListDevicePartitionsFallbackDeterminism(t *testing.T) {
 func TestListDevicePartitionsEmptyOnMissingDevice(t *testing.T) {
 	// Test behavior when device has no partitions
 	result, err := listDevicePartitions("/dev/nonexistent99")
-	if err == nil {
-		t.Fatalf("listDevicePartitions() should fail on nonexistent device, got err=nil")
+	if err != nil {
+		t.Fatalf("listDevicePartitions() unexpected error: %v", err)
 	}
-	// Error is expected since /sys/class/block read fails
+	if len(result) != 0 {
+		t.Fatalf("listDevicePartitions() = %v, want empty result", result)
+	}
 }
 
 func TestListDeviceNodesEmptyOnMissingDevice(t *testing.T) {
 	// Test behavior when device has no namespaces
 	result, err := listDeviceNodes("/dev/nonexistent99")
-	if err == nil {
-		t.Fatalf("listDeviceNodes() should fail on nonexistent device, got err=nil")
+	if err != nil {
+		t.Fatalf("listDeviceNodes() unexpected error: %v", err)
+	}
+	if len(result) != 1 || result[0] != "/dev/nonexistent99" {
+		t.Fatalf("listDeviceNodes() = %v, want [/dev/nonexistent99]", result)
 	}
 }
 

@@ -3,6 +3,12 @@
         "where": true,
         "Test-Path": true,
         "git add": true,
-        "git commit": true
+        "git commit": true,
+        "go": true,
+        "ForEach-Object": true,
+        "Group-Object": true,
+        "New-Object": true,
+        "Set-Content": true,
+        "wsl": true
     }
 }

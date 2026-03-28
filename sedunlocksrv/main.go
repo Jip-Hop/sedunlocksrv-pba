@@ -28,10 +28,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"runtime"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -44,138 +42,8 @@ import (
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
-
-// ============================================================
-// DATA TYPES
-// ============================================================
-
-type DriveStatus struct {
-	Device string `json:"device"`
-	Locked bool   `json:"locked"`
-	Opal   bool   `json:"opal"`
-}
-
-type NetworkInterfaceStatus struct {
-	Name      string   `json:"name"`
-	MAC       string   `json:"mac,omitempty"`
-	State     string   `json:"state"`
-	Carrier   bool     `json:"carrier"`
-	Loopback  bool     `json:"loopback"`
-	Addresses []string `json:"addresses,omitempty"`
-}
-
-type StatusResponse struct {
-	Drives            []DriveStatus            `json:"drives"`
-	Interfaces        []NetworkInterfaceStatus `json:"interfaces"`
-	BootReady         bool                     `json:"bootReady"`
-	BootDrives        []string                 `json:"bootDrives,omitempty"`
-	FailedAttempts    int                      `json:"failedAttempts"`
-	MaxAttempts       int                      `json:"maxAttempts"`
-	AttemptsRemaining int                      `json:"attemptsRemaining"`
-	Build             string                   `json:"build,omitempty"`
-}
-
-type DriveDiagnostics struct {
-	Device              string `json:"device"`
-	Opal                bool   `json:"opal"`
-	Locked              bool   `json:"locked"`
-	LockingSupported    string `json:"lockingSupported"`
-	LockingEnabled      string `json:"lockingEnabled"`
-	MBREnabled          string `json:"mbrEnabled"`
-	MBRDone             string `json:"mbrDone"`
-	MediaEncrypt        string `json:"mediaEncrypt"`
-	LockingRange0Locked string `json:"lockingRange0Locked"`
-	QueryRaw            string `json:"queryRaw"`
-}
-
-type DiagnosticsResponse struct {
-	GeneratedAt string             `json:"generatedAt"`
-	Drives      []DriveDiagnostics `json:"drives"`
-}
-
-type UnlockResult struct {
-	Device  string `json:"device"`
-	Success bool   `json:"success"`
-}
-
-type UnlockResponse struct {
-	Results []UnlockResult `json:"results"`
-	Token   string         `json:"token,omitempty"`
-}
-
-type PasswordChangeResult struct {
-	Device  string `json:"device"`
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-}
-
-type PasswordChangeResponse struct {
-	Results []PasswordChangeResult `json:"results"`
-}
-
-type BootResult struct {
-	Kernel        string        `json:"kernel"`
-	Initrd        string        `json:"initrd"`
-	Cmdline       string        `json:"cmdline"`
-	Drives        []DriveStatus `json:"drives"`
-	Warning       string        `json:"warning,omitempty"`
-	FullyUnlocked bool          `json:"fullyUnlocked"`
-	Debug         []string      `json:"debug,omitempty"`
-}
-
-type BootLaunchStatus struct {
-	InProgress bool        `json:"inProgress"`
-	Accepted   bool        `json:"accepted"`
-	Error      string      `json:"error,omitempty"`
-	Debug      []string    `json:"debug,omitempty"`
-	Result     *BootResult `json:"result,omitempty"`
-}
-
-type BootAttemptError struct {
-	Message string
-	Debug   []string
-}
-
-func (e BootAttemptError) Error() string {
-	return e.Message
-}
-
-type BootEntry struct {
-	KernelRef    string
-	KernelBase   string
-	KernelSuffix string
-	InitrdRefs   []string
-	InitrdBases  []string
-	InitrdSuffix []string
-	Cmdline      string
-	Source       string
-}
-
-// BootKernelInfo describes a discovered kernel available for boot selection
-type BootKernelInfo struct {
-	Index      int    `json:"index"`
-	Kernel     string `json:"kernel"`
-	KernelName string `json:"kernelName"` // e.g., "vmlinuz-6.8.12-9-pve"
-	Initrd     string `json:"initrd"`
-	InitrdName string `json:"initrdName"` // e.g., "initrd.img-6.8.12-9-pve"
-	Cmdline    string `json:"cmdline"`
-	Source     string `json:"source"` // e.g., "GRUB" or "loader.conf"
-}
-
-// PasswordPolicy describes complexity requirements for setting a new password.
-// It is NOT applied to unlock attempts — the drive may have been initialized
-// with a password that doesn't meet these requirements.
-type PasswordPolicy struct {
-	MinLength      int  `json:"minLength"`
-	RequireUpper   bool `json:"requireUpper"`
-	RequireLower   bool `json:"requireLower"`
-	RequireNumber  bool `json:"requireNumber"`
-	RequireSpecial bool `json:"requireSpecial"`
-}
 
 // ============================================================
 // GLOBALS
@@ -249,10 +117,10 @@ func loadPolicy() PasswordPolicy {
 		}
 		return def
 	}
-	
+
 	// Check if password complexity is globally disabled
 	complexityEnabled := getBool("PASSWORD_COMPLEXITY_ON", true)
-	
+
 	// If complexity is disabled, return a policy with no requirements
 	if !complexityEnabled {
 		return PasswordPolicy{
@@ -263,7 +131,7 @@ func loadPolicy() PasswordPolicy {
 			RequireSpecial: false,
 		}
 	}
-	
+
 	// Otherwise, apply the configured requirements
 	return PasswordPolicy{
 		MinLength:      getInt("MIN_PASSWORD_LENGTH", 12),
@@ -310,121 +178,6 @@ func validatePassword(password string) error {
 		return fmt.Errorf("missing special character")
 	}
 	return nil
-}
-
-// ============================================================
-// DRIVE SCANNING
-// ============================================================
-
-func scanDrives() []DriveStatus {
-	var statuses []DriveStatus
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "sedutil-cli", "--scan").Output()
-	if err != nil {
-		return statuses
-	}
-
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		dev := fields[0]
-		if !strings.HasPrefix(dev, "/dev/") {
-			continue
-		}
-
-		opal := strings.HasPrefix(fields[1], "2")
-		locked := false
-		if opal {
-			query, _ := queryDrive(dev)
-			locked = strings.Contains(query, "Locked = Y")
-		}
-		statuses = append(statuses, DriveStatus{Device: dev, Locked: locked, Opal: opal})
-	}
-	return statuses
-}
-
-func queryDrive(dev string) (string, error) {
-	qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer qcancel()
-	query, err := exec.CommandContext(qctx, "sedutil-cli", "--query", dev).CombinedOutput()
-	return string(query), err
-}
-
-func queryField(query, field string) string {
-	prefix := field + " = "
-	for _, line := range strings.Split(query, "\n") {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(t, prefix))
-		}
-	}
-	return "unknown"
-}
-
-func collectDriveDiagnostics() []DriveDiagnostics {
-	drives := scanDrives()
-	diag := make([]DriveDiagnostics, 0, len(drives))
-	for _, d := range drives {
-		raw, _ := queryDrive(d.Device)
-		diag = append(diag, DriveDiagnostics{
-			Device:              d.Device,
-			Opal:                d.Opal,
-			Locked:              d.Locked,
-			LockingSupported:    queryField(raw, "LockingSupported"),
-			LockingEnabled:      queryField(raw, "LockingEnabled"),
-			MBREnabled:          queryField(raw, "MBREnable"),
-			MBRDone:             queryField(raw, "MBRDone"),
-			MediaEncrypt:        queryField(raw, "MediaEncrypt"),
-			LockingRange0Locked: queryField(raw, "Locked"),
-			QueryRaw:            strings.TrimSpace(raw),
-		})
-	}
-	return diag
-}
-
-func scanNetworkInterfaces() []NetworkInterfaceStatus {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	statuses := make([]NetworkInterfaceStatus, 0, len(interfaces))
-	for _, iface := range interfaces {
-		addrs, _ := iface.Addrs()
-		addresses := make([]string, 0, len(addrs))
-		for _, addr := range addrs {
-			addresses = append(addresses, addr.String())
-		}
-		sort.Strings(addresses)
-
-		state := "unknown"
-		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "operstate")); err == nil {
-			state = strings.TrimSpace(string(b))
-		}
-		carrier := false
-		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "carrier")); err == nil {
-			carrier = strings.TrimSpace(string(b)) == "1"
-		}
-		statuses = append(statuses, NetworkInterfaceStatus{
-			Name:      iface.Name,
-			MAC:       iface.HardwareAddr.String(),
-			State:     state,
-			Carrier:   carrier,
-			Loopback:  (iface.Flags & net.FlagLoopback) != 0,
-			Addresses: addresses,
-		})
-	}
-	sort.Slice(statuses, func(i, j int) bool {
-		if statuses[i].Loopback != statuses[j].Loopback {
-			return !statuses[i].Loopback
-		}
-		return statuses[i].Name < statuses[j].Name
-	})
-	return statuses
 }
 
 func initializeBootState() {
@@ -946,148 +699,6 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 // BOOT
 // ============================================================
 
-// listDevicePartitions returns all partition device paths for the given device.
-//
-// sedutil-cli reports NVMe drives as /dev/nvme0 (the controller), but the
-// actual block device is the namespace, e.g. /dev/nvme0n1, and partitions are
-// nvme0n1p1, nvme0n1p2, etc.
-//
-// We scan /sys/class/block/ and use the pkname file to identify which block
-// device is the parent of each partition. For NVMe, we include the controller
-// name ("nvme0") AND any namespace names ("nvme0n1", "nvme0n2", etc.).
-// For SATA/SAS (sda, sdb, etc.), pkname simply equals the base name.
-func listDevicePartitions(device string) ([]string, error) {
-	base := filepath.Base(device) // e.g. "nvme0" or "sda"
-
-	// Helper to check if a block device is a partition (has "partition" file).
-	isPartition := func(name string) bool {
-		_, err := os.Stat(filepath.Join("/sys/class/block", name, "partition"))
-		return err == nil
-	}
-
-	// Helper to check if a block device exists and is not a partition.
-	isBlockDevice := func(name string) bool {
-		_, err := os.Stat(filepath.Join("/sys/class/block", name, "dev"))
-		return err == nil && !isPartition(name)
-	}
-
-	// Find all owner devices: the base device plus any NVMe namespaces.
-	// For SATA (sda): owners = {sda}
-	// For NVMe (nvme0): owners = {nvme0, nvme0n1, nvme0n2, ...}
-	owners := []string{base}
-	allEntries, err := os.ReadDir("/sys/class/block")
-	if err != nil {
-		return nil, err
-	}
-
-	for _, entry := range allEntries {
-		name := entry.Name()
-		// Check only candidates matching the namespace pattern (base+"n" + digit).
-		if strings.HasPrefix(name, base+"n") && isBlockDevice(name) {
-			owners = append(owners, name)
-		}
-	}
-	sort.Strings(owners) // For deterministic fallback matching
-
-	// Collect partitions whose pkname matches one of our owners.
-	var partitions []string
-	for _, entry := range allEntries {
-		name := entry.Name()
-		if !isPartition(name) {
-			continue
-		}
-
-		// Read parent device name from pkname file.
-		pkRaw, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
-		var parent string
-		if err == nil {
-			parent = strings.TrimSpace(string(pkRaw))
-		}
-
-		// If pkname fails, fall back to prefix matching (rare, but handles edge cases).
-		// Use a sorted owner list to ensure deterministic behavior.
-		if parent == "" {
-			for _, owner := range owners {
-				if strings.HasPrefix(name, owner) {
-					parent = owner
-					break
-				}
-			}
-		}
-
-		// Add partition if its parent is one of our owners.
-		if parent != "" {
-			for _, owner := range owners {
-				if parent == owner {
-					partitions = append(partitions, "/dev/"+name)
-					break
-				}
-			}
-		}
-	}
-
-	sort.Strings(partitions)
-	return partitions, nil
-}
-
-func listDeviceNodes(device string) ([]string, error) {
-	base := filepath.Base(device)
-	nodes := []string{"/dev/" + base}
-
-	allEntries, err := os.ReadDir("/sys/class/block")
-	if err != nil {
-		return nil, err
-	}
-
-	// Find NVMe namespaces: entries starting with base+"n" that are block
-	// devices but not partitions.
-	for _, entry := range allEntries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, base+"n") {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
-			continue
-		}
-		nodes = append(nodes, "/dev/"+name)
-	}
-
-	sort.Strings(nodes)
-	return nodes, nil
-}
-
-func rescanBlockDeviceLayout(device string) {
-	nodes, err := listDeviceNodes(device)
-	if err != nil {
-		return
-	}
-
-	for _, node := range nodes {
-		if f, err := os.OpenFile(node, os.O_RDONLY, 0); err == nil {
-			_ = unix.IoctlSetInt(int(f.Fd()), unix.BLKRRPART, 0)
-			f.Close()
-		}
-		if haveRuntimeCommand("blockdev") {
-			_ = exec.Command("blockdev", "--rereadpt", node).Run()
-		}
-		if haveRuntimeCommand("partprobe") {
-			_ = exec.Command("partprobe", node).Run()
-		}
-		if haveRuntimeCommand("partx") {
-			_ = exec.Command("partx", "-u", node).Run()
-		}
-	}
-
-	if haveRuntimeCommand("udevadm") {
-		_ = exec.Command("udevadm", "settle").Run()
-	}
-
-	time.Sleep(300 * time.Millisecond)
-}
-
 func availableRescanTools() []string {
 	tools := []string{"ioctl(BLKRRPART)"}
 	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
@@ -1106,11 +717,6 @@ func availableLVMTools() []string {
 		}
 	}
 	return tools
-}
-
-func haveRuntimeCommand(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 func activateLVM() {
@@ -1256,7 +862,6 @@ func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 
 	return devices, nil
 }
-
 
 // isLinuxKernel detects Linux kernel images using pure Go.
 // Checks ELF magic (uncompressed vmlinux) + strong embedded strings.
@@ -1947,11 +1552,6 @@ func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, st
 	return "", "", "", false
 }
 
-func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
-	files, _, _, _ := enhancedCollectBootFiles(mountPoint)
-	return findBootFromLoaderEntryFiles(mountPoint, files)
-}
-
 func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	for _, path := range grubConfigChain(grubPath, mountPoint) {
 		if kernel, initrd, cmdline, ok := findBootFromSingleGrubConfig(path, mountPoint); ok {
@@ -2124,18 +1724,12 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	return "", "", "", false
 }
 
-func appendBootDebug(debug *[]string, format string, args ...interface{}) {
-	line := fmt.Sprintf(format, args...)
-	*debug = append(*debug, line)
-	recordBootLaunchDebug(line)
-}
-
 // ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
 // Returns a slice of BootKernelInfo for selection by the user.
 func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 	drives := scanDrives()
 	bootCandidates := bootCandidateDrives(drives)
-	
+
 	if len(bootCandidates) == 0 {
 		return nil, fmt.Errorf("no startup-locked OPAL drive has transitioned to unlocked")
 	}
@@ -2152,7 +1746,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 	}
 
 	kernels := make([]BootKernelInfo, 0, 8)
-	
+
 	for _, dev := range searchDevices {
 		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
 			continue
@@ -2161,7 +1755,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 
 		// Collect all boot entries from this mount
 		entries := collectBootCatalog(mountPoint)
-		
+
 		// Also collect raw kernels/initrds for matching
 		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
 			name := filepath.Base(rawKernel)
@@ -2176,7 +1770,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 				Source:     "discovered",
 			})
 		}
-		
+
 		// Add entries from boot catalog as alternatives
 		for _, entry := range entries {
 			if entry.KernelRef != "" && len(entry.InitrdRefs) > 0 {
@@ -2191,7 +1785,7 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 				})
 			}
 		}
-		
+
 		// Only process first successful mount
 		break
 	}
@@ -2254,8 +1848,9 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 	appendBootDebug(&debug, "Selected kernel index %d: %s (%s)", kernelIndex, selected.KernelName, selected.Cmdline)
 
 	fullyUnlocked := len(locked) == 0
+	var warning string
 	if !fullyUnlocked {
-		warning := fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
+		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
 		appendBootDebug(&debug, "%s", warning)
 	}
 
@@ -2844,123 +2439,6 @@ func activeMenu(fd int) {
 	}
 }
 
-// ============================================================
-// HTTP HELPERS
-// ============================================================
-
-func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
-	if r.Method != method {
-		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return true
-	}
-	return false
-}
-
-func runSedutil(timeout time.Duration, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "sedutil-cli", args...).CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return string(out), fmt.Errorf("sedutil-cli timed out")
-	}
-	if err != nil {
-		if len(out) > 0 {
-			return string(out), fmt.Errorf("sedutil-cli failed: %v", err)
-		}
-		return "", fmt.Errorf("sedutil-cli failed: %v", err)
-	}
-	return string(out), nil
-}
-
-func runExpertCommand(w http.ResponseWriter, args ...string) {
-	out, err := runSedutil(45*time.Second, args...)
-	resp := map[string]string{
-		"command": strings.Join(append([]string{"sedutil-cli"}, args...), " "),
-		"output":  strings.TrimSpace(out),
-	}
-	if err != nil {
-		resp["error"] = err.Error()
-		jsonResponse(w, http.StatusBadRequest, resp)
-		return
-	}
-	resp["status"] = "ok"
-	jsonResponse(w, http.StatusOK, resp)
-}
-
-func runExpertPBAFlash(w http.ResponseWriter, password, imagePath, device string, validation []string) {
-	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, imagePath, device)
-	resp := map[string]string{
-		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
-		"output":  strings.TrimSpace(out),
-	}
-	respAny := map[string]interface{}{
-		"command":    resp["command"],
-		"output":     resp["output"],
-		"validation": validation,
-	}
-	if err != nil {
-		respAny["error"] = err.Error()
-		jsonResponse(w, http.StatusBadRequest, respAny)
-		return
-	}
-	respAny["status"] = "ok"
-	jsonResponse(w, http.StatusOK, respAny)
-}
-
-func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []byte, device string, validation []string) {
-	// Write image data to temporary file for sedutil to read
-	tmp, err := os.CreateTemp("", "sedunlocksrv-pba-*.img")
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to prepare temporary image file",
-			"validation": validation,
-		})
-		return
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmp.Write(imageData); err != nil {
-		tmp.Close()
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to write image to temporary file",
-			"validation": validation,
-		})
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to finalize temporary image file",
-			"validation": validation,
-		})
-		return
-	}
-
-	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, tmpPath, device)
-	resp := map[string]string{
-		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
-		"output":  strings.TrimSpace(out),
-	}
-	respAny := map[string]interface{}{
-		"command":    resp["command"],
-		"output":     resp["output"],
-		"validation": validation,
-	}
-	if err != nil {
-		respAny["error"] = err.Error()
-		jsonResponse(w, http.StatusBadRequest, respAny)
-		return
-	}
-	respAny["status"] = "ok"
-	jsonResponse(w, http.StatusOK, respAny)
-}
-
 func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
 	validation := make([]string, 0, 12)
 	if len(imageData) <= 0 {
@@ -3063,98 +2541,6 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 	validation = append(validation, fmt.Sprintf("filesystem type marker is %q", fsType))
 
 	return validation, nil
-}
-
-func firstExistingPath(paths ...string) string {
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-func startSSHService() {
-	dropbearBin := firstExistingPath("/usr/local/sbin/dropbear", "/usr/sbin/dropbear", "/usr/local/bin/dropbear")
-	if dropbearBin == "" {
-		if multi := firstExistingPath("/usr/local/bin/dropbearmulti", "/usr/bin/dropbearmulti"); multi != "" {
-			symlinkPath := "/tmp/dropbear"
-			_ = os.Remove(symlinkPath)
-			if err := os.Symlink(multi, symlinkPath); err == nil {
-				dropbearBin = symlinkPath
-			} else {
-				log.Printf("[ssh] failed to prepare dropbearmulti symlink: %v", err)
-			}
-		}
-	}
-	if dropbearBin == "" {
-		log.Println("[ssh] dropbear not present; SSH UI disabled")
-		return
-	}
-
-	ecdsaKey := firstExistingPath(
-		"/usr/local/etc/dropbear/dropbear_ecdsa_host_key",
-		"/etc/dropbear/dropbear_ecdsa_host_key",
-	)
-	ed25519Key := firstExistingPath(
-		"/usr/local/etc/dropbear/dropbear_ed25519_host_key",
-		"/etc/dropbear/dropbear_ed25519_host_key",
-	)
-	rsaKey := firstExistingPath(
-		"/usr/local/etc/dropbear/dropbear_rsa_host_key",
-		"/etc/dropbear/dropbear_rsa_host_key",
-	)
-	if ed25519Key == "" && ecdsaKey == "" && rsaKey == "" {
-		log.Println("[ssh] dropbear keys not present; SSH UI disabled")
-		return
-	}
-
-	args := []string{
-		"-R",
-		"-E",
-		"-F",
-		"-p", "2222",
-	}
-	if ed25519Key != "" {
-		args = append(args, "-r", ed25519Key)
-	}
-	if ecdsaKey != "" {
-		args = append(args, "-r", ecdsaKey)
-	}
-	if rsaKey != "" {
-		args = append(args, "-r", rsaKey)
-	}
-	if banner := firstExistingPath("/usr/local/etc/dropbear/banner", "/etc/dropbear/banner"); banner != "" {
-		args = append(args, "-b", banner)
-	}
-
-	cmd := exec.Command(dropbearBin, args...)
-	if err := cmd.Start(); err != nil {
-		log.Printf("[ssh] failed to start dropbear: %v", err)
-		return
-	}
-	log.Printf("[ssh] dropbear started on port 2222 (pid %d)", cmd.Process.Pid)
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Printf("[ssh] dropbear exited: %v", err)
-		}
-	}()
-}
-
-func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodPost) {
-			return
-		}
-		jsonResponse(w, http.StatusOK, map[string]string{"status": label})
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			exec.Command(args[0], args[1:]...).Run()
-		}()
-	}
 }
 
 // ============================================================
@@ -3369,32 +2755,14 @@ func main() {
 		if requireExpertToken(w, r) {
 			return
 		}
-		// Report available system RAM in bytes
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		availableRAM := int64(m.Sys - m.Alloc) // Approximate available memory
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"availableBytes": availableRAM,
-			"allocBytes":     int64(m.Alloc),
-			"systemBytes":    int64(m.Sys),
-		})
-	})
-
-	mux.HandleFunc("/expert/check-ram", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodGet) {
+		availableRAM, err := availableRAMBytes()
+		if err != nil {
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "failed to read available memory"})
 			return
 		}
-		if requireExpertToken(w, r) {
-			return
-		}
-		// Report available system RAM in bytes
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		availableRAM := int64(m.Sys - m.Alloc) // Approximate available memory
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"availableBytes": availableRAM,
-			"allocBytes":     int64(m.Alloc),
-			"systemBytes":    int64(m.Sys),
+			"source":         "/proc/meminfo:MemAvailable",
 		})
 	})
 
@@ -3482,7 +2850,7 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		
+
 		// Check if kernel index is provided in JSON body or query
 		kernelIndex := -1
 		var req struct {
@@ -3491,14 +2859,14 @@ func main() {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.KernelIndex >= 0 {
 			kernelIndex = req.KernelIndex
 		}
-		
+
 		var err error
 		if kernelIndex >= 0 {
 			err = startBootLaunchWithKernel(kernelIndex)
 		} else {
 			err = startBootLaunch()
 		}
-		
+
 		if err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
