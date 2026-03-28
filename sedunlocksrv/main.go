@@ -1715,6 +1715,12 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	loaderEntries, grubConfigs, kernels, initrds := enhancedCollectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
+		// If cmdline looks weak, try to augment it via the full fallback chain
+		if looksWeakCmdline(cmdline) {
+			if betterCmdline, err := findBootCmdline(mountPoint, kernel); err == nil {
+				cmdline = betterCmdline
+			}
+		}
 		return kernel, initrd, cmdline, true
 	}
 	for _, grubPath := range grubConfigs {

@@ -184,11 +184,11 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		return
 	}
 
-	// Brief pause to allow NVMe controller to reset state after preflight queries.
+	// Pause to allow NVMe controller to fully reset state after preflight queries.
 	// Multiple rapid sedutil calls can leave the device in a state where security
-	// commands fail with "NVMe Security Command Error:16396". This delay helps
-	// the firmware recover between operations.
-	time.Sleep(250 * time.Millisecond)
+	// commands fail with "NVMe Security Command Error:16396". Experience shows that
+	// 250ms is sometimes insufficient; 1 second provides better reliability.
+	time.Sleep(1 * time.Second)
 
 	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, tmpPath, device)
 	resp := map[string]string{
