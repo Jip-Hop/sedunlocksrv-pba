@@ -20,16 +20,14 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,8 +40,127 @@ import (
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
+
+// ============================================================
+// DATA TYPES
+// ============================================================
+
+type DriveStatus struct {
+	Device string `json:"device"`
+	Locked bool   `json:"locked"`
+	Opal   bool   `json:"opal"`
+}
+
+type NetworkInterfaceStatus struct {
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac,omitempty"`
+	State     string   `json:"state"`
+	Carrier   bool     `json:"carrier"`
+	Loopback  bool     `json:"loopback"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+type StatusResponse struct {
+	Drives            []DriveStatus            `json:"drives"`
+	Interfaces        []NetworkInterfaceStatus `json:"interfaces"`
+	BootReady         bool                     `json:"bootReady"`
+	BootDrives        []string                 `json:"bootDrives,omitempty"`
+	FailedAttempts    int                      `json:"failedAttempts"`
+	MaxAttempts       int                      `json:"maxAttempts"`
+	AttemptsRemaining int                      `json:"attemptsRemaining"`
+	Build             string                   `json:"build,omitempty"`
+}
+
+type DriveDiagnostics struct {
+	Device              string `json:"device"`
+	Opal                bool   `json:"opal"`
+	Locked              bool   `json:"locked"`
+	LockingSupported    string `json:"lockingSupported"`
+	LockingEnabled      string `json:"lockingEnabled"`
+	MBREnabled          string `json:"mbrEnabled"`
+	MBRDone             string `json:"mbrDone"`
+	MediaEncrypt        string `json:"mediaEncrypt"`
+	LockingRange0Locked string `json:"lockingRange0Locked"`
+	QueryRaw            string `json:"queryRaw"`
+}
+
+type DiagnosticsResponse struct {
+	GeneratedAt string             `json:"generatedAt"`
+	Drives      []DriveDiagnostics `json:"drives"`
+}
+
+type UnlockResult struct {
+	Device  string `json:"device"`
+	Success bool   `json:"success"`
+}
+
+type UnlockResponse struct {
+	Results []UnlockResult `json:"results"`
+	Token   string         `json:"token,omitempty"`
+}
+
+type PasswordChangeResult struct {
+	Device  string `json:"device"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type PasswordChangeResponse struct {
+	Results []PasswordChangeResult `json:"results"`
+}
+
+type BootResult struct {
+	Kernel        string        `json:"kernel"`
+	Initrd        string        `json:"initrd"`
+	Cmdline       string        `json:"cmdline"`
+	Drives        []DriveStatus `json:"drives"`
+	Warning       string        `json:"warning,omitempty"`
+	FullyUnlocked bool          `json:"fullyUnlocked"`
+	Debug         []string      `json:"debug,omitempty"`
+}
+
+type BootLaunchStatus struct {
+	InProgress bool        `json:"inProgress"`
+	Accepted   bool        `json:"accepted"`
+	Error      string      `json:"error,omitempty"`
+	Debug      []string    `json:"debug,omitempty"`
+	Result     *BootResult `json:"result,omitempty"`
+}
+
+type BootAttemptError struct {
+	Message string
+	Debug   []string
+}
+
+func (e BootAttemptError) Error() string {
+	return e.Message
+}
+
+type BootEntry struct {
+	KernelRef    string
+	KernelBase   string
+	KernelSuffix string
+	InitrdRefs   []string
+	InitrdBases  []string
+	InitrdSuffix []string
+	Cmdline      string
+	Source       string
+}
+
+// PasswordPolicy describes complexity requirements for setting a new password.
+// It is NOT applied to unlock attempts — the drive may have been initialized
+// with a password that doesn't meet these requirements.
+type PasswordPolicy struct {
+	MinLength      int  `json:"minLength"`
+	RequireUpper   bool `json:"requireUpper"`
+	RequireLower   bool `json:"requireLower"`
+	RequireNumber  bool `json:"requireNumber"`
+	RequireSpecial bool `json:"requireSpecial"`
+}
 
 // ============================================================
 // GLOBALS
@@ -109,7 +226,7 @@ func loadPolicy() PasswordPolicy {
 		if v == "" {
 			return def
 		}
-		return strings.ToLower(v) == "true" || strings.ToLower(v) == "on"
+		return v == "true"
 	}
 	getInt := func(k string, def int) int {
 		if i, err := strconv.Atoi(os.Getenv(k)); err == nil {
@@ -117,22 +234,6 @@ func loadPolicy() PasswordPolicy {
 		}
 		return def
 	}
-
-	// Check if password complexity is globally disabled
-	complexityEnabled := getBool("PASSWORD_COMPLEXITY_ON", true)
-
-	// If complexity is disabled, return a policy with no requirements
-	if !complexityEnabled {
-		return PasswordPolicy{
-			MinLength:      0,
-			RequireUpper:   false,
-			RequireLower:   false,
-			RequireNumber:  false,
-			RequireSpecial: false,
-		}
-	}
-
-	// Otherwise, apply the configured requirements
 	return PasswordPolicy{
 		MinLength:      getInt("MIN_PASSWORD_LENGTH", 12),
 		RequireUpper:   getBool("REQUIRE_UPPER", true),
@@ -178,6 +279,121 @@ func validatePassword(password string) error {
 		return fmt.Errorf("missing special character")
 	}
 	return nil
+}
+
+// ============================================================
+// DRIVE SCANNING
+// ============================================================
+
+func scanDrives() []DriveStatus {
+	var statuses []DriveStatus
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "sedutil-cli", "--scan").Output()
+	if err != nil {
+		return statuses
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := fields[0]
+		if !strings.HasPrefix(dev, "/dev/") {
+			continue
+		}
+
+		opal := strings.HasPrefix(fields[1], "2")
+		locked := false
+		if opal {
+			query, _ := queryDrive(dev)
+			locked = strings.Contains(query, "Locked = Y")
+		}
+		statuses = append(statuses, DriveStatus{Device: dev, Locked: locked, Opal: opal})
+	}
+	return statuses
+}
+
+func queryDrive(dev string) (string, error) {
+	qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer qcancel()
+	query, err := exec.CommandContext(qctx, "sedutil-cli", "--query", dev).CombinedOutput()
+	return string(query), err
+}
+
+func queryField(query, field string) string {
+	prefix := field + " = "
+	for _, line := range strings.Split(query, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(t, prefix))
+		}
+	}
+	return "unknown"
+}
+
+func collectDriveDiagnostics() []DriveDiagnostics {
+	drives := scanDrives()
+	diag := make([]DriveDiagnostics, 0, len(drives))
+	for _, d := range drives {
+		raw, _ := queryDrive(d.Device)
+		diag = append(diag, DriveDiagnostics{
+			Device:              d.Device,
+			Opal:                d.Opal,
+			Locked:              d.Locked,
+			LockingSupported:    queryField(raw, "LockingSupported"),
+			LockingEnabled:      queryField(raw, "LockingEnabled"),
+			MBREnabled:          queryField(raw, "MBREnable"),
+			MBRDone:             queryField(raw, "MBRDone"),
+			MediaEncrypt:        queryField(raw, "MediaEncrypt"),
+			LockingRange0Locked: queryField(raw, "Locked"),
+			QueryRaw:            strings.TrimSpace(raw),
+		})
+	}
+	return diag
+}
+
+func scanNetworkInterfaces() []NetworkInterfaceStatus {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	statuses := make([]NetworkInterfaceStatus, 0, len(interfaces))
+	for _, iface := range interfaces {
+		addrs, _ := iface.Addrs()
+		addresses := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			addresses = append(addresses, addr.String())
+		}
+		sort.Strings(addresses)
+
+		state := "unknown"
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "operstate")); err == nil {
+			state = strings.TrimSpace(string(b))
+		}
+		carrier := false
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface.Name, "carrier")); err == nil {
+			carrier = strings.TrimSpace(string(b)) == "1"
+		}
+		statuses = append(statuses, NetworkInterfaceStatus{
+			Name:      iface.Name,
+			MAC:       iface.HardwareAddr.String(),
+			State:     state,
+			Carrier:   carrier,
+			Loopback:  (iface.Flags & net.FlagLoopback) != 0,
+			Addresses: addresses,
+		})
+	}
+	sort.Slice(statuses, func(i, j int) bool {
+		if statuses[i].Loopback != statuses[j].Loopback {
+			return !statuses[i].Loopback
+		}
+		return statuses[i].Name < statuses[j].Name
+	})
+	return statuses
 }
 
 func initializeBootState() {
@@ -265,17 +481,6 @@ func startBootLaunch() error {
 	}
 	go func() {
 		result, err := BootSystem()
-		finishBootLaunch(result, err)
-	}()
-	return nil
-}
-
-func startBootLaunchWithKernel(kernelIndex int) error {
-	if err := beginBootLaunch(); err != nil {
-		return err
-	}
-	go func() {
-		result, err := BootSystemWithKernel(kernelIndex)
 		finishBootLaunch(result, err)
 	}()
 	return nil
@@ -414,15 +619,6 @@ func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func isOpal2Drive(device string) bool {
-	for _, d := range scanDrives() {
-		if d.Device == device {
-			return d.Opal
-		}
-	}
-	return false
-}
-
 func anySuccessfulUnlock(results []UnlockResult) bool {
 	for _, r := range results {
 		if r.Success {
@@ -540,19 +736,7 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // ============================================================
 
 func passwordPolicySummary() string {
-	// If all complexity requirements are disabled, return a simple message
-	if passwordPolicy.MinLength == 0 &&
-		!passwordPolicy.RequireUpper &&
-		!passwordPolicy.RequireLower &&
-		!passwordPolicy.RequireNumber &&
-		!passwordPolicy.RequireSpecial {
-		return "no complexity requirements"
-	}
-
-	parts := make([]string, 0)
-	if passwordPolicy.MinLength > 0 {
-		parts = append(parts, fmt.Sprintf("min %d chars", passwordPolicy.MinLength))
-	}
+	parts := []string{fmt.Sprintf("min %d chars", passwordPolicy.MinLength)}
 	if passwordPolicy.RequireUpper {
 		parts = append(parts, "uppercase")
 	}
@@ -564,10 +748,6 @@ func passwordPolicySummary() string {
 	}
 	if passwordPolicy.RequireSpecial {
 		parts = append(parts, "special")
-	}
-
-	if len(parts) == 0 {
-		return "no complexity requirements"
 	}
 	return strings.Join(parts, ", ")
 }
@@ -708,6 +888,153 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 // BOOT
 // ============================================================
 
+// listDevicePartitions returns all partition device paths for the given device.
+//
+// sedutil-cli reports NVMe drives as /dev/nvme0 (the controller), but the
+// actual block device is the namespace, e.g. /dev/nvme0n1, and partitions are
+// nvme0n1p1, nvme0n1p2, etc.
+//
+// We scan /sys/class/block/ (a flat directory of symlinks) and use the pkname
+// file to identify which block device is the parent of each partition. For NVMe
+// we must check pkname against both the controller name ("nvme0") AND any
+// namespace names ("nvme0n1", "nvme0n2", etc.) derived from it.
+// For SATA/SAS (sda, sdb, etc.) pkname will simply equal the base name directly.
+func listDevicePartitions(device string) ([]string, error) {
+	base := filepath.Base(device) // e.g. "nvme0" or "sda"
+
+	// Build the set of block device names whose partitions we want.
+	// For sda this is just {"sda"}.
+	// For nvme0 this is {"nvme0", "nvme0n1", "nvme0n2", ...} — we find the
+	// namespaces by scanning /sys/class/block for entries whose name starts
+	// with base+"n" and that have a "dev" file but no "partition" file.
+	owners := map[string]struct{}{base: {}}
+
+	allEntries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range allEntries {
+		name := entry.Name()
+		// Namespace names look like nvme0n1, nvme0n2 — starts with base
+		// followed immediately by 'n' and a digit.
+		if !strings.HasPrefix(name, base+"n") {
+			continue
+		}
+		// Must have a "dev" file (it's a real block device).
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
+			continue
+		}
+		// Must NOT have a "partition" file (namespaces are not partitions).
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+			continue
+		}
+		owners[name] = struct{}{}
+	}
+
+	// Now collect every entry that has a "partition" file and whose pkname
+	// is one of our owner names.
+	var partitions []string
+	seen := map[string]struct{}{}
+
+	for _, entry := range allEntries {
+		name := entry.Name()
+		// Must be a partition.
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err != nil {
+			continue
+		}
+		// Read its parent name.
+		pkRaw, err := os.ReadFile(filepath.Join("/sys/class/block", name, "pkname"))
+		if err != nil {
+			// pkname unavailable — fall back to prefix match against all owners.
+			for owner := range owners {
+				if strings.HasPrefix(name, owner) {
+					dev := "/dev/" + name
+					if _, ok := seen[dev]; !ok {
+						seen[dev] = struct{}{}
+						partitions = append(partitions, dev)
+					}
+					break
+				}
+			}
+			continue
+		}
+		parent := strings.TrimSpace(string(pkRaw))
+		if _, ok := owners[parent]; ok {
+			dev := "/dev/" + name
+			if _, ok := seen[dev]; !ok {
+				seen[dev] = struct{}{}
+				partitions = append(partitions, dev)
+			}
+		}
+	}
+
+	sort.Strings(partitions)
+	return partitions, nil
+}
+
+func listDeviceNodes(device string) ([]string, error) {
+	base := filepath.Base(device)
+	nodes := []string{"/dev/" + base}
+
+	allEntries, err := os.ReadDir("/sys/class/block")
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{"/dev/" + base: {}}
+	for _, entry := range allEntries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, base+"n") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "dev")); err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("/sys/class/block", name, "partition")); err == nil {
+			continue
+		}
+		dev := "/dev/" + name
+		if _, ok := seen[dev]; ok {
+			continue
+		}
+		seen[dev] = struct{}{}
+		nodes = append(nodes, dev)
+	}
+
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func rescanBlockDeviceLayout(device string) {
+	nodes, err := listDeviceNodes(device)
+	if err != nil {
+		return
+	}
+
+	for _, node := range nodes {
+		if f, err := os.OpenFile(node, os.O_RDONLY, 0); err == nil {
+			_ = unix.IoctlSetInt(int(f.Fd()), unix.BLKRRPART, 0)
+			f.Close()
+		}
+		if haveRuntimeCommand("blockdev") {
+			_ = exec.Command("blockdev", "--rereadpt", node).Run()
+		}
+		if haveRuntimeCommand("partprobe") {
+			_ = exec.Command("partprobe", node).Run()
+		}
+		if haveRuntimeCommand("partx") {
+			_ = exec.Command("partx", "-u", node).Run()
+		}
+	}
+
+	if haveRuntimeCommand("udevadm") {
+		_ = exec.Command("udevadm", "settle").Run()
+	}
+
+	time.Sleep(300 * time.Millisecond)
+}
+
 func availableRescanTools() []string {
 	tools := []string{"ioctl(BLKRRPART)"}
 	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
@@ -726,6 +1053,11 @@ func availableLVMTools() []string {
 		}
 	}
 	return tools
+}
+
+func haveRuntimeCommand(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 func activateLVM() {
@@ -872,137 +1204,24 @@ func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 	return devices, nil
 }
 
-// isLinuxKernel detects Linux kernel images using pure Go.
-// Checks ELF magic (uncompressed vmlinux) + strong embedded strings.
-func isLinuxKernel(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	// Size filter — see explanation below
-	if info, err := f.Stat(); err == nil {
-		size := info.Size()
-		if size < 4*1024*1024 || size > 512*1024*1024 { // 4 MiB – 512 MiB
-			return false
-		}
-	}
-
-	// Read only the front portion (headers + strings live early)
-	data, err := io.ReadAll(io.LimitReader(f, 256*1024))
-	if err != nil || len(data) == 0 {
-		return false
-	}
-
-	s := strings.ToLower(string(data))
-
-	return bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}) || // uncompressed vmlinux
-		strings.Contains(s, "linux version") ||
-		strings.Contains(s, "start_kernel") ||
-		strings.Contains(s, "linux_banner") ||
-		strings.Contains(s, "init/main.c") ||
-		strings.Contains(s, "setup_arch") ||
-		strings.Contains(s, "kernel version") ||
-		strings.Contains(s, "linux,version") ||
-		strings.Contains(s, "compiled") ||
-		strings.Contains(s, "gcc version") ||
-		strings.Contains(s, "smpboot") ||
-		strings.Contains(s, "boot_command_line") ||
-		strings.Contains(s, "rest_init") ||
-		strings.Contains(s, "sched_init") ||
-		strings.Contains(s, "early_param")
-}
-
-// isInitrd detects initrd / initramfs images using pure Go (no external commands).
-// Supports the most common formats: gzip-compressed cpio (vast majority of modern distros)
-// and raw/uncompressed cpio. Includes improved magic checks and a lightweight string fallback.
-func isInitrd(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	// Size filter — see explanation below
-	if info, err := f.Stat(); err == nil {
-		size := info.Size()
-		if size < 2*1024*1024 || size > 600*1024*1024 { // 2 MiB – 600 MiB
-			return false
-		}
-	}
-
-	// Read first 512 bytes for magic number detection
-	header := make([]byte, 512)
-	n, _ := io.ReadFull(f, header)
-	if n == 0 {
-		return false
-	}
-	header = header[:n]
-
-	// 1. Gzip-compressed cpio (by far the most common case)
-	if len(header) >= 3 && header[0] == 0x1f && header[1] == 0x8b && header[2] == 0x08 {
-		// Valid gzip header in /boot → extremely likely an initrd
-		// Optional deeper check: peek for cpio magic after decompression
-		f.Seek(0, 0)
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			return true
-		}
-		defer gz.Close()
-
-		cpioHeader := make([]byte, 6)
-		if n, _ := io.ReadFull(gz, cpioHeader); n >= 6 {
-			magic := string(cpioHeader)
-			if magic == "070701" || magic == "070702" {
-				return true
-			}
-		}
-		return true // gzip alone is a very strong signal
-	}
-
-	// 2. Raw (uncompressed) cpio archive
-	if len(header) >= 6 {
-		magic := string(header[:6])
-		if magic == "070701" || magic == "070702" {
-			return true
-		}
-	}
-
-	// 3. Lightweight fallback: string scan on first 64 KiB (rarely needed)
-	f.Seek(0, 0)
-	data, _ := io.ReadAll(io.LimitReader(f, 64*1024))
-	s := strings.ToLower(string(data))
-
-	return strings.Contains(s, "initramfs") ||
-		strings.Contains(s, "/init") ||
-		strings.Contains(s, "switch_root") ||
-		strings.Contains(s, "pivot_root") ||
-		strings.Contains(s, "rdinit=") ||
-		strings.Contains(s, "initrd") // extra common term
-}
-
-// enhancedCollectBootFiles scans for boot artifacts supporting major Linux distributions:
-// - Debian/Ubuntu: vmlinuz-*, initrd.img-*
-// - Fedora/RHEL/CentOS: vmlinuz-*, initramfs-*
-// - SUSE/openSUSE: linux, linux-*, initrd, initramfs-*
-// - Arch Linux: vmlinuz, vmlinuz-*, initramfs-*, initramfs-linux.img
-// - NixOS: bzImage, initrd (custom naming)
-// - Proxmox: bzImage, custom kernel naming
-// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
-// - Generic/custom: bzImage, linux, initrd
-//
-// Uses filename pattern matching for known distributions, complemented by
-// binary inspection for unknown binaries
-// Pure Go → no external process spawning, much faster, more reliable.
-func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+func collectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+	// collectBootFiles scans for boot artifacts supporting major Linux distributions:
+	// - Debian/Ubuntu: vmlinuz-*, initrd.img-*
+	// - Fedora/RHEL/CentOS: vmlinuz-*, initramfs-*
+	// - SUSE/openSUSE: linux, linux-*, initrd, initramfs-*
+	// - Arch Linux: vmlinuz, vmlinuz-*, initramfs-*, initramfs-linux.img
+	// - NixOS: bzImage, initrd (custom naming)
+	// - Proxmox: bzImage, custom kernel naming
+	// - Custom kernels (kernel.org): vmlinuz-*, bzImage, linux-*
+	// - Generic/custom: bzImage, linux, initrd
+	//
+	// Uses filename pattern matching for known distributions, complemented by
+	// binary inspection in enhancedCollectBootFiles() for unknown binaries
 	loaderEntries := make([]string, 0)
 	grubConfigs := make([]string, 0)
 	kernels := make([]string, 0)
 	initrds := make([]string, 0)
-
 	seen := make(map[string]struct{})
-
 	add := func(out *[]string, path string) {
 		if _, ok := seen[path]; ok {
 			return
@@ -1018,51 +1237,32 @@ func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, 
 
 		base := filepath.Base(path)
 		dir := filepath.Dir(path)
-
-		// === Filename-based detection (exact logic from original collectBootFiles) ===
 		switch {
 		case strings.EqualFold(base, "grub.cfg"):
 			add(&grubConfigs, path)
-			return nil
-
-		case filepath.Base(dir) == "entries" &&
-			filepath.Base(filepath.Dir(dir)) == "loader" &&
-			strings.HasSuffix(base, ".conf"):
+		case filepath.Base(dir) == "entries" && filepath.Base(filepath.Dir(dir)) == "loader" && strings.HasSuffix(base, ".conf"):
 			add(&loaderEntries, path)
-			return nil
-
-		// Kernel filename patterns
-		case strings.HasPrefix(base, "vmlinuz-"),
-			strings.HasPrefix(base, "linux-"),
-			base == "vmlinuz",
-			base == "linux",
-			base == "bzImage":
+		case strings.HasPrefix(base, "vmlinuz-"), strings.HasPrefix(base, "linux-"),
+			// Kernel patterns supporting major Linux distributions:
+			// vmlinuz-* : Debian/Ubuntu, Fedora/RHEL/CentOS, most systemd-based distros
+			// linux-*   : SUSE/openSUSE, some custom configurations, kernel.org custom builds
+			// vmlinuz   : Arch Linux main kernel (no version suffix)
+			// linux     : SUSE/openSUSE kernel naming
+			// bzImage   : Generic uncompressed kernel (NixOS, Proxmox, custom setups, kernel.org direct)
+			base == "vmlinuz", // Arch Linux
+			base == "linux",   // SUSE/openSUSE
+			base == "bzImage": // NixOS, Proxmox, custom, kernel.org
 			add(&kernels, path)
-			return nil
-
-		// Initrd filename patterns
-		case strings.HasPrefix(base, "initrd.img-"),
-			strings.HasPrefix(base, "initramfs-"),
-			base == "initrd",
-			base == "initramfs-linux.img":
-			add(&initrds, path)
-			return nil
-		}
-
-		// === Pure-Go binary inspection for files that didn't match known names ===
-		// Only check larger files to avoid wasting time on tiny ones
-		if info, err := d.Info(); err == nil {
-			if info.Size() < 4*1024*1024 { // too small for kernel or modern initrd
-				return nil
-			}
-		}
-
-		if isLinuxKernel(path) {
-			add(&kernels, path)
-		} else if isInitrd(path) {
+		case strings.HasPrefix(base, "initrd.img-"), strings.HasPrefix(base, "initramfs-"),
+			// Initrd patterns supporting major Linux distributions:
+			// initrd.img-* : Debian/Ubuntu, most Debian-based distros
+			// initramfs-*  : Fedora/RHEL/CentOS, SUSE/openSUSE, Arch Linux
+			// initrd       : SUSE/openSUSE, generic systems
+			// initramfs-linux.img : Arch Linux specific naming
+			base == "initrd",              // SUSE/openSUSE, generic
+			base == "initramfs-linux.img": // Arch Linux
 			add(&initrds, path)
 		}
-
 		return nil
 	})
 
@@ -1070,7 +1270,185 @@ func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, 
 	sort.Strings(grubConfigs)
 	sort.Strings(kernels)
 	sort.Strings(initrds)
+	return loaderEntries, grubConfigs, kernels, initrds
+}
 
+// commandExists checks if a command is available in PATH
+func commandExists(cmd string) bool {
+	_, err := exec.LookPath(cmd)
+	return err == nil
+}
+
+// inspectBinaryForKernel checks if a file appears to be a Linux kernel binary
+// Uses external tools (file, strings, readelf) if available in the environment
+// Returns false if tools are unavailable (graceful degradation)
+func inspectBinaryForKernel(filePath string) bool {
+	hasFile := commandExists("file")
+	hasStrings := commandExists("strings")
+	hasReadelf := commandExists("readelf")
+
+	// If no inspection tools available, return false and rely on pattern matching
+	if !hasFile && !hasStrings && !hasReadelf {
+		return false
+	}
+
+	// Check file type using 'file' command
+	if hasFile {
+		if out, err := exec.Command("file", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for kernel indicators
+			if strings.Contains(output, "linux kernel") ||
+				(strings.Contains(output, "elf") && strings.Contains(output, "x86")) {
+				return true
+			}
+		}
+	}
+
+	// Check for kernel strings using 'strings'
+	if hasStrings {
+		if out, err := exec.Command("strings", "-n", "10", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for kernel-specific strings
+			kernelIndicators := []string{
+				"linux version",
+				"kernel_version",
+				"init/main.c",
+				"arch/x86",
+				"setup_arch",
+				"start_kernel",
+				"linux_banner",
+			}
+			for _, indicator := range kernelIndicators {
+				if strings.Contains(output, indicator) {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check ELF header for kernel-like properties
+	if hasReadelf {
+		if out, err := exec.Command("readelf", "-h", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Kernels are typically ELF executables for x86
+			if strings.Contains(output, "executable") &&
+				(strings.Contains(output, "x86-64") || strings.Contains(output, "80386")) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// inspectBinaryForInitrd checks if a file appears to be an initrd/initramfs
+// Uses external tools (file, strings, gzip) if available in the environment
+// Returns false if tools are unavailable (graceful degradation)
+func inspectBinaryForInitrd(filePath string) bool {
+	hasFile := commandExists("file")
+	hasStrings := commandExists("strings")
+	hasGzip := commandExists("gzip")
+
+	// If no inspection tools available, return false and rely on pattern matching
+	if !hasFile && !hasStrings && !hasGzip {
+		return false
+	}
+
+	// Check file type using 'file' command
+	if hasFile {
+		if out, err := exec.Command("file", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			// Look for initrd indicators
+			if strings.Contains(output, "cpio") ||
+				strings.Contains(output, "initrd") ||
+				strings.Contains(output, "initramfs") ||
+				strings.Contains(output, "gzip compressed") ||
+				strings.Contains(output, "ascii cpio") {
+				return true
+			}
+		}
+	}
+
+	// Check if it's gzip compressed (common for initrds)
+	if hasGzip {
+		if err := exec.Command("gzip", "-t", filePath).Run(); err == nil {
+			// If gzip test passes, check if decompressed content looks like cpio
+			if out, err := exec.Command("sh", "-c", "gzip -dc "+filePath+" | head -c 100").Output(); err == nil {
+				// Look for cpio magic numbers
+				if strings.Contains(string(out), "070701") || strings.Contains(string(out), "070702") {
+					return true
+				}
+			}
+		}
+	}
+
+	// Check for initrd-like strings
+	if hasStrings {
+		if out, err := exec.Command("strings", "-n", "5", filePath).Output(); err == nil {
+			output := strings.ToLower(string(out))
+			initrdIndicators := []string{
+				"/init",
+				"initramfs",
+				"rdinit=",
+				"rootfs",
+				"pivot_root",
+				"switch_root",
+				"busybox",
+				"udev",
+				"systemd",
+			}
+			for _, indicator := range initrdIndicators {
+				if strings.Contains(output, indicator) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// enhancedCollectBootFiles extends collectBootFiles with binary inspection
+// Uses filename patterns AND binary content analysis to identify kernels/initrds
+// This provides compatibility with non-standard naming conventions and custom builds
+// Gracefully degrades: if inspection tools (file, strings, readelf) are unavailable,
+// relies solely on pattern matching which handles ~95% of real-world cases
+func enhancedCollectBootFiles(mountPoint string) ([]string, []string, []string, []string) {
+	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+
+	// Additional binary inspection for potential kernels/initrds with non-standard names
+	// Only performed if system tools are available; gracefully skipped otherwise
+	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+
+		base := filepath.Base(path)
+
+		// Skip files we've already identified
+		for _, k := range kernels {
+			if filepath.Base(k) == base {
+				return nil
+			}
+		}
+		for _, i := range initrds {
+			if filepath.Base(i) == base {
+				return nil
+			}
+		}
+
+		// Inspect unknown binaries (returns false if tools unavailable)
+		if inspectBinaryForKernel(path) {
+			kernels = append(kernels, path)
+		} else if inspectBinaryForInitrd(path) {
+			initrds = append(initrds, path)
+		}
+
+		return nil
+	})
+
+	sort.Strings(kernels)
+	sort.Strings(initrds)
 	return loaderEntries, grubConfigs, kernels, initrds
 }
 
@@ -1561,6 +1939,11 @@ func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, st
 	return "", "", "", false
 }
 
+func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
+	files, _, _, _ := collectBootFiles(mountPoint)
+	return findBootFromLoaderEntryFiles(mountPoint, files)
+}
+
 func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	for _, path := range grubConfigChain(grubPath, mountPoint) {
 		if kernel, initrd, cmdline, ok := findBootFromSingleGrubConfig(path, mountPoint); ok {
@@ -1719,12 +2102,6 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	}
 	for _, grubPath := range grubConfigs {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
-			// If cmdline looks weak, try to augment it via the full fallback chain
-			if looksWeakCmdline(cmdline) {
-				if betterCmdline, err := findBootCmdline(mountPoint, kernel); err == nil {
-					cmdline = betterCmdline
-				}
-			}
 			return kernel, initrd, cmdline, true
 		}
 	}
@@ -1739,250 +2116,10 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	return "", "", "", false
 }
 
-func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
-	debug := make([]string, 0, 64)
-	appendDebug := func(format string, args ...interface{}) {
-		debug = append(debug, fmt.Sprintf(format, args...))
-	}
-
-	drives := scanDrives()
-	bootCandidates := bootCandidateDrives(drives)
-	appendDebug("Boot candidates: %s", strings.Join(bootCandidates, ", "))
-
-	if len(bootCandidates) == 0 {
-		return nil, debug, fmt.Errorf("no startup-locked OPAL drive has transitioned to unlocked")
-	}
-
-	mountPoint := "/mnt/proxmox"
-	_ = os.MkdirAll(mountPoint, 0755)
-
-	// Activate LVM in case kernels are on LVM volumes
-	activateLVM()
-
-	searchDevices, err := buildBootSearchDevices(bootCandidates)
-	if err != nil {
-		appendDebug("buildBootSearchDevices failed: %v", err)
-		return nil, debug, err
-	}
-	appendDebug("Search devices: %s", strings.Join(searchDevices, ", "))
-
-	kernels := make([]BootKernelInfo, 0, 8)
-
-	for _, dev := range searchDevices {
-		appendDebug("Trying mount target: %s", dev)
-		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
-			appendDebug("Mount failed for %s: %v", dev, err)
-			continue
-		}
-
-		unmount := func() {
-			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
-				appendDebug("Unmount failed for %s: %v", dev, err)
-			}
-		}
-		appendDebug("Mounted %s on %s", dev, mountPoint)
-
-		// Collect all boot entries from this mount
-		entries := collectBootCatalog(mountPoint)
-		appendDebug("Boot catalog entries on %s: %d", dev, len(entries))
-
-		// Also collect raw kernels/initrds for matching
-		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
-			name := filepath.Base(rawKernel)
-			initrdName := filepath.Base(rawInitrd)
-			kernels = append(kernels, BootKernelInfo{
-				Index:      len(kernels),
-				Device:     dev,
-				Kernel:     rawKernel,
-				KernelName: name,
-				Initrd:     rawInitrd,
-				InitrdName: initrdName,
-				Cmdline:    cmdline,
-				Source:     "discovered",
-			})
-			appendDebug("Discovered kernel/initrd on %s: %s | %s", dev, rawKernel, rawInitrd)
-		} else {
-			appendDebug("No raw kernel/initrd pair discovered on %s", dev)
-		}
-
-		// Add entries from boot catalog as alternatives
-		for _, entry := range entries {
-			if entry.KernelRef != "" && len(entry.InitrdRefs) > 0 {
-				kernels = append(kernels, BootKernelInfo{
-					Index:      len(kernels),
-					Device:     dev,
-					Kernel:     entry.KernelRef,
-					KernelName: filepath.Base(entry.KernelRef),
-					Initrd:     entry.InitrdRefs[0],
-					InitrdName: filepath.Base(entry.InitrdRefs[0]),
-					Cmdline:    entry.Cmdline,
-					Source:     entry.Source,
-				})
-			}
-		}
-
-		appendDebug("Kernel candidates accumulated so far: %d", len(kernels))
-		unmount()
-	}
-
-	if len(kernels) == 0 {
-		appendDebug("Boot search exhausted with zero kernels")
-		return nil, debug, fmt.Errorf("no kernels found on boot devices")
-	}
-
-	appendDebug("Boot search finished with %d kernel candidates", len(kernels))
-	return kernels, debug, nil
-}
-
-// ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
-// Returns a slice of BootKernelInfo for selection by the user.
-func ListAvailableBootKernels() ([]BootKernelInfo, error) {
-	kernels, _, err := listAvailableBootKernelsWithDebug()
-	return kernels, err
-}
-
-// BootSystemWithKernel boots with a specific kernel selected by index.
-// If kernelIndex < 0, uses the first available kernel.
-func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
-	kernels, discoverDebug, err := listAvailableBootKernelsWithDebug()
-	if err != nil {
-		return nil, BootAttemptError{
-			Message: err.Error(),
-			Debug:   append(discoverDebug, err.Error()),
-		}
-	}
-
-	if len(kernels) == 0 {
-		return nil, BootAttemptError{
-			Message: "no kernels available",
-			Debug:   []string{"no kernels found"},
-		}
-	}
-
-	// Validate kernel index
-	if kernelIndex < 0 || kernelIndex >= len(kernels) {
-		kernelIndex = 0
-	}
-
-	selected := kernels[kernelIndex]
-	debug := make([]string, 0, 32)
-
-	// Get boot drives setup (reuse existing logic)
-	drives := scanDrives()
-	bootCandidates := bootCandidateDrives(drives)
-	var locked []string
-	for _, d := range drives {
-		if !d.Opal {
-			continue
-		}
-		if d.Locked {
-			locked = append(locked, d.Device)
-		}
-	}
-
-	if len(bootCandidates) == 0 {
-		appendBootDebug(&debug, "No startup-locked OPAL drive has transitioned to unlocked.")
-		return nil, BootAttemptError{
-			Message: "boot is unavailable until a startup-locked OPAL drive is unlocked",
-			Debug:   debug,
-		}
-	}
-
-	for _, line := range discoverDebug {
-		appendBootDebug(&debug, "kernel-discovery: %s", line)
-	}
-	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
-	appendBootDebug(&debug, "Selected kernel index %d: %s (%s)", kernelIndex, selected.KernelName, selected.Cmdline)
-
-	if selected.Device == "" {
-		appendBootDebug(&debug, "Selected kernel has no source device metadata")
-		return nil, BootAttemptError{
-			Message: "selected kernel source is unknown",
-			Debug:   debug,
-		}
-	}
-
-	mountPoint := "/mnt/proxmox"
-	_ = os.MkdirAll(mountPoint, 0755)
-	if err := runCommandTimeout(4*time.Second, "mount", "-r", selected.Device, mountPoint); err != nil {
-		appendBootDebug(&debug, "Failed to mount selected device %s: %v", selected.Device, err)
-		return nil, BootAttemptError{
-			Message: fmt.Sprintf("failed to mount selected boot device: %v", err),
-			Debug:   debug,
-		}
-	}
-	unmount := func() { _ = runCommandTimeout(3*time.Second, "umount", mountPoint) }
-	defer unmount()
-
-	fullyUnlocked := len(locked) == 0
-	var warning string
-	if !fullyUnlocked {
-		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
-		appendBootDebug(&debug, "%s", warning)
-	}
-
-	// Verify selected kernel and initrd exist
-	if _, err := os.Stat(selected.Kernel); err != nil {
-		appendBootDebug(&debug, "Selected kernel not found: %s", selected.Kernel)
-		return nil, BootAttemptError{
-			Message: "selected kernel not found",
-			Debug:   debug,
-		}
-	}
-	if _, err := os.Stat(selected.Initrd); err != nil {
-		appendBootDebug(&debug, "Selected initrd not found: %s", selected.Initrd)
-		return nil, BootAttemptError{
-			Message: "selected initrd not found",
-			Debug:   debug,
-		}
-	}
-
-	appendBootDebug(&debug, "Found kernel: %s", selected.Kernel)
-	appendBootDebug(&debug, "Found initrd: %s", selected.Initrd)
-	appendBootDebug(&debug, "Found cmdline: %s", selected.Cmdline)
-
-	if strings.TrimSpace(selected.Cmdline) == "" {
-		appendBootDebug(&debug, "Refusing to kexec with an empty kernel command line.")
-		return nil, BootAttemptError{
-			Message: "unable to determine kernel command line for boot target",
-			Debug:   debug,
-		}
-	}
-	if looksWeakCmdline(selected.Cmdline) {
-		appendBootDebug(&debug, "Refusing to kexec with a weak kernel command line: %s", selected.Cmdline)
-		return nil, BootAttemptError{
-			Message: "kernel command line looks incomplete for boot target",
-			Debug:   debug,
-		}
-	}
-
-	// Load kernel with kexec
-	if err := exec.Command("kexec", "-l", selected.Kernel, "--initrd="+selected.Initrd, "--append="+selected.Cmdline).Run(); err != nil {
-		appendBootDebug(&debug, "kexec -l failed: %s", err)
-		return nil, BootAttemptError{Message: err.Error(), Debug: debug}
-	}
-	unmount()
-
-	appendBootDebug(&debug, "kexec -l succeeded.")
-	result := &BootResult{
-		Kernel:        selected.Kernel,
-		Initrd:        selected.Initrd,
-		Cmdline:       selected.Cmdline,
-		Drives:        drives,
-		Warning:       warning,
-		FullyUnlocked: fullyUnlocked,
-		Debug:         debug,
-	}
-
-	// Signal main() to shut down HTTPS cleanly and execute kexec -e.
-	close(kexecReady)
-	if err := <-kexecFailed; err != nil {
-		return nil, BootAttemptError{
-			Message: fmt.Sprintf("kexec -e failed: %v", err),
-			Debug:   debug,
-		}
-	}
-	return result, nil
+func appendBootDebug(debug *[]string, format string, args ...interface{}) {
+	line := fmt.Sprintf(format, args...)
+	*debug = append(*debug, line)
+	recordBootLaunchDebug(line)
 }
 
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
@@ -2057,7 +2194,7 @@ func BootSystem() (*BootResult, error) {
 	bootCatalog := make([]BootEntry, 0, 8)
 	for _, dev := range searchDevices {
 		appendBootDebug(&debug, "Trying mount target: %s", dev)
-		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
+		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
 			appendBootDebug(&debug, "Mount failed: %s", err)
 			continue
 		}
@@ -2070,11 +2207,7 @@ func BootSystem() (*BootResult, error) {
 			appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
 		}
 
-		unmount := func() {
-			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
-				appendBootDebug(&debug, "Unmount failed for %s: %v", dev, err)
-			}
-		}
+		unmount := func() { exec.Command("umount", mountPoint).Run() }
 		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 		entries := collectBootCatalog(mountPoint)
 		if len(entries) > 0 {
@@ -2158,7 +2291,7 @@ func BootSystem() (*BootResult, error) {
 			// Unreachable on success — kexec -e replaces the kernel.
 			return result, nil
 		}
-		loaderEntries, grubConfigs, kernels, initrds := enhancedCollectBootFiles(mountPoint)
+		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 		appendBootDebug(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
 		if files := snapshotMountFiles(mountPoint, 40); len(files) > 0 {
 			appendBootDebug(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
@@ -2247,7 +2380,7 @@ func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
 // findBootCmdline tries loader entries then grub configs in priority order.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
-	loaderEntries, grubConfigs, _, _ := enhancedCollectBootFiles(mountPoint)
+	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
@@ -2511,108 +2644,145 @@ func activeMenu(fd int) {
 	}
 }
 
-func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
-	validation := make([]string, 0, 12)
-	if len(imageData) <= 0 {
-		return validation, fmt.Errorf("uploaded image is empty")
-	}
-	validation = append(validation, fmt.Sprintf("file size: %d bytes", len(imageData)))
-	if len(imageData) > 128<<20 {
-		return validation, fmt.Errorf("uploaded image exceeds 128 MiB")
-	}
-	validation = append(validation, "size is within the 128 MiB OPAL2 guideline")
-	ext := strings.ToLower(filepath.Ext(filename))
-	if ext != ".img" && ext != ".bin" {
-		return validation, fmt.Errorf("uploaded image must end in .img or .bin")
-	}
-	validation = append(validation, "filename extension is acceptable")
+// ============================================================
+// HTTP HELPERS
+// ============================================================
 
-	if len(imageData) < 512 {
-		return validation, fmt.Errorf("uploaded image is too small to contain a valid MBR")
-	}
+func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
 
-	mbr := imageData[0:512]
-	if mbr[510] != 0x55 || mbr[511] != 0xaa {
-		return validation, fmt.Errorf("uploaded image is missing the MBR signature")
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return true
 	}
-	validation = append(validation, "MBR signature 0x55AA is present")
+	return false
+}
 
-	part1 := mbr[446:462]
-	bootFlag := part1[0]
-	partType := part1[4]
-	startLBA := binary.LittleEndian.Uint32(part1[8:12])
-	sectorCount := binary.LittleEndian.Uint32(part1[12:16])
+func runSedutil(timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sedutil-cli", args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("sedutil-cli timed out")
+	}
+	if err != nil {
+		if len(out) > 0 {
+			return string(out), fmt.Errorf("sedutil-cli failed: %v", err)
+		}
+		return "", fmt.Errorf("sedutil-cli failed: %v", err)
+	}
+	return string(out), nil
+}
 
-	if bootFlag != 0x80 {
-		return validation, fmt.Errorf("uploaded image does not have a bootable first partition")
+func runExpertCommand(w http.ResponseWriter, args ...string) {
+	out, err := runSedutil(45*time.Second, args...)
+	resp := map[string]string{
+		"command": strings.Join(append([]string{"sedutil-cli"}, args...), " "),
+		"output":  strings.TrimSpace(out),
 	}
-	validation = append(validation, "first partition is bootable")
-	if partType != 0xEF {
-		return validation, fmt.Errorf("uploaded image first partition is 0x%02x, expected 0xEF", partType)
+	if err != nil {
+		resp["error"] = err.Error()
+		jsonResponse(w, http.StatusBadRequest, resp)
+		return
 	}
-	validation = append(validation, "first partition type matches sfdisk recipe (0xEF)")
-	if startLBA == 0 || sectorCount == 0 {
-		return validation, fmt.Errorf("uploaded image first partition is invalid")
-	}
-	validation = append(validation, fmt.Sprintf("first partition geometry looks valid (start LBA %d, sectors %d)", startLBA, sectorCount))
+	resp["status"] = "ok"
+	jsonResponse(w, http.StatusOK, resp)
+}
 
-	for i := 1; i < 4; i++ {
-		entry := mbr[446+i*16 : 446+(i+1)*16]
-		if entry[4] != 0 || binary.LittleEndian.Uint32(entry[8:12]) != 0 || binary.LittleEndian.Uint32(entry[12:16]) != 0 {
-			return validation, fmt.Errorf("uploaded image has unexpected extra partitions")
+func firstExistingPath(paths ...string) string {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p
 		}
 	}
-	validation = append(validation, "no unexpected extra partitions were found")
+	return ""
+}
 
-	bootSectorOffset := int64(startLBA) * 512
-	bootSectorEnd := bootSectorOffset + 512
-	if bootSectorEnd > int64(len(imageData)) {
-		return validation, fmt.Errorf("uploaded image boot partition is unreadable")
+func startSSHService() {
+	dropbearBin := firstExistingPath("/usr/local/sbin/dropbear", "/usr/sbin/dropbear", "/usr/local/bin/dropbear")
+	if dropbearBin == "" {
+		if multi := firstExistingPath("/usr/local/bin/dropbearmulti", "/usr/bin/dropbearmulti"); multi != "" {
+			symlinkPath := "/tmp/dropbear"
+			_ = os.Remove(symlinkPath)
+			if err := os.Symlink(multi, symlinkPath); err == nil {
+				dropbearBin = symlinkPath
+			} else {
+				log.Printf("[ssh] failed to prepare dropbearmulti symlink: %v", err)
+			}
+		}
+	}
+	if dropbearBin == "" {
+		log.Println("[ssh] dropbear not present; SSH UI disabled")
+		return
 	}
 
-	bootSector := imageData[bootSectorOffset:bootSectorEnd]
-	if bootSector[510] != 0x55 || bootSector[511] != 0xaa {
-		return validation, fmt.Errorf("uploaded image first partition is missing a valid boot sector signature")
+	ecdsaKey := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_ecdsa_host_key",
+		"/etc/dropbear/dropbear_ecdsa_host_key",
+	)
+	ed25519Key := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_ed25519_host_key",
+		"/etc/dropbear/dropbear_ed25519_host_key",
+	)
+	rsaKey := firstExistingPath(
+		"/usr/local/etc/dropbear/dropbear_rsa_host_key",
+		"/etc/dropbear/dropbear_rsa_host_key",
+	)
+	if ed25519Key == "" && ecdsaKey == "" && rsaKey == "" {
+		log.Println("[ssh] dropbear keys not present; SSH UI disabled")
+		return
 	}
-	validation = append(validation, "boot partition has a valid boot sector signature")
-	if !bytes.HasPrefix(bootSector, []byte{0xeb}) && !bytes.HasPrefix(bootSector, []byte{0xe9}) {
-		return validation, fmt.Errorf("uploaded image first partition does not look bootable")
-	}
-	validation = append(validation, "boot sector has a valid jump instruction")
 
-	bytesPerSector := binary.LittleEndian.Uint16(bootSector[11:13])
-	switch bytesPerSector {
-	case 512, 1024, 2048, 4096:
-		validation = append(validation, fmt.Sprintf("FAT sector size is valid (%d bytes)", bytesPerSector))
-	default:
-		return validation, fmt.Errorf("boot partition reports invalid sector size %d", bytesPerSector)
+	args := []string{
+		"-R",
+		"-E",
+		"-F",
+		"-p", "2222",
+	}
+	if ed25519Key != "" {
+		args = append(args, "-r", ed25519Key)
+	}
+	if ecdsaKey != "" {
+		args = append(args, "-r", ecdsaKey)
+	}
+	if rsaKey != "" {
+		args = append(args, "-r", rsaKey)
+	}
+	if banner := firstExistingPath("/usr/local/etc/dropbear/banner", "/etc/dropbear/banner"); banner != "" {
+		args = append(args, "-b", banner)
 	}
 
-	sectorsPerCluster := bootSector[13]
-	if sectorsPerCluster == 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 {
-		return validation, fmt.Errorf("boot partition reports invalid sectors-per-cluster value %d", sectorsPerCluster)
+	cmd := exec.Command(dropbearBin, args...)
+	if err := cmd.Start(); err != nil {
+		log.Printf("[ssh] failed to start dropbear: %v", err)
+		return
 	}
-	validation = append(validation, fmt.Sprintf("FAT cluster size is valid (%d sectors per cluster)", sectorsPerCluster))
+	log.Printf("[ssh] dropbear started on port 2222 (pid %d)", cmd.Process.Pid)
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.Printf("[ssh] dropbear exited: %v", err)
+		}
+	}()
+}
 
-	reservedSectors := binary.LittleEndian.Uint16(bootSector[14:16])
-	if reservedSectors == 0 {
-		return validation, fmt.Errorf("boot partition reports zero reserved sectors")
+func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{"status": label})
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			exec.Command(args[0], args[1:]...).Run()
+		}()
 	}
-	validation = append(validation, fmt.Sprintf("reserved sectors present (%d)", reservedSectors))
-
-	numberOfFATs := bootSector[16]
-	if numberOfFATs == 0 {
-		return validation, fmt.Errorf("boot partition reports zero FAT tables")
-	}
-	validation = append(validation, fmt.Sprintf("FAT table count is valid (%d)", numberOfFATs))
-
-	fsType := strings.TrimSpace(string(bootSector[82:90]))
-	if !strings.Contains(fsType, "FAT32") {
-		return validation, fmt.Errorf("boot partition is not marked as FAT32")
-	}
-	validation = append(validation, fmt.Sprintf("filesystem type marker is %q", fsType))
-
-	return validation, nil
 }
 
 // ============================================================
@@ -2820,117 +2990,6 @@ func main() {
 		runExpertCommand(w, "--yesIreallywanttoERASEALLmydatausingthePSID", req.PSID, req.Device)
 	})
 
-	mux.HandleFunc("/expert/check-ram", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodGet) {
-			return
-		}
-		if requireExpertToken(w, r) {
-			return
-		}
-		availableRAM, err := availableRAMBytes()
-		if err != nil {
-			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "failed to read available memory"})
-			return
-		}
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"availableBytes": availableRAM,
-			"source":         "/proc/meminfo:MemAvailable",
-		})
-	})
-
-	mux.HandleFunc("/expert/reflash-pba", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodPost) {
-			return
-		}
-		if requireExpertToken(w, r) {
-			return
-		}
-
-		const maxUploadBytes = 128 << 20
-		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+1024)
-		// Parse with full maxUploadBytes limit for in-memory handling
-		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid upload; ensure image size is <= 128 MiB"})
-			return
-		}
-
-		device := strings.TrimSpace(r.FormValue("device"))
-		password := r.FormValue("password")
-		confirm := strings.TrimSpace(r.FormValue("confirm"))
-
-		if !strings.HasPrefix(device, "/dev/") {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
-			return
-		}
-		if !isOpal2Drive(device) {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a detected OPAL2 drive"})
-			return
-		}
-		if strings.TrimSpace(password) == "" {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "current drive password is required"})
-			return
-		}
-		if confirm != "FLASH" {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "confirmation text must be FLASH"})
-			return
-		}
-
-		file, fileHeader, err := r.FormFile("image")
-		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "pba image file is required"})
-			return
-		}
-		defer file.Close()
-
-		// Read image entirely into memory
-		imageBuffer := bytes.NewBuffer(make([]byte, 0, maxUploadBytes+1))
-		written, err := io.Copy(imageBuffer, file)
-		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "failed to read uploaded image"})
-			return
-		}
-		if written == 0 {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "uploaded image is empty"})
-			return
-		}
-
-		imageData := imageBuffer.Bytes()
-		validation, err := validateUploadedPBAImageBytes(imageData, fileHeader.Filename)
-		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error(), "validation": validation})
-			return
-		}
-
-		if status, err := queryDrive(device); err != nil {
-			validation = append(validation, fmt.Sprintf("preflight --query failed for %s: %v", device, err))
-			if extra := trimSedutilOutput(status); extra != "" {
-				validation = append(validation, "preflight --query output: "+extra)
-			}
-		} else {
-			validation = append(validation, "preflight --query succeeded for selected device")
-			validation = append(validation, fmt.Sprintf("preflight LockingSupported=%s", queryField(status, "LockingSupported")))
-			validation = append(validation, fmt.Sprintf("preflight LockingEnabled=%s", queryField(status, "LockingEnabled")))
-			validation = append(validation, fmt.Sprintf("preflight MBRDone=%s", queryField(status, "MBRDone")))
-		}
-
-		runExpertPBAFlashBytes(w, password, imageData, device, validation)
-	})
-
-	mux.HandleFunc("/boot-list", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodGet) {
-			return
-		}
-		if requireSessionTokenOrUnlockedDrive(w, r) {
-			return
-		}
-		kernels, debug, err := listAvailableBootKernelsWithDebug()
-		if err != nil {
-			jsonResponse(w, http.StatusServiceUnavailable, map[string]interface{}{"error": err.Error(), "debug": debug})
-			return
-		}
-		jsonResponse(w, http.StatusOK, map[string]interface{}{"kernels": kernels, "debug": debug})
-	})
-
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -2938,24 +2997,7 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-
-		// Check if kernel index is provided in JSON body or query
-		kernelIndex := -1
-		var req struct {
-			KernelIndex int `json:"kernelIndex"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.KernelIndex >= 0 {
-			kernelIndex = req.KernelIndex
-		}
-
-		var err error
-		if kernelIndex >= 0 {
-			err = startBootLaunchWithKernel(kernelIndex)
-		} else {
-			err = startBootLaunch()
-		}
-
-		if err != nil {
+		if err := startBootLaunch(); err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
