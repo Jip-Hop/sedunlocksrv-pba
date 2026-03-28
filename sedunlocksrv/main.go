@@ -155,6 +155,17 @@ type BootEntry struct {
 	Source       string
 }
 
+// BootKernelInfo describes a discovered kernel available for boot selection
+type BootKernelInfo struct {
+	Index      int    `json:"index"`
+	Kernel     string `json:"kernel"`
+	KernelName string `json:"kernelName"` // e.g., "vmlinuz-6.8.12-9-pve"
+	Initrd     string `json:"initrd"`
+	InitrdName string `json:"initrdName"` // e.g., "initrd.img-6.8.12-9-pve"
+	Cmdline    string `json:"cmdline"`
+	Source     string `json:"source"` // e.g., "GRUB" or "loader.conf"
+}
+
 // PasswordPolicy describes complexity requirements for setting a new password.
 // It is NOT applied to unlock attempts — the drive may have been initialized
 // with a password that doesn't meet these requirements.
@@ -501,6 +512,17 @@ func startBootLaunch() error {
 	}
 	go func() {
 		result, err := BootSystem()
+		finishBootLaunch(result, err)
+	}()
+	return nil
+}
+
+func startBootLaunchWithKernel(kernelIndex int) error {
+	if err := beginBootLaunch(); err != nil {
+		return err
+	}
+	go func() {
+		result, err := BootSystemWithKernel(kernelIndex)
 		finishBootLaunch(result, err)
 	}()
 	return nil
@@ -1926,7 +1948,7 @@ func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, st
 }
 
 func findBootFromLoaderEntries(mountPoint string) (string, string, string, bool) {
-	files, _, _, _ := collectBootFiles(mountPoint)
+	files, _, _, _ := enhancedCollectBootFiles(mountPoint)
 	return findBootFromLoaderEntryFiles(mountPoint, files)
 }
 
@@ -2108,6 +2130,198 @@ func appendBootDebug(debug *[]string, format string, args ...interface{}) {
 	recordBootLaunchDebug(line)
 }
 
+// ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
+// Returns a slice of BootKernelInfo for selection by the user.
+func ListAvailableBootKernels() ([]BootKernelInfo, error) {
+	drives := scanDrives()
+	bootCandidates := bootCandidateDrives(drives)
+	
+	if len(bootCandidates) == 0 {
+		return nil, fmt.Errorf("no startup-locked OPAL drive has transitioned to unlocked")
+	}
+
+	mountPoint := "/mnt/proxmox"
+	os.MkdirAll(mountPoint, 0755)
+
+	// Activate LVM in case kernels are on LVM volumes
+	activateLVM()
+
+	searchDevices, err := buildBootSearchDevices(bootCandidates)
+	if err != nil {
+		return nil, err
+	}
+
+	kernels := make([]BootKernelInfo, 0, 8)
+	
+	for _, dev := range searchDevices {
+		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+			continue
+		}
+		defer exec.Command("umount", mountPoint).Run()
+
+		// Collect all boot entries from this mount
+		entries := collectBootCatalog(mountPoint)
+		
+		// Also collect raw kernels/initrds for matching
+		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+			name := filepath.Base(rawKernel)
+			initrdName := filepath.Base(rawInitrd)
+			kernels = append(kernels, BootKernelInfo{
+				Index:      len(kernels),
+				Kernel:     rawKernel,
+				KernelName: name,
+				Initrd:     rawInitrd,
+				InitrdName: initrdName,
+				Cmdline:    cmdline,
+				Source:     "discovered",
+			})
+		}
+		
+		// Add entries from boot catalog as alternatives
+		for _, entry := range entries {
+			if entry.KernelRef != "" && len(entry.InitrdRefs) > 0 {
+				kernels = append(kernels, BootKernelInfo{
+					Index:      len(kernels),
+					Kernel:     entry.KernelRef,
+					KernelName: filepath.Base(entry.KernelRef),
+					Initrd:     entry.InitrdRefs[0],
+					InitrdName: filepath.Base(entry.InitrdRefs[0]),
+					Cmdline:    entry.Cmdline,
+					Source:     entry.Source,
+				})
+			}
+		}
+		
+		// Only process first successful mount
+		break
+	}
+
+	if len(kernels) == 0 {
+		return nil, fmt.Errorf("no kernels found on boot devices")
+	}
+
+	return kernels, nil
+}
+
+// BootSystemWithKernel boots with a specific kernel selected by index.
+// If kernelIndex < 0, uses the first available kernel.
+func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
+	kernels, err := ListAvailableBootKernels()
+	if err != nil {
+		return nil, BootAttemptError{
+			Message: err.Error(),
+			Debug:   []string{err.Error()},
+		}
+	}
+
+	if len(kernels) == 0 {
+		return nil, BootAttemptError{
+			Message: "no kernels available",
+			Debug:   []string{"no kernels found"},
+		}
+	}
+
+	// Validate kernel index
+	if kernelIndex < 0 || kernelIndex >= len(kernels) {
+		kernelIndex = 0
+	}
+
+	selected := kernels[kernelIndex]
+	debug := make([]string, 0, 32)
+
+	// Get boot drives setup (reuse existing logic)
+	drives := scanDrives()
+	bootCandidates := bootCandidateDrives(drives)
+	var locked []string
+	for _, d := range drives {
+		if !d.Opal {
+			continue
+		}
+		if d.Locked {
+			locked = append(locked, d.Device)
+		}
+	}
+
+	if len(bootCandidates) == 0 {
+		appendBootDebug(&debug, "No startup-locked OPAL drive has transitioned to unlocked.")
+		return nil, BootAttemptError{
+			Message: "boot is unavailable until a startup-locked OPAL drive is unlocked",
+			Debug:   debug,
+		}
+	}
+
+	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
+	appendBootDebug(&debug, "Selected kernel index %d: %s (%s)", kernelIndex, selected.KernelName, selected.Cmdline)
+
+	fullyUnlocked := len(locked) == 0
+	if !fullyUnlocked {
+		warning := fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
+		appendBootDebug(&debug, "%s", warning)
+	}
+
+	// Verify selected kernel and initrd exist
+	if _, err := os.Stat(selected.Kernel); err != nil {
+		appendBootDebug(&debug, "Selected kernel not found: %s", selected.Kernel)
+		return nil, BootAttemptError{
+			Message: "selected kernel not found",
+			Debug:   debug,
+		}
+	}
+	if _, err := os.Stat(selected.Initrd); err != nil {
+		appendBootDebug(&debug, "Selected initrd not found: %s", selected.Initrd)
+		return nil, BootAttemptError{
+			Message: "selected initrd not found",
+			Debug:   debug,
+		}
+	}
+
+	appendBootDebug(&debug, "Found kernel: %s", selected.Kernel)
+	appendBootDebug(&debug, "Found initrd: %s", selected.Initrd)
+	appendBootDebug(&debug, "Found cmdline: %s", selected.Cmdline)
+
+	if strings.TrimSpace(selected.Cmdline) == "" {
+		appendBootDebug(&debug, "Refusing to kexec with an empty kernel command line.")
+		return nil, BootAttemptError{
+			Message: "unable to determine kernel command line for boot target",
+			Debug:   debug,
+		}
+	}
+	if looksWeakCmdline(selected.Cmdline) {
+		appendBootDebug(&debug, "Refusing to kexec with a weak kernel command line: %s", selected.Cmdline)
+		return nil, BootAttemptError{
+			Message: "kernel command line looks incomplete for boot target",
+			Debug:   debug,
+		}
+	}
+
+	// Load kernel with kexec
+	if err := exec.Command("kexec", "-l", selected.Kernel, "--initrd="+selected.Initrd, "--append="+selected.Cmdline).Run(); err != nil {
+		appendBootDebug(&debug, "kexec -l failed: %s", err)
+		return nil, BootAttemptError{Message: err.Error(), Debug: debug}
+	}
+
+	appendBootDebug(&debug, "kexec -l succeeded.")
+	result := &BootResult{
+		Kernel:        selected.Kernel,
+		Initrd:        selected.Initrd,
+		Cmdline:       selected.Cmdline,
+		Drives:        drives,
+		Warning:       warning,
+		FullyUnlocked: fullyUnlocked,
+		Debug:         debug,
+	}
+
+	// Signal successful load and prepare for transfer of control
+	go func() {
+		close(kexecReady)
+		if err := exec.Command("kexec", "-e").Run(); err != nil {
+			kexecFailed <- err
+		}
+	}()
+
+	return result, nil
+}
+
 // BootSystem mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
 func BootSystem() (*BootResult, error) {
@@ -2277,7 +2491,7 @@ func BootSystem() (*BootResult, error) {
 			// Unreachable on success — kexec -e replaces the kernel.
 			return result, nil
 		}
-		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
+		loaderEntries, grubConfigs, kernels, initrds := enhancedCollectBootFiles(mountPoint)
 		appendBootDebug(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
 		if files := snapshotMountFiles(mountPoint, 40); len(files) > 0 {
 			appendBootDebug(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
@@ -2366,7 +2580,7 @@ func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
 // findBootCmdline tries loader entries then grub configs in priority order.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
-	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
+	loaderEntries, grubConfigs, _, _ := enhancedCollectBootFiles(mountPoint)
 
 	candidates := []func() (string, bool, error){
 		func() (string, bool, error) {
@@ -2745,116 +2959,6 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 	}
 	respAny["status"] = "ok"
 	jsonResponse(w, http.StatusOK, respAny)
-}
-
-func validateUploadedPBAImage(path, filename string, size int64) ([]string, error) {
-	validation := make([]string, 0, 12)
-	if size <= 0 {
-		return validation, fmt.Errorf("uploaded image is empty")
-	}
-	validation = append(validation, fmt.Sprintf("file size: %d bytes", size))
-	if size > 128<<20 {
-		return validation, fmt.Errorf("uploaded image exceeds 128 MiB")
-	}
-	validation = append(validation, "size is within the 128 MiB OPAL2 guideline")
-	ext := strings.ToLower(filepath.Ext(filename))
-	if ext != ".img" && ext != ".bin" {
-		return validation, fmt.Errorf("uploaded image must end in .img or .bin")
-	}
-	validation = append(validation, "filename extension is acceptable")
-
-	f, err := os.Open(path)
-	if err != nil {
-		return validation, fmt.Errorf("failed to inspect uploaded image")
-	}
-	defer f.Close()
-
-	mbr := make([]byte, 512)
-	if _, err := io.ReadFull(f, mbr); err != nil {
-		return validation, fmt.Errorf("uploaded image is too small to contain a valid MBR")
-	}
-	if mbr[510] != 0x55 || mbr[511] != 0xaa {
-		return validation, fmt.Errorf("uploaded image is missing the MBR signature")
-	}
-	validation = append(validation, "MBR signature 0x55AA is present")
-
-	part1 := mbr[446:462]
-	bootFlag := part1[0]
-	partType := part1[4]
-	startLBA := binary.LittleEndian.Uint32(part1[8:12])
-	sectorCount := binary.LittleEndian.Uint32(part1[12:16])
-
-	if bootFlag != 0x80 {
-		return validation, fmt.Errorf("uploaded image does not have a bootable first partition")
-	}
-	validation = append(validation, "first partition is bootable")
-	if partType != 0xEF {
-		return validation, fmt.Errorf("uploaded image first partition is 0x%02x, expected 0xEF", partType)
-	}
-	validation = append(validation, "first partition type matches sfdisk recipe (0xEF)")
-	if startLBA == 0 || sectorCount == 0 {
-		return validation, fmt.Errorf("uploaded image first partition is invalid")
-	}
-	validation = append(validation, fmt.Sprintf("first partition geometry looks valid (start LBA %d, sectors %d)", startLBA, sectorCount))
-
-	for i := 1; i < 4; i++ {
-		entry := mbr[446+i*16 : 446+(i+1)*16]
-		if entry[4] != 0 || binary.LittleEndian.Uint32(entry[8:12]) != 0 || binary.LittleEndian.Uint32(entry[12:16]) != 0 {
-			return validation, fmt.Errorf("uploaded image has unexpected extra partitions")
-		}
-	}
-	validation = append(validation, "no unexpected extra partitions were found")
-
-	bootSectorOffset := int64(startLBA) * 512
-	if _, err := f.Seek(bootSectorOffset, io.SeekStart); err != nil {
-		return validation, fmt.Errorf("failed to inspect uploaded image boot partition")
-	}
-	bootSector := make([]byte, 512)
-	if _, err := io.ReadFull(f, bootSector); err != nil {
-		return validation, fmt.Errorf("uploaded image boot partition is unreadable")
-	}
-	if bootSector[510] != 0x55 || bootSector[511] != 0xaa {
-		return validation, fmt.Errorf("uploaded image first partition is missing a valid boot sector signature")
-	}
-	validation = append(validation, "boot partition has a valid boot sector signature")
-	if !bytes.HasPrefix(bootSector, []byte{0xeb}) && !bytes.HasPrefix(bootSector, []byte{0xe9}) {
-		return validation, fmt.Errorf("uploaded image first partition does not look bootable")
-	}
-	validation = append(validation, "boot sector has a valid jump instruction")
-
-	bytesPerSector := binary.LittleEndian.Uint16(bootSector[11:13])
-	switch bytesPerSector {
-	case 512, 1024, 2048, 4096:
-		validation = append(validation, fmt.Sprintf("FAT sector size is valid (%d bytes)", bytesPerSector))
-	default:
-		return validation, fmt.Errorf("boot partition reports invalid sector size %d", bytesPerSector)
-	}
-
-	sectorsPerCluster := bootSector[13]
-	if sectorsPerCluster == 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 {
-		return validation, fmt.Errorf("boot partition reports invalid sectors-per-cluster value %d", sectorsPerCluster)
-	}
-	validation = append(validation, fmt.Sprintf("FAT cluster size is valid (%d sectors per cluster)", sectorsPerCluster))
-
-	reservedSectors := binary.LittleEndian.Uint16(bootSector[14:16])
-	if reservedSectors == 0 {
-		return validation, fmt.Errorf("boot partition reports zero reserved sectors")
-	}
-	validation = append(validation, fmt.Sprintf("reserved sectors present (%d)", reservedSectors))
-
-	numberOfFATs := bootSector[16]
-	if numberOfFATs == 0 {
-		return validation, fmt.Errorf("boot partition reports zero FAT tables")
-	}
-	validation = append(validation, fmt.Sprintf("FAT table count is valid (%d)", numberOfFATs))
-
-	fsType := strings.TrimSpace(string(bootSector[82:90]))
-	if !strings.Contains(fsType, "FAT32") {
-		return validation, fmt.Errorf("boot partition is not marked as FAT32")
-	}
-	validation = append(validation, fmt.Sprintf("filesystem type marker is %q", fsType))
-
-	return validation, nil
 }
 
 func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
@@ -3356,6 +3460,21 @@ func main() {
 		runExpertPBAFlashBytes(w, password, imageData, device, validation)
 	})
 
+	mux.HandleFunc("/boot-list", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		if requireSessionTokenOrUnlockedDrive(w, r) {
+			return
+		}
+		kernels, err := ListAvailableBootKernels()
+		if err != nil {
+			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"kernels": kernels})
+	})
+
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return
@@ -3363,7 +3482,24 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		if err := startBootLaunch(); err != nil {
+		
+		// Check if kernel index is provided in JSON body or query
+		kernelIndex := -1
+		var req struct {
+			KernelIndex int `json:"kernelIndex"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.KernelIndex >= 0 {
+			kernelIndex = req.KernelIndex
+		}
+		
+		var err error
+		if kernelIndex >= 0 {
+			err = startBootLaunchWithKernel(kernelIndex)
+		} else {
+			err = startBootLaunch()
+		}
+		
+		if err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}

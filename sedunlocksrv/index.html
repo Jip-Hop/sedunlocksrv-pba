@@ -156,6 +156,18 @@ textarea {
     <div id="systemActionResult" class="small"></div>
 </div>
 
+<div id="kernelSelectionDialog" class="hidden">
+    <div class="box">
+        <div><b>Select Kernel</b></div>
+        <div class="hint">Multiple kernels detected. Choose which one to boot:</div>
+        <div id="kernelOptions" class="small"></div>
+        <div class="row">
+            <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot Selected Kernel</button>
+            <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
+        </div>
+    </div>
+</div>
+
 <div id="changeTab" class="hidden">
     <div class="box">
         <div class="small">Target drives</div>
@@ -701,14 +713,82 @@ async function checkRAMForFile() {
     }
 }
 
+let selectedKernelIndex = -1
+
 async function boot() {
     if (bootInFlight) return
     $("bootResult").innerText = ""
     $("bootDebug").innerText = ""
+    selectedKernelIndex = -1
+    
+    // Try to list available kernels
+    try {
+        $("bootResult").innerText = "Checking available kernels..."
+        let r = await fetch("/boot-list", { method: "GET", headers: authHeaders() })
+        if (r.ok) {
+            let data = await r.json()
+            if (data.kernels && data.kernels.length > 1) {
+                // Multiple kernels available - show selection dialog
+                showKernelSelection(data.kernels)
+                return
+            } else if (data.kernels && data.kernels.length === 1) {
+                selectedKernelIndex = 0
+            }
+        }
+    } catch (err) {
+        // If kernel list fails, just proceed with default
+        console.warn("Failed to list kernels:", err)
+    }
+    
+    proceedWithBoot()
+}
+
+function showKernelSelection(kernels) {
+    let html = ""
+    kernels.forEach((kernel, idx) => {
+        let label = kernel.kernelName || "Kernel"
+        if (kernel.cmdline) {
+            label += ` (${kernel.cmdline.substring(0, 40)}...)`
+        }
+        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${idx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}</label>`
+    })
+    $("kernelOptions").innerHTML = html
+    if (kernels.length > 0) {
+        document.querySelector('input[name="kernelChoice"]').checked = true
+        selectedKernelIndex = 0
+    }
+    $("kernelSelectionDialog").classList.remove("hidden")
+}
+
+function cancelKernelSelection() {
+    selectedKernelIndex = -1
+    $("kernelSelectionDialog").classList.add("hidden")
+    $("bootResult").innerText = ""
+}
+
+function proceedWithSelectedKernel() {
+    $("kernelSelectionDialog").classList.add("hidden")
+    proceedWithBoot()
+}
+
+async function proceedWithBoot() {
+    if (bootInFlight) return
     $("bootResult").innerText = "Preparing OS handoff..."
     setBootUiBusy(true)
     try {
-        await postJSON("/boot", {}, authHeaders())
+        let body = {}
+        if (selectedKernelIndex >= 0) {
+            body = { kernelIndex: selectedKernelIndex }
+        }
+        let r = await fetch("/boot", { 
+            method: "POST", 
+            headers: {"Content-Type": "application/json", ...authHeaders()},
+            body: JSON.stringify(body)
+        })
+        if (!r.ok) {
+            let j = await r.json().catch(() => ({}))
+            throw new Error(j.error || "Boot request failed")
+        }
         $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
         stopBootStatusPolling()
         // Poll for status with longer interval to avoid interfering with kexec
