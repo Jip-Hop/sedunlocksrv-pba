@@ -231,11 +231,12 @@ textarea {
                 <option value="">No OPAL2 drives detected</option>
             </select>
             <input id="expFlashPw" type="password" placeholder="Current Drive Password">
-            <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream">
+            <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream" onchange="checkRAMForFile()">
             <div id="ramCheckStatus" style="margin-top: 8px; padding: 8px; border-radius: 4px; display: none;">
             </div>
             <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
-            <button class="danger-btn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
+            <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
+            <div id="flashStatus" class="small" style="margin-top: 8px; display: none;"></div>
         </div>
         <div class="box">
             <div class="small">Expert output</div>
@@ -669,6 +670,16 @@ async function expertReflashPBA() {
             return
         }
         
+        // All validation passed; disable button and show status
+        let uploadBtn = $("uploadBtn")
+        let flashStatus = $("flashStatus")
+        uploadBtn.disabled = true
+        flashStatus.style.display = "block"
+        flashStatus.classList.remove("ok", "bad", "warn")
+        flashStatus.classList.add("warn")
+        flashStatus.innerText = "Re-flashing PBA image to " + device + "... This may take 30-40 seconds. Please wait."
+        appendExpertOutput("Starting PBA re-flash operation...")
+        
         let form = new FormData()
         form.append("device", device)
         form.append("password", password)
@@ -686,21 +697,35 @@ async function expertReflashPBA() {
             err.details = j
             throw err
         }
+        
+        // Success
+        flashStatus.classList.remove("warn", "bad")
+        flashStatus.classList.add("ok")
+        flashStatus.innerText = "Re-flash completed successfully"
         appendExpertOutput(JSON.stringify(j, null, 2))
     } catch (err) {
+        // Failure
+        let flashStatus = $("flashStatus")
+        flashStatus.classList.remove("warn", "ok")
+        flashStatus.classList.add("bad")
+        flashStatus.innerText = "Re-flash failed: " + (err.message || "unknown error")
         if (err.details) {
             appendExpertOutput(JSON.stringify(err.details, null, 2))
         } else {
             appendExpertOutput("ERROR: " + (err.message || "pba re-flash failed"))
         }
         alert(err.message || "PBA re-flash failed")
+    } finally {
+        // Re-enable button
+        let uploadBtn = $("uploadBtn")
+        uploadBtn.disabled = false
     }
 }
 
 async function checkRAMForFile() {
     let imageInput = $("expPbaImage")
     let ramStatus = $("ramCheckStatus")
-    let uploadBtn = document.querySelector(".danger-btn[onclick='expertReflashPBA()']")
+    let uploadBtn = $("uploadBtn")
     
     if (!imageInput.files || !imageInput.files.length) {
         ramStatus.style.display = "none"

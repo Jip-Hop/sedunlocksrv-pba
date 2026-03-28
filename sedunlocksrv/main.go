@@ -2250,7 +2250,8 @@ func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
 	return cmdline, true, nil
 }
 
-// findBootCmdline tries loader entries then grub configs in priority order.
+// findBootCmdline tries loader entries then grub configs in priority order,
+// but also tries fallback sources if the primary result looks weak.
 func findBootCmdline(mountPoint, kernel string) (string, error) {
 	kernelBase := filepath.Base(kernel)
 	loaderEntries, grubConfigs, _, _ := enhancedCollectBootFiles(mountPoint)
@@ -2304,11 +2305,27 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 		})
 	}
 
+	// Try candidates in order, but if we find a weak cmdline, keep trying
+	// to see if a later candidate (like /etc/default/grub) has a better one.
+	var bestCmdline string
 	for _, try := range candidates {
-		if cmdline, found, err := try(); err == nil && found {
-			return cmdline, nil
+		if cmdline, found, err := try(); err == nil && found && cmdline != "" {
+			// If this is strong (has meaningful content), return immediately
+			if !looksWeakCmdline(cmdline) {
+				return cmdline, nil
+			}
+			// Otherwise, save it and keep trying for a better one
+			if bestCmdline == "" {
+				bestCmdline = cmdline
+			}
 		}
 	}
+
+	// If we found at least a weak cmdline, return it rather than error
+	if bestCmdline != "" {
+		return bestCmdline, nil
+	}
+
 	return "", fmt.Errorf("unable to determine target kernel command line from %s", mountPoint)
 }
 
