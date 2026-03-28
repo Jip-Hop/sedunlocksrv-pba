@@ -53,27 +53,50 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Automatic fallback if boot discovery fails
 
 **Security**: Beyond original SSH command restrictions, this fork adds:
-   - Password complexity enforcement (12+ chars, mixed case, numbers, symbols)
+   - **Expert Mode**: Separate password-protected access to advanced administrative functions (changed at build time, no complexity requirements)
+   - Password complexity enforcement for unlock password changes (12+ chars, Upper/Lower/Numeric/Special by default; configurable)
    - HTTPS-enforced web interface (HTTP auto-redirects to HTTPS)
    - Token-based protection for `boot` and password change operations
-   - Expert mode: isolated recovery controls behind a separate expert password
 
-**Password Complexity Configuration**: Customize unlock password requirements at build time:
-   - `--password-complexity=on|off` — Master switch (default: on)
-   - `--min-password-length=N` — Minimum chars (default: 12)
-   - `--require-upper=true|false` — Uppercase A-Z (default: true)
-   - `--require-lower=true|false` — Lowercase a-z (default: true)
-   - `--require-number=true|false` — Digits 0-9 (default: true)
-   - `--require-special=true|false` — Special chars (default: true)
+**Password Configuration**:
    
-   **Examples:**
+   *Expert Password (Web UI Expert Tab):* 
+   - Provides access to advanced operations (diagnostics, drive queries, etc.)
+   - Set once at build time, not changed by end users
+   - If not provided via `--expert-password=VALUE` or `build.conf`, you will be prompted to enter and confirm a password during build
+   - No complexity requirements — user can use any characters (spaces, symbols, etc.)
+   - Build prints a confirmation message when set via prompt
+   
+   *Unlock Password Complexity (for password changes):*
+   - Controls requirements when users change unlock passwords from web UI or console
+   - Configurable at build time with flags (default: 12+ chars with uppercase, lowercase, digits, special chars)
+   - Build flags:
+     - `--password-complexity=on|off` — Master switch (default: on)
+     - `--min-password-length=N` — Minimum chars (default: 12)
+     - `--require-upper=true|false` — Uppercase A-Z (default: true)
+     - `--require-lower=true|false` — Lowercase a-z (default: true)
+     - `--require-number=true|false` — Digits 0-9 (default: true)
+     - `--require-special=true|false` — Special chars (default: true)
+   - Can also be set in `build.conf` under the "Password Policy" section
+   - Requirements are displayed in console TUI (`P` menu) and web API (`/password-policy` endpoint)
+
+   **Build Examples:**
    ```bash
-   ./build.sh --password-complexity=off              # No requirements
-   ./build.sh --min-password-length=20               # Strict length only
-   ./build.sh                                        # Default (12+ chars, all types)
-   ```
+   # Expert password via prompt (if not in build.conf)
+   ./build.sh                                        # You will be prompted for expert password
    
-   Requirements are displayed in console TUI (`P` menu) and web API (`/password-policy`). See [PASSWORD_POLICY_CONFIG.md](PASSWORD_POLICY_CONFIG.md) for detailed configuration guide.
+   # Expert password via CLI (bypasses prompt)
+   ./build.sh --expert-password="MySecret!"
+   
+   # Complexity: no requirements
+   ./build.sh --password-complexity=off
+   
+   # Complexity: strict length only
+   ./build.sh --min-password-length=20 --require-upper=false --require-lower=false --require-number=false --require-special=false
+   
+   # Complexity: default (12+ chars, all types)
+   ./build.sh
+   ```
 
 **Boot Discovery**: Original uses filename patterns. This fork enhances with:
    - GRUB configuration parsing with variable expansion
@@ -86,10 +109,13 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 
 ## Quick Start
 1. Build host prep (Debian/Ubuntu): install dependencies, then run `sudo ./build.sh`.
-2. Optional build config: copy `build.conf.example` to `build.conf`, set values such as network mode, TLS cert/key, optional `EXPERT_PASSWORD`, and password complexity settings.
-3. Build image: `sudo ./build.sh --ssh` (if you want SSH UI) or `sudo ./build.sh` (web + console only).
-   - **Password complexity example:** `sudo ./build.sh --password-complexity=off --min-password-length=16 --require-upper=false`
-4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, then enable locking per your OPAL workflow.
+2. Optional build config: copy `build.conf.example` to `build.conf` and set values for:
+   - Network mode, TLS cert/key, expert password, password complexity settings
+   - Or pass as CLI flags instead
+3. Build image: `sudo ./build.sh --ssh` (with SSH UI) or `sudo ./build.sh` (web + console only)
+   - If expert password not in build.conf/CLI, you will be prompted to enter it
+   - Example with custom settings: `sudo ./build.sh --expert-password="PASS" --password-complexity=off`
+4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, then enable locking
 5. Boot target machine into PBA and unlock drives from:
    - Web UI: `https://<pba-ip>/`
    - SSH UI (optional): `ssh -p 2222 tc@<pba-ip>`
@@ -101,8 +127,12 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
-- **Password change**: Requirements configured at build time are enforced when users change passwords. In the web UI, requirements are shown before password entry. In the console UI, requirements are displayed when pressing `P` for password change. See [PASSWORD_POLICY_CONFIG.md](PASSWORD_POLICY_CONFIG.md) for details.
-- Password change is intentionally target-based. In the web UI, select the drive(s) you want to update. In the console UI, enter the exact target device path when prompted.
+- **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If admin access is needed, the build must be redone with a new password.
+- **Password Changes**: When users change unlock passwords (pressing `P` in console or using web UI password change):
+  - The complexity requirements set at build time are enforced (see "Password Configuration" above)
+  - Requirements are displayed before the user enters the new password
+  - Password change is intentionally target-based: select which drive(s) to update
+  - In console UI, enter the exact target device path when prompted
 - SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
 - SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
 

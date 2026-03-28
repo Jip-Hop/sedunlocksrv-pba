@@ -158,7 +158,7 @@ print_usage() {
     echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
     echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
-    echo "          [--expert-password=VALUE]  # if omitted, a random 16-digit password is generated" >&2
+    echo "          [--expert-password=VALUE]  # if omitted, you will be prompted to enter one" >&2
     echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
     echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
     echo "          [--require-number=true|false] [--require-special=true|false]" >&2
@@ -584,14 +584,6 @@ REQUIRE_SPECIAL=$(quote_sh_value "${REQUIRE_SPECIAL}")
 EOF
 }
 
-generate_random_16_digit_password() {
-    local digits=""
-    while [ "${#digits}" -lt 16 ]; do
-        digits="${digits}$(od -An -N8 -tu8 /dev/urandom | tr -cd '0-9')"
-    done
-    printf '%s' "${digits:0:16}"
-}
-
 prepare_expert_password_hash() {
     local had_xtrace=false
     case "$-" in
@@ -599,8 +591,19 @@ prepare_expert_password_hash() {
     esac
 
     if [ -z "${EXPERT_PASSWORD}" ]; then
-        EXPERT_PASSWORD="$(generate_random_16_digit_password)"
-        echo "Generated expert password for this build: ${EXPERT_PASSWORD}"
+        echo "\n=== Expert Mode Password ==="
+        echo "Enter a password for expert mode access (no requirements, any characters allowed)."
+        read -p "Expert password: " -r EXPERT_PASSWORD
+        if [ -z "${EXPERT_PASSWORD}" ]; then
+            echo "❌ Error: Expert password cannot be empty." >&2
+            exit 1
+        fi
+        read -p "Confirm password: " -r EXPERT_PASSWORD_CONFIRM
+        if [ "${EXPERT_PASSWORD}" != "${EXPERT_PASSWORD_CONFIRM}" ]; then
+            echo "❌ Error: Passwords do not match." >&2
+            exit 1
+        fi
+        echo "✅ Expert password set."
     fi
 
     EXPERT_PASSWORD_HASH="$(
