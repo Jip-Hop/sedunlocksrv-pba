@@ -1,11 +1,11 @@
-# 🚀 Enhanced TCG Opal 2.0 PBA (Proxmox Edition)
+# 🚀 Enhanced TCG Opal 2.0 PBA
 
-This fork has been refactored for enterprise-grade security and reliability, optimized for Proxmox VE environments.
+This is an enhanced fork designed for home server and personal use.
 
 ### ✨ Key Enhancements
 *   **Integrated Go Backend**: A single, high-performance Go binary manages the **Web UI (80/443)** and **Interactive Console** simultaneously.
 *   **kexec Boot**: Transitions directly into the Proxmox kernel after unlocking, bypassing BIOS POST for faster, more reliable "warm" boots that maintain drive authorization.
-*   **LACP Networking**: Native 802.3ad (Mode 4) bonding via `sysfs` with a 30-second synchronization loop to ensure connectivity with enterprise switches before service start.
+*   **LACP Networking**: Native 802.3ad (Mode 4) bonding via `sysfs` with a 30-second synchronization loop to ensure connectivity before service start.
 *   **Hardened Security**: 
     *   Strict password complexity (12+ chars, Upper/Lower/Numeric/Special).
     *   HTTPS-enforced web interface with automatic Port 80 redirection.
@@ -17,7 +17,7 @@ This fork has been refactored for enterprise-grade security and reliability, opt
 
 ## Comparison with Original
 
-This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github.com/Jip-Hop/sedunlocksrv-pba). All original functionality is preserved while adding significant enterprise-focused improvements.
+This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github.com/Jip-Hop/sedunlocksrv-pba). All original functionality is preserved while adding useful enhancements.
 
 ### Enhanced Features (This Fork)
 - ✅ **Unified Backend** — Single Go binary manages Web UI + Console + SSH (vs separate services in original)
