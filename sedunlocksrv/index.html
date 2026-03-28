@@ -36,7 +36,7 @@ button:disabled {
     transform: none;
     cursor: default;
 }
-input, textarea {
+input, textarea, select {
     width: 100%;
     padding: 5px;
     margin-top: 5px;
@@ -227,7 +227,9 @@ textarea {
         <div class="box danger">
             <div><b>Re-flash PBA Image</b> (destructive if wrong target)</div>
             <div class="hint">Uploads a new PBA image and runs sedutil <code>--loadpbaimage</code> on the selected drive.</div>
-            <input id="expDeviceFlash" type="text" placeholder="/dev/sda">
+            <select id="expDeviceFlash">
+                <option value="">No OPAL2 drives detected</option>
+            </select>
             <input id="expFlashPw" type="password" placeholder="Current Drive Password">
             <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream">
             <div id="ramCheckStatus" style="margin-top: 8px; padding: 8px; border-radius: 4px; display: none;">
@@ -270,6 +272,32 @@ function renderChangeTargets(status) {
         let checked = defaultSelected.includes(d.device) ? "checked" : ""
         return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${d.device}" ${checked}> ${d.device}</label>`
     }).join("")
+}
+
+function renderExpertFlashTargets(status) {
+    let select = $("expDeviceFlash")
+    if (!select) return
+    let drives = Array.isArray(status.drives) ? status.drives : []
+    let opal = drives.filter(d => d.opal).sort((a, b) => a.device.localeCompare(b.device))
+    let prev = select.value
+
+    if (!opal.length) {
+        select.innerHTML = '<option value="">No OPAL2 drives detected</option>'
+        select.disabled = true
+        return
+    }
+
+    select.disabled = false
+    select.innerHTML = '<option value="">Select OPAL2 drive...</option>' + opal.map(d => {
+        let state = d.locked ? "locked" : "unlocked"
+        return `<option value="${d.device}">${d.device} (${state})</option>`
+    }).join("")
+
+    if (opal.some(d => d.device === prev)) {
+        select.value = prev
+    } else if (opal.length === 1) {
+        select.value = opal[0].device
+    }
 }
 
 function setBootUiBusy(busy) {
@@ -395,6 +423,7 @@ async function refresh() {
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     $("bootBtn").classList.toggle("hidden", !j.bootReady)
     renderChangeTargets(j)
+    renderExpertFlashTargets(j)
 }
 
 async function postJSON(url, payload, headers) {
@@ -594,8 +623,8 @@ async function expertReflashPBA() {
         let password = $("expFlashPw").value
         let confirm = $("expFlashConfirm").value.trim()
         let imageInput = $("expPbaImage")
-        if (!device.startsWith("/dev/")) {
-            alert("Enter a target device path like /dev/sda.")
+        if (!device) {
+            alert("Select an OPAL2 target drive from the list.")
             return
         }
         if (!password.trim()) {

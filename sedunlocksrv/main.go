@@ -414,6 +414,15 @@ func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func isOpal2Drive(device string) bool {
+	for _, d := range scanDrives() {
+		if d.Device == device {
+			return d.Opal
+		}
+	}
+	return false
+}
+
 func anySuccessfulUnlock(results []UnlockResult) bool {
 	for _, r := range results {
 		if r.Success {
@@ -2843,6 +2852,10 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
 			return
 		}
+		if !isOpal2Drive(device) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a detected OPAL2 drive"})
+			return
+		}
 		if strings.TrimSpace(password) == "" {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "current drive password is required"})
 			return
@@ -2876,6 +2889,18 @@ func main() {
 		if err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error(), "validation": validation})
 			return
+		}
+
+		if status, err := queryDrive(device); err != nil {
+			validation = append(validation, fmt.Sprintf("preflight --query failed for %s: %v", device, err))
+			if extra := trimSedutilOutput(status); extra != "" {
+				validation = append(validation, "preflight --query output: "+extra)
+			}
+		} else {
+			validation = append(validation, "preflight --query succeeded for selected device")
+			validation = append(validation, fmt.Sprintf("preflight LockingSupported=%s", queryField(status, "LockingSupported")))
+			validation = append(validation, fmt.Sprintf("preflight LockingEnabled=%s", queryField(status, "LockingEnabled")))
+			validation = append(validation, fmt.Sprintf("preflight MBRDone=%s", queryField(status, "MBRDone")))
 		}
 
 		runExpertPBAFlashBytes(w, password, imageData, device, validation)

@@ -167,9 +167,9 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		return
 	}
 
-	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, tmpPath, device)
+	out, err := runSedutil(2*time.Minute, "-vvv", "--loadpbaimage", password, tmpPath, device)
 	resp := map[string]string{
-		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
+		"command": "sedutil-cli -vvv --loadpbaimage <password> <uploaded-image> " + device,
 		"output":  strings.TrimSpace(out),
 	}
 	respAny := map[string]interface{}{
