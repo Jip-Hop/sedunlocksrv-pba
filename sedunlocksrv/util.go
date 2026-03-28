@@ -51,6 +51,23 @@ func runSedutil(timeout time.Duration, args ...string) (string, error) {
 	return string(out), nil
 }
 
+func runCommandTimeout(timeout time.Duration, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%s timed out", name)
+	}
+	if err != nil {
+		extra := strings.TrimSpace(string(out))
+		if extra != "" {
+			return fmt.Errorf("%s failed: %v (%s)", name, err, extra)
+		}
+		return fmt.Errorf("%s failed: %v", name, err)
+	}
+	return nil
+}
+
 func queryDrive(dev string) (string, error) {
 	qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer qcancel()
@@ -166,6 +183,12 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		})
 		return
 	}
+
+	// Brief pause to allow NVMe controller to reset state after preflight queries.
+	// Multiple rapid sedutil calls can leave the device in a state where security
+	// commands fail with "NVMe Security Command Error:16396". This delay helps
+	// the firmware recover between operations.
+	time.Sleep(250 * time.Millisecond)
 
 	out, err := runSedutil(2*time.Minute, "-vvv", "--loadpbaimage", password, tmpPath, device)
 	resp := map[string]string{

@@ -195,10 +195,10 @@ func rescanBlockDeviceLayout(device string) {
 			f.Close()
 		}
 		if haveRuntimeCommand("blockdev") {
-			_ = exec.Command("blockdev", "--rereadpt", node).Run()
+			_ = runCommandTimeout(3*time.Second, "blockdev", "--rereadpt", node)
 		}
 		if haveRuntimeCommand("partprobe") {
-			_ = exec.Command("partprobe", node).Run()
+			_ = runCommandTimeout(3*time.Second, "partprobe", node)
 		}
 	}
 }

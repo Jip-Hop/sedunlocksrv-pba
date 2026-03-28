@@ -753,7 +753,10 @@ async function boot() {
     // Try to list available kernels
     try {
         $("bootResult").innerText = "Checking available kernels..."
-        let r = await fetch("/boot-list", { method: "GET", headers: authHeaders() })
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 6000)
+        let r = await fetch("/boot-list", { method: "GET", headers: authHeaders(), signal: controller.signal })
+        clearTimeout(timer)
         if (r.ok) {
             let data = await r.json()
             if (data.kernels && data.kernels.length > 1) {
@@ -766,7 +769,11 @@ async function boot() {
         }
     } catch (err) {
         // If kernel list fails, just proceed with default
-        console.warn("Failed to list kernels:", err)
+        if (err.name === "AbortError") {
+            console.warn("Kernel list timed out; continuing with default boot path")
+        } else {
+            console.warn("Failed to list kernels:", err)
+        }
     }
     
     proceedWithBoot()

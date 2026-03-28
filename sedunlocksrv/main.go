@@ -415,12 +415,17 @@ func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func isOpal2Drive(device string) bool {
-	for _, d := range scanDrives() {
-		if d.Device == device {
-			return d.Opal
-		}
+	// Query only the specific device to check OPAL2 support.
+	// This is much faster than scanDrives() and avoids leaving the device
+	// in a state where subsequent security commands might fail.
+	query, err := queryDrive(device)
+	if err != nil {
+		return false
 	}
-	return false
+	// OPAL2 devices will have LockingSupported defined by sedutil-cli --query.
+	// We check for this field as the primary indicator.
+	lockingSupported := queryField(query, "LockingSupported")
+	return lockingSupported != "unknown" && lockingSupported != ""
 }
 
 func anySuccessfulUnlock(results []UnlockResult) bool {
@@ -1764,13 +1769,13 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 
 	for _, dev := range searchDevices {
 		appendDebug("Trying mount target: %s", dev)
-		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
 			appendDebug("Mount failed for %s: %v", dev, err)
 			continue
 		}
 
 		unmount := func() {
-			if err := exec.Command("umount", mountPoint).Run(); err != nil {
+			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
 				appendDebug("Unmount failed for %s: %v", dev, err)
 			}
 		}
@@ -1898,14 +1903,14 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 
 	mountPoint := "/mnt/proxmox"
 	_ = os.MkdirAll(mountPoint, 0755)
-	if err := exec.Command("mount", "-r", selected.Device, mountPoint).Run(); err != nil {
+	if err := runCommandTimeout(4*time.Second, "mount", "-r", selected.Device, mountPoint); err != nil {
 		appendBootDebug(&debug, "Failed to mount selected device %s: %v", selected.Device, err)
 		return nil, BootAttemptError{
 			Message: fmt.Sprintf("failed to mount selected boot device: %v", err),
 			Debug:   debug,
 		}
 	}
-	unmount := func() { _ = exec.Command("umount", mountPoint).Run() }
+	unmount := func() { _ = runCommandTimeout(3*time.Second, "umount", mountPoint) }
 	defer unmount()
 
 	fullyUnlocked := len(locked) == 0
@@ -2051,7 +2056,7 @@ func BootSystem() (*BootResult, error) {
 	bootCatalog := make([]BootEntry, 0, 8)
 	for _, dev := range searchDevices {
 		appendBootDebug(&debug, "Trying mount target: %s", dev)
-		if err := exec.Command("mount", "-r", dev, mountPoint).Run(); err != nil {
+		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
 			appendBootDebug(&debug, "Mount failed: %s", err)
 			continue
 		}
@@ -2064,7 +2069,11 @@ func BootSystem() (*BootResult, error) {
 			appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
 		}
 
-		unmount := func() { exec.Command("umount", mountPoint).Run() }
+		unmount := func() {
+			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
+				appendBootDebug(&debug, "Unmount failed for %s: %v", dev, err)
+			}
+		}
 		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
 		entries := collectBootCatalog(mountPoint)
 		if len(entries) > 0 {
