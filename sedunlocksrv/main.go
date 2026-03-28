@@ -1345,6 +1345,54 @@ func looksWeakCmdline(cmdline string) bool {
 	return true
 }
 
+// isValidCmdlineForDevice checks if a kernel cmdline's root= device
+// matches the device we're currently booting from. This prevents using
+// cmdlines meant for other drives (e.g., encrypted sda when we're on nvme0).
+func isValidCmdlineForDevice(cmdline, device string) bool {
+	// Extract root= value from cmdline
+	var rootDevice string
+	for _, field := range strings.Fields(cmdline) {
+		if strings.HasPrefix(field, "root=") {
+			rootDevice = strings.TrimPrefix(field, "root=")
+			break
+		}
+	}
+
+	if rootDevice == "" {
+		// No root= found; can't validate, so allow it (might be weak but valid)
+		return true
+	}
+
+	// Normalize device names for comparison
+	// e.g., /dev/nvme0n1p2 or nvme0n1p2
+	deviceBase := filepath.Base(device)
+	rootBase := filepath.Base(rootDevice)
+
+	// Check for exact match or prefix match
+	// Examples:
+	//   device=/dev/nvme0n1p2, root=/dev/nvme0n1p2 → match
+	//   device=/dev/nvme0n1p2, root=/dev/mapper/pve-root (symlink) → mismatch (weak, but allow)
+	//   device=/dev/sda1, root=/dev/sda1 → match
+	//   device=/dev/nvme0n1p2, root=/dev/sda1 → mismatch (strong, reject)
+
+	// If root device is a mapper or symlink, be permissive (it might resolve to the current device)
+	if strings.Contains(rootBase, "mapper") || strings.Contains(rootBase, "-") {
+		return true
+	}
+
+	// If root device contains letters at the end (sda, sdb, nvme0, nvme1, etc.),
+	// make sure it's the same disk family as current device
+	currentDisk := strings.TrimRight(strings.TrimRight(deviceBase, "0123456789"), "p")
+	rootDisk := strings.TrimRight(strings.TrimRight(rootBase, "0123456789"), "p")
+
+	// Reject if they're different physical drives
+	if currentDisk != "" && rootDisk != "" && currentDisk != rootDisk {
+		return false // Different drives, reject
+	}
+
+	return true // Same drive or mapper, allow
+}
+
 func summarizeBootEntry(entry BootEntry) string {
 	initrds := strings.Join(entry.InitrdBases, "|")
 	if initrds == "" {
@@ -1577,13 +1625,13 @@ func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
 	return "", "", false
 }
 
-func findBootArtifacts(mountPoint string) (string, string, string, bool) {
+func findBootArtifacts(mountPoint, device string) (string, string, string, bool) {
 	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
 		// If cmdline looks weak, try to augment it via the full fallback chain
 		if looksWeakCmdline(cmdline) {
-			if betterCmdline, err := findBootCmdline(mountPoint, kernel); err == nil {
+			if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
 				cmdline = betterCmdline
 			}
 		}
@@ -1593,7 +1641,7 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
 			// If cmdline looks weak, try to augment it via the full fallback chain
 			if looksWeakCmdline(cmdline) {
-				if betterCmdline, err := findBootCmdline(mountPoint, kernel); err == nil {
+				if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
 					cmdline = betterCmdline
 				}
 			}
@@ -1602,7 +1650,7 @@ func findBootArtifacts(mountPoint string) (string, string, string, bool) {
 	}
 
 	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
-		cmdline, err := findBootCmdline(mountPoint, kernel)
+		cmdline, err := findBootCmdline(mountPoint, kernel, device)
 		if err == nil {
 			return kernel, initrd, cmdline, true
 		}
@@ -1659,7 +1707,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		appendDebug("Boot catalog entries on %s: %d", dev, len(entries))
 
 		// Also collect raw kernels/initrds for matching
-		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
 			name := filepath.Base(rawKernel)
 			initrdName := filepath.Base(rawInitrd)
 			kernels = append(kernels, BootKernelInfo{
@@ -1961,7 +2009,7 @@ func BootSystem() (*BootResult, error) {
 			}
 		}
 
-		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint); ok {
+		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
 			if matchedCmdline, source, matched := matchBootEntryCmdline(bootCatalog, kernel, initrd); matched {
 				if strings.TrimSpace(cmdline) == "" || strings.TrimSpace(cmdline) != strings.TrimSpace(matchedCmdline) {
 					cmdline = matchedCmdline
@@ -2118,7 +2166,7 @@ func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
 
 // findBootCmdline tries loader entries then grub configs in priority order,
 // but also tries fallback sources if the primary result looks weak.
-func findBootCmdline(mountPoint, kernel string) (string, error) {
+func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 	kernelBase := filepath.Base(kernel)
 	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 
@@ -2175,6 +2223,40 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 		func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), mountPoint, kernelBase)
 		},
+		// Filesystem walk: search entire mount for grub.cfg files
+		func() (string, bool, error) {
+			var bestCmdline string
+			var bestFound bool
+
+			_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
+				if err != nil || d == nil || d.IsDir() {
+					return nil
+				}
+
+				// Check for grub.cfg files
+				if filepath.Base(path) == "grub.cfg" {
+					if cmdline, found, err := parseGrubCfg(path, mountPoint, kernelBase); err == nil && found && cmdline != "" {
+						// If not weak, return immediately
+						if !looksWeakCmdline(cmdline) {
+							bestCmdline = cmdline
+							bestFound = true
+							return filepath.SkipDir // early exit
+						}
+						// Otherwise save and keep walking
+						if bestCmdline == "" {
+							bestCmdline = cmdline
+							bestFound = true
+						}
+					}
+				}
+				return nil
+			})
+
+			if bestFound {
+				return bestCmdline, true, nil
+			}
+			return "", false, fmt.Errorf("no grub.cfg found by filesystem walk")
+		},
 		func() (string, bool, error) {
 			return parseKernelCmdlineFile(mountPoint)
 		},
@@ -2194,6 +2276,10 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 	var bestCmdline string
 	for _, try := range candidates {
 		if cmdline, found, err := try(); err == nil && found && cmdline != "" {
+			// Skip cmdlines that point to a different device (e.g., sda when we're on nvme0)
+			if !isValidCmdlineForDevice(cmdline, device) {
+				continue // Skip this, keep searching
+			}
 			// If this is strong (has meaningful content), return immediately
 			if !looksWeakCmdline(cmdline) {
 				return cmdline, nil
