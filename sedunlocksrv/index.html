@@ -212,6 +212,17 @@ textarea {
             <input id="expPsidConfirm" type="text" placeholder='Type ERASE to confirm'>
             <button class="danger-btn" onclick="expertPsidRevert()">Run PSID Revert</button>
         </div>
+        <div class="box danger">
+            <div><b>Re-flash PBA Image</b> (destructive if wrong target)</div>
+            <div class="hint">Uploads a new PBA image and runs sedutil <code>--loadpbaimage</code> on the selected drive.</div>
+            <input id="expDeviceFlash" type="text" placeholder="/dev/sda">
+            <input id="expFlashPw" type="password" placeholder="Current Drive Password">
+            <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream">
+            <div id="ramCheckStatus" style="margin-top: 8px; padding: 8px; border-radius: 4px; display: none;">
+            </div>
+            <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
+            <button class="danger-btn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
+        </div>
         <div class="box">
             <div class="small">Expert output</div>
             <textarea id="expertOutput" readonly></textarea>
@@ -228,6 +239,7 @@ let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
 let bootInFlight = false
 let systemActionInFlight = false
 let bootStatusPoller = null
+const maxPBAUploadBytes = 128 * 1024 * 1024
 
 function selectedChangeDevices() {
     return Array.from(document.querySelectorAll("input[name='changeDevice']:checked")).map(el => el.value)
@@ -564,6 +576,131 @@ async function expertPsidRevert() {
     }
 }
 
+async function expertReflashPBA() {
+    try {
+        let device = $("expDeviceFlash").value.trim()
+        let password = $("expFlashPw").value
+        let confirm = $("expFlashConfirm").value.trim()
+        let imageInput = $("expPbaImage")
+        if (!device.startsWith("/dev/")) {
+            alert("Enter a target device path like /dev/sda.")
+            return
+        }
+        if (!password.trim()) {
+            alert("Enter the current drive password.")
+            return
+        }
+        if (confirm !== "FLASH") {
+            alert("Type FLASH to confirm the re-flash operation.")
+            return
+        }
+        if (!imageInput.files || !imageInput.files.length) {
+            alert("Select a PBA image file first.")
+            return
+        }
+        let imageFile = imageInput.files[0]
+        if (imageFile.size <= 0) {
+            alert("The selected PBA image is empty.")
+            return
+        }
+        if (imageFile.size > maxPBAUploadBytes) {
+            alert("The selected PBA image exceeds the 128 MiB OPAL2 guideline.")
+            return
+        }
+        if (!/\.(img|bin)$/i.test(imageFile.name)) {
+            alert("Select a PBA image file ending in .img or .bin.")
+            return
+        }
+        
+        // Check if sufficient RAM is available
+        try {
+            let ramCheck = await fetch("/expert/check-ram", {
+                method: "GET",
+                headers: expertHeaders()
+            })
+            let ramData = await ramCheck.json()
+            if (ramData.availableBytes < imageFile.size) {
+                alert(`Insufficient RAM available. Need ${(imageFile.size / (1024*1024)).toFixed(1)} MiB but only ${(ramData.availableBytes / (1024*1024)).toFixed(1)} MiB is available.`)
+                return
+            }
+        } catch (err) {
+            alert("Failed to check available RAM: " + (err.message || "unknown error"))
+            return
+        }
+        
+        let form = new FormData()
+        form.append("device", device)
+        form.append("password", password)
+        form.append("confirm", confirm)
+        form.append("image", imageFile)
+
+        let r = await fetch("/expert/reflash-pba", {
+            method: "POST",
+            headers: expertHeaders(),
+            body: form
+        })
+        let j = await r.json().catch(() => ({}))
+        if (!r.ok) {
+            let err = new Error(j.error || "pba re-flash failed")
+            err.details = j
+            throw err
+        }
+        appendExpertOutput(JSON.stringify(j, null, 2))
+    } catch (err) {
+        if (err.details) {
+            appendExpertOutput(JSON.stringify(err.details, null, 2))
+        } else {
+            appendExpertOutput("ERROR: " + (err.message || "pba re-flash failed"))
+        }
+        alert(err.message || "PBA re-flash failed")
+    }
+}
+
+async function checkRAMForFile() {
+    let imageInput = $("expPbaImage")
+    let ramStatus = $("ramCheckStatus")
+    let uploadBtn = document.querySelector(".danger-btn[onclick='expertReflashPBA()']")
+    
+    if (!imageInput.files || !imageInput.files.length) {
+        ramStatus.style.display = "none"
+        uploadBtn.disabled = false
+        return
+    }
+    
+    let fileSize = imageInput.files[0].size
+    
+    try {
+        let ramCheck = await fetch("/expert/check-ram", {
+            method: "GET",
+            headers: expertHeaders()
+        })
+        let ramData = await ramCheck.json()
+        
+        let fileSizeMiB = (fileSize / (1024*1024)).toFixed(1)
+        let availableMiB = (ramData.availableBytes / (1024*1024)).toFixed(1)
+        
+        ramStatus.style.display = "block"
+        
+        if (ramData.availableBytes >= fileSize) {
+            ramStatus.style.backgroundColor = "#d4edda"
+            ramStatus.style.color = "#155724"
+            ramStatus.innerHTML = `✓ Sufficient RAM: ${fileSizeMiB} MiB needed, ${availableMiB} MiB available`
+            uploadBtn.disabled = false
+        } else {
+            ramStatus.style.backgroundColor = "#f8d7da"
+            ramStatus.style.color = "#721c24"
+            ramStatus.innerHTML = `✗ Insufficient RAM: ${fileSizeMiB} MiB needed, but only ${availableMiB} MiB available`
+            uploadBtn.disabled = true
+        }
+    } catch (err) {
+        ramStatus.style.display = "block"
+        ramStatus.style.backgroundColor = "#fff3cd"
+        ramStatus.style.color = "#856404"
+        ramStatus.innerHTML = `⚠ Could not check RAM: ${err.message}`
+        uploadBtn.disabled = false
+    }
+}
+
 async function boot() {
     if (bootInFlight) return
     $("bootResult").innerText = ""
@@ -648,6 +785,9 @@ loadPolicy()
 refresh()
 syncExpertState()
 setInterval(refresh, 5000)
+
+// Set up RAM check listener for PBA image file selection
+$("expPbaImage").addEventListener("change", checkRAMForFile)
 </script>
 
 </body>

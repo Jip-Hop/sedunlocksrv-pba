@@ -54,6 +54,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 
 **Security**: Beyond original SSH command restrictions, this fork adds:
    - **Expert Mode**: Separate password-protected access to advanced administrative functions (changed at build time, no complexity requirements)
+   - **Expert Re-flash Flow**: Advanced tab can upload a new PBA image and run `sedutil-cli --loadpbaimage` against a selected drive
    - Password complexity enforcement for unlock password changes (12+ chars, Upper/Lower/Numeric/Special by default; configurable)
    - HTTPS-enforced web interface (HTTP auto-redirects to HTTPS)
    - Token-based protection for `boot` and password change operations
@@ -128,6 +129,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
 - **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If admin access is needed, the build must be redone with a new password.
+- **Expert Re-flash PBA**: In the Expert tab you can upload a replacement `.img` file and re-flash PBA on a target drive. You must provide the current drive password, target `/dev/...` path, and type `FLASH` to confirm. The web UI performs preflight checks and rejects files above 128 MiB, matching the project's OPAL2 PBA size guideline. The server also validates that the uploaded image matches the build's expected disk layout: DOS MBR, one bootable `0xEF` partition from the `sfdisk` recipe, and a readable FAT32 boot partition created by `mkfs.fat -F32`. The Expert output panel shows the validation summary so you can see exactly what passed before the flash runs. Use with care: selecting the wrong target can break boot access for that device.
 - **Password Changes**: When users change unlock passwords (pressing `P` in console or using web UI password change):
   - The complexity requirements set at build time are enforced (see "Password Configuration" above)
   - Requirements are displayed before the user enters the new password

@@ -18,23 +18,17 @@
 package main
 
 import (
-	"bytes"
-    "compress/gzip"
-    "io"
-    //"io/fs"
-    //"os"
-    //"path/filepath"
-    //"sort"
-    //"strings"
-    // ... your other existing imports
-
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"runtime"
 	"io/fs"
 	"log"
 	"net"
@@ -2685,6 +2679,288 @@ func runExpertCommand(w http.ResponseWriter, args ...string) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
+func runExpertPBAFlash(w http.ResponseWriter, password, imagePath, device string, validation []string) {
+	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, imagePath, device)
+	resp := map[string]string{
+		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
+		"output":  strings.TrimSpace(out),
+	}
+	respAny := map[string]interface{}{
+		"command":    resp["command"],
+		"output":     resp["output"],
+		"validation": validation,
+	}
+	if err != nil {
+		respAny["error"] = err.Error()
+		jsonResponse(w, http.StatusBadRequest, respAny)
+		return
+	}
+	respAny["status"] = "ok"
+	jsonResponse(w, http.StatusOK, respAny)
+}
+
+func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []byte, device string, validation []string) {
+	// Write image data to temporary file for sedutil to read
+	tmp, err := os.CreateTemp("", "sedunlocksrv-pba-*.img")
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
+			"error":      "failed to prepare temporary image file",
+			"validation": validation,
+		})
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(imageData); err != nil {
+		tmp.Close()
+		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
+			"error":      "failed to write image to temporary file",
+			"validation": validation,
+		})
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
+			"error":      "failed to finalize temporary image file",
+			"validation": validation,
+		})
+		return
+	}
+
+	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, tmpPath, device)
+	resp := map[string]string{
+		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
+		"output":  strings.TrimSpace(out),
+	}
+	respAny := map[string]interface{}{
+		"command":    resp["command"],
+		"output":     resp["output"],
+		"validation": validation,
+	}
+	if err != nil {
+		respAny["error"] = err.Error()
+		jsonResponse(w, http.StatusBadRequest, respAny)
+		return
+	}
+	respAny["status"] = "ok"
+	jsonResponse(w, http.StatusOK, respAny)
+}
+
+func validateUploadedPBAImage(path, filename string, size int64) ([]string, error) {
+	validation := make([]string, 0, 12)
+	if size <= 0 {
+		return validation, fmt.Errorf("uploaded image is empty")
+	}
+	validation = append(validation, fmt.Sprintf("file size: %d bytes", size))
+	if size > 128<<20 {
+		return validation, fmt.Errorf("uploaded image exceeds 128 MiB")
+	}
+	validation = append(validation, "size is within the 128 MiB OPAL2 guideline")
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext != ".img" && ext != ".bin" {
+		return validation, fmt.Errorf("uploaded image must end in .img or .bin")
+	}
+	validation = append(validation, "filename extension is acceptable")
+
+	f, err := os.Open(path)
+	if err != nil {
+		return validation, fmt.Errorf("failed to inspect uploaded image")
+	}
+	defer f.Close()
+
+	mbr := make([]byte, 512)
+	if _, err := io.ReadFull(f, mbr); err != nil {
+		return validation, fmt.Errorf("uploaded image is too small to contain a valid MBR")
+	}
+	if mbr[510] != 0x55 || mbr[511] != 0xaa {
+		return validation, fmt.Errorf("uploaded image is missing the MBR signature")
+	}
+	validation = append(validation, "MBR signature 0x55AA is present")
+
+	part1 := mbr[446:462]
+	bootFlag := part1[0]
+	partType := part1[4]
+	startLBA := binary.LittleEndian.Uint32(part1[8:12])
+	sectorCount := binary.LittleEndian.Uint32(part1[12:16])
+
+	if bootFlag != 0x80 {
+		return validation, fmt.Errorf("uploaded image does not have a bootable first partition")
+	}
+	validation = append(validation, "first partition is bootable")
+	if partType != 0xEF {
+		return validation, fmt.Errorf("uploaded image first partition is 0x%02x, expected 0xEF", partType)
+	}
+	validation = append(validation, "first partition type matches sfdisk recipe (0xEF)")
+	if startLBA == 0 || sectorCount == 0 {
+		return validation, fmt.Errorf("uploaded image first partition is invalid")
+	}
+	validation = append(validation, fmt.Sprintf("first partition geometry looks valid (start LBA %d, sectors %d)", startLBA, sectorCount))
+
+	for i := 1; i < 4; i++ {
+		entry := mbr[446+i*16 : 446+(i+1)*16]
+		if entry[4] != 0 || binary.LittleEndian.Uint32(entry[8:12]) != 0 || binary.LittleEndian.Uint32(entry[12:16]) != 0 {
+			return validation, fmt.Errorf("uploaded image has unexpected extra partitions")
+		}
+	}
+	validation = append(validation, "no unexpected extra partitions were found")
+
+	bootSectorOffset := int64(startLBA) * 512
+	if _, err := f.Seek(bootSectorOffset, io.SeekStart); err != nil {
+		return validation, fmt.Errorf("failed to inspect uploaded image boot partition")
+	}
+	bootSector := make([]byte, 512)
+	if _, err := io.ReadFull(f, bootSector); err != nil {
+		return validation, fmt.Errorf("uploaded image boot partition is unreadable")
+	}
+	if bootSector[510] != 0x55 || bootSector[511] != 0xaa {
+		return validation, fmt.Errorf("uploaded image first partition is missing a valid boot sector signature")
+	}
+	validation = append(validation, "boot partition has a valid boot sector signature")
+	if !bytes.HasPrefix(bootSector, []byte{0xeb}) && !bytes.HasPrefix(bootSector, []byte{0xe9}) {
+		return validation, fmt.Errorf("uploaded image first partition does not look bootable")
+	}
+	validation = append(validation, "boot sector has a valid jump instruction")
+
+	bytesPerSector := binary.LittleEndian.Uint16(bootSector[11:13])
+	switch bytesPerSector {
+	case 512, 1024, 2048, 4096:
+		validation = append(validation, fmt.Sprintf("FAT sector size is valid (%d bytes)", bytesPerSector))
+	default:
+		return validation, fmt.Errorf("boot partition reports invalid sector size %d", bytesPerSector)
+	}
+
+	sectorsPerCluster := bootSector[13]
+	if sectorsPerCluster == 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 {
+		return validation, fmt.Errorf("boot partition reports invalid sectors-per-cluster value %d", sectorsPerCluster)
+	}
+	validation = append(validation, fmt.Sprintf("FAT cluster size is valid (%d sectors per cluster)", sectorsPerCluster))
+
+	reservedSectors := binary.LittleEndian.Uint16(bootSector[14:16])
+	if reservedSectors == 0 {
+		return validation, fmt.Errorf("boot partition reports zero reserved sectors")
+	}
+	validation = append(validation, fmt.Sprintf("reserved sectors present (%d)", reservedSectors))
+
+	numberOfFATs := bootSector[16]
+	if numberOfFATs == 0 {
+		return validation, fmt.Errorf("boot partition reports zero FAT tables")
+	}
+	validation = append(validation, fmt.Sprintf("FAT table count is valid (%d)", numberOfFATs))
+
+	fsType := strings.TrimSpace(string(bootSector[82:90]))
+	if !strings.Contains(fsType, "FAT32") {
+		return validation, fmt.Errorf("boot partition is not marked as FAT32")
+	}
+	validation = append(validation, fmt.Sprintf("filesystem type marker is %q", fsType))
+
+	return validation, nil
+}
+
+func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
+	validation := make([]string, 0, 12)
+	if len(imageData) <= 0 {
+		return validation, fmt.Errorf("uploaded image is empty")
+	}
+	validation = append(validation, fmt.Sprintf("file size: %d bytes", len(imageData)))
+	if len(imageData) > 128<<20 {
+		return validation, fmt.Errorf("uploaded image exceeds 128 MiB")
+	}
+	validation = append(validation, "size is within the 128 MiB OPAL2 guideline")
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext != ".img" && ext != ".bin" {
+		return validation, fmt.Errorf("uploaded image must end in .img or .bin")
+	}
+	validation = append(validation, "filename extension is acceptable")
+
+	if len(imageData) < 512 {
+		return validation, fmt.Errorf("uploaded image is too small to contain a valid MBR")
+	}
+
+	mbr := imageData[0:512]
+	if mbr[510] != 0x55 || mbr[511] != 0xaa {
+		return validation, fmt.Errorf("uploaded image is missing the MBR signature")
+	}
+	validation = append(validation, "MBR signature 0x55AA is present")
+
+	part1 := mbr[446:462]
+	bootFlag := part1[0]
+	partType := part1[4]
+	startLBA := binary.LittleEndian.Uint32(part1[8:12])
+	sectorCount := binary.LittleEndian.Uint32(part1[12:16])
+
+	if bootFlag != 0x80 {
+		return validation, fmt.Errorf("uploaded image does not have a bootable first partition")
+	}
+	validation = append(validation, "first partition is bootable")
+	if partType != 0xEF {
+		return validation, fmt.Errorf("uploaded image first partition is 0x%02x, expected 0xEF", partType)
+	}
+	validation = append(validation, "first partition type matches sfdisk recipe (0xEF)")
+	if startLBA == 0 || sectorCount == 0 {
+		return validation, fmt.Errorf("uploaded image first partition is invalid")
+	}
+	validation = append(validation, fmt.Sprintf("first partition geometry looks valid (start LBA %d, sectors %d)", startLBA, sectorCount))
+
+	for i := 1; i < 4; i++ {
+		entry := mbr[446+i*16 : 446+(i+1)*16]
+		if entry[4] != 0 || binary.LittleEndian.Uint32(entry[8:12]) != 0 || binary.LittleEndian.Uint32(entry[12:16]) != 0 {
+			return validation, fmt.Errorf("uploaded image has unexpected extra partitions")
+		}
+	}
+	validation = append(validation, "no unexpected extra partitions were found")
+
+	bootSectorOffset := int64(startLBA) * 512
+	bootSectorEnd := bootSectorOffset + 512
+	if bootSectorEnd > int64(len(imageData)) {
+		return validation, fmt.Errorf("uploaded image boot partition is unreadable")
+	}
+
+	bootSector := imageData[bootSectorOffset:bootSectorEnd]
+	if bootSector[510] != 0x55 || bootSector[511] != 0xaa {
+		return validation, fmt.Errorf("uploaded image first partition is missing a valid boot sector signature")
+	}
+	validation = append(validation, "boot partition has a valid boot sector signature")
+	if !bytes.HasPrefix(bootSector, []byte{0xeb}) && !bytes.HasPrefix(bootSector, []byte{0xe9}) {
+		return validation, fmt.Errorf("uploaded image first partition does not look bootable")
+	}
+	validation = append(validation, "boot sector has a valid jump instruction")
+
+	bytesPerSector := binary.LittleEndian.Uint16(bootSector[11:13])
+	switch bytesPerSector {
+	case 512, 1024, 2048, 4096:
+		validation = append(validation, fmt.Sprintf("FAT sector size is valid (%d bytes)", bytesPerSector))
+	default:
+		return validation, fmt.Errorf("boot partition reports invalid sector size %d", bytesPerSector)
+	}
+
+	sectorsPerCluster := bootSector[13]
+	if sectorsPerCluster == 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 {
+		return validation, fmt.Errorf("boot partition reports invalid sectors-per-cluster value %d", sectorsPerCluster)
+	}
+	validation = append(validation, fmt.Sprintf("FAT cluster size is valid (%d sectors per cluster)", sectorsPerCluster))
+
+	reservedSectors := binary.LittleEndian.Uint16(bootSector[14:16])
+	if reservedSectors == 0 {
+		return validation, fmt.Errorf("boot partition reports zero reserved sectors")
+	}
+	validation = append(validation, fmt.Sprintf("reserved sectors present (%d)", reservedSectors))
+
+	numberOfFATs := bootSector[16]
+	if numberOfFATs == 0 {
+		return validation, fmt.Errorf("boot partition reports zero FAT tables")
+	}
+	validation = append(validation, fmt.Sprintf("FAT table count is valid (%d)", numberOfFATs))
+
+	fsType := strings.TrimSpace(string(bootSector[82:90]))
+	if !strings.Contains(fsType, "FAT32") {
+		return validation, fmt.Errorf("boot partition is not marked as FAT32")
+	}
+	validation = append(validation, fmt.Sprintf("filesystem type marker is %q", fsType))
+
+	return validation, nil
+}
+
 func firstExistingPath(paths ...string) string {
 	for _, p := range paths {
 		if p == "" {
@@ -2980,6 +3256,104 @@ func main() {
 			return
 		}
 		runExpertCommand(w, "--yesIreallywanttoERASEALLmydatausingthePSID", req.PSID, req.Device)
+	})
+
+	mux.HandleFunc("/expert/check-ram", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		if requireExpertToken(w, r) {
+			return
+		}
+		// Report available system RAM in bytes
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		availableRAM := int64(m.Sys - m.Alloc) // Approximate available memory
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"availableBytes": availableRAM,
+			"allocBytes":     int64(m.Alloc),
+			"systemBytes":    int64(m.Sys),
+		})
+	})
+
+	mux.HandleFunc("/expert/check-ram", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		if requireExpertToken(w, r) {
+			return
+		}
+		// Report available system RAM in bytes
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		availableRAM := int64(m.Sys - m.Alloc) // Approximate available memory
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"availableBytes": availableRAM,
+			"allocBytes":     int64(m.Alloc),
+			"systemBytes":    int64(m.Sys),
+		})
+	})
+
+	mux.HandleFunc("/expert/reflash-pba", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if requireExpertToken(w, r) {
+			return
+		}
+
+		const maxUploadBytes = 128 << 20
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+1024)
+		// Parse with full maxUploadBytes limit for in-memory handling
+		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid upload; ensure image size is <= 128 MiB"})
+			return
+		}
+
+		device := strings.TrimSpace(r.FormValue("device"))
+		password := r.FormValue("password")
+		confirm := strings.TrimSpace(r.FormValue("confirm"))
+
+		if !strings.HasPrefix(device, "/dev/") {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+			return
+		}
+		if strings.TrimSpace(password) == "" {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "current drive password is required"})
+			return
+		}
+		if confirm != "FLASH" {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "confirmation text must be FLASH"})
+			return
+		}
+
+		file, fileHeader, err := r.FormFile("image")
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "pba image file is required"})
+			return
+		}
+		defer file.Close()
+
+		// Read image entirely into memory
+		imageBuffer := bytes.NewBuffer(make([]byte, 0, maxUploadBytes+1))
+		written, err := io.Copy(imageBuffer, file)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "failed to read uploaded image"})
+			return
+		}
+		if written == 0 {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "uploaded image is empty"})
+			return
+		}
+
+		imageData := imageBuffer.Bytes()
+		validation, err := validateUploadedPBAImageBytes(imageData, fileHeader.Filename)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error(), "validation": validation})
+			return
+		}
+
+		runExpertPBAFlashBytes(w, password, imageData, device, validation)
 	})
 
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {

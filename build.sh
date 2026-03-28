@@ -781,6 +781,12 @@ build_partitioned_disk_image() {
 
     LOOP_DEVICE_HDD=$(losetup --find --show --partscan "${OUTPUTIMG}")
 
+    # Keep this disk layout and filesystem choice in sync with
+    # sedunlocksrv/main.go validateUploadedPBAImage(). The web Expert re-flash
+    # path validates uploaded images against this exact recipe: DOS MBR, one
+    # bootable 0xEF partition, and a FAT32 filesystem created by mkfs.fat -F32.
+    # If you change the sfdisk layout, partition type/count, boot flag, or
+    # filesystem format here, update the server-side validator at the same time.
     sfdisk "${LOOP_DEVICE_HDD}" <<'EOF'
 label: dos
 ,+,0xEF,*
