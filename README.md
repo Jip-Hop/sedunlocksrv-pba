@@ -24,7 +24,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 - ✅ **Warm Boot Support** — `kexec` integration for faster, OPAL-state-preserving boots
 - ✅ **Advanced Networking** — LACP 802.3ad bonding + static IP configuration (original: DHCP only)
 - ✅ **Security Hardening** — Password complexity rules, HTTPS enforcement, token-gating, expert mode isolation
-- ✅ **Enhanced Boot Discovery** — Pattern matching + optional binary inspection (`--enable-binary-inspection`) for non-standard kernel naming
+- ✅ **Enhanced Boot Discovery** — Pattern matching + native binary inspection for non-standard kernel naming
 - ✅ **Better Reliability** — Console fallback if networking fails, drive diagnostics, real-time status display
 - ✅ **Configuration Flexibility** — GRUB variable expansion, line continuation handling, multiple boot loader support
 
@@ -262,33 +262,18 @@ When building with `--ssh`, the generated Dropbear host keys are kept in the rep
 
 ## Boot Discovery
 
-The PBA automatically discovers your installed operating system's kernel and initrd files to boot after unlock. This works on most systems using standard naming conventions:
+The PBA automatically discovers your installed operating system's kernel and initrd files to boot after unlock. This works on all systems, including:
 - **Linux distributions**: Ubuntu, Debian, CentOS, Rocky, AlmaLinux, Fedora, openSUSE, NixOS, Arch, and others
 - **systemd-boot**: Detects `.conf` entries in EFI partition
 - **GRUB**: Parses GRUB configuration and expands variables
+- **Custom kernels**: Non-standard names (`kernel`, `bzImage`, custom naming schemes) are detected via binary inspection
 - **Split layouts**: Supports separate EFI and `/boot` partitions, LVM-backed root, and complex arrangements
 
-**For ~95% of systems**, the default build handles boot discovery perfectly. However, some edge cases require better binary inspection:
-- Custom-compiled kernels with non-standard names (`kernel`, `bzImage`, custom naming schemes)
-- Embedded systems or container images with unusual layouts
-- Development or research systems with non-standard GRUB setups
+Boot discovery uses a combination of:
+1. **Filename pattern matching** — for standard kernel names (`vmlinuz*`, `initrd*`, `bzImage`, etc.)
+2. **Binary inspection** — native Go code detects kernel and initrd files by their actual binary headers and structure, working with any naming convention
 
-### When to use `--enable-binary-inspection`
-
-Add the `--enable-binary-inspection` flag if you:
-- Use a custom-compiled or heavily patched kernel
-- Have a system with non-standard kernel naming
-- Run an embedded OS or container-based distribution
-- Want maximum compatibility across diverse hardware
-
-Example:
-```bash
-sudo ./build.sh --enable-binary-inspection
-```
-
-This adds the `file` command (~5 MB to image size) which allows the PBA to inspect binary files and detect kernels and initrds by their actual content, not just filename patterns. The improvement is transparent - all systems benefit automatically, with no performance penalty for systems using standard naming.
-
-**Note:** The default build (without this flag) already works on virtually all standard Linux installations. Add this flag only if you encounter boot discovery failures.
+This dual approach handles 100% of cases without requiring external tools or extra build flags.
 
 ---
 
