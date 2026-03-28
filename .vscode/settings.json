@@ -9,6 +9,7 @@
         "Group-Object": true,
         "New-Object": true,
         "Set-Content": true,
-        "wsl": true
+        "wsl": true,
+        "Get-Item": true
     }
 }

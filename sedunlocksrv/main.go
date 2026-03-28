@@ -2282,6 +2282,24 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 			}
 			return "", false, fmt.Errorf("kernel command line not found in loader entries")
 		},
+		// EFI-specific GRUB paths (checked early for EFI systems)
+		func() (string, bool, error) {
+			// Search for GRUB config in /boot/efi/EFI/*/grub.cfg (Proxmox, Ubuntu EFI, etc.)
+			efiDir := filepath.Join(mountPoint, "boot", "efi", "EFI")
+			entries, err := os.ReadDir(efiDir)
+			if err == nil {
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						continue
+					}
+					grubPath := filepath.Join(efiDir, entry.Name(), "grub.cfg")
+					if cmdline, found, err := parseGrubCfg(grubPath, mountPoint, kernelBase); err == nil && found {
+						return cmdline, true, nil
+					}
+				}
+			}
+			return "", false, fmt.Errorf("kernel command line not found in EFI GRUB configs")
+		},
 		func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), mountPoint, kernelBase)
 		},
@@ -2306,7 +2324,7 @@ func findBootCmdline(mountPoint, kernel string) (string, error) {
 	}
 
 	// Try candidates in order, but if we find a weak cmdline, keep trying
-	// to see if a later candidate (like /etc/default/grub) has a better one.
+	// to see if a later candidate has a better one.
 	var bestCmdline string
 	for _, try := range candidates {
 		if cmdline, found, err := try(); err == nil && found && cmdline != "" {
