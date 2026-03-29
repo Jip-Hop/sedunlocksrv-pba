@@ -1,6 +1,8 @@
 // types.go — Data structures for SED Unlock Server
 package main
 
+import "time"
+
 // ============================================================
 // HTTP API DATA TYPES
 // ============================================================
@@ -86,6 +88,7 @@ type BootLaunchStatus struct {
 	Error      string      `json:"error,omitempty"`
 	Debug      []string    `json:"debug,omitempty"`
 	Result     *BootResult `json:"result,omitempty"`
+	StartedAt  time.Time   `json:"-"`
 }
 
 type BootAttemptError struct {

@@ -223,10 +223,17 @@ func beginBootLaunch() error {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	if bootLaunchState.InProgress {
-		return fmt.Errorf("boot is already in progress")
+		// Auto-reset if the previous boot has been stuck for over 2 minutes
+		if time.Since(bootLaunchState.StartedAt) > 2*time.Minute {
+			log.Printf("Auto-resetting stale boot-in-progress state (started %s ago)", time.Since(bootLaunchState.StartedAt).Round(time.Second))
+			resetBootLaunchStateLocked()
+		} else {
+			return fmt.Errorf("boot is already in progress")
+		}
 	}
 	resetBootLaunchStateLocked()
 	bootLaunchState.InProgress = true
+	bootLaunchState.StartedAt = time.Now()
 	return nil
 }
 
@@ -1689,7 +1696,9 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	debug := make([]string, 0, 64)
 	appendDebug := func(format string, args ...interface{}) {
-		debug = append(debug, fmt.Sprintf(format, args...))
+		line := fmt.Sprintf(format, args...)
+		debug = append(debug, line)
+		recordBootLaunchDebug(line)
 	}
 
 	drives := scanDrives()
