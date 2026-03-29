@@ -95,6 +95,34 @@ textarea {
 .warm-btn      { background: #e37933; border-color: #e37933; }
 .danger-btn    { background: #9e2a2b; border-color: #9e2a2b; }
 .mono { white-space: pre-wrap; word-break: break-word; }
+#bootDebug {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-top: 6px;
+    font-family: monospace;
+    font-size: 11px;
+    color: #8c8;
+    display: none;
+}
+#flashLog {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-top: 6px;
+    font-family: monospace;
+    font-size: 11px;
+    color: #8c8;
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: none;
+}
 .doc-image {
     width: 100%;
     max-width: 720px;
@@ -236,6 +264,7 @@ textarea {
             <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
             <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
             <div id="flashStatus" class="small" style="margin-top: 8px; display: none;"></div>
+            <div id="flashLog"></div>
         </div>
         <div class="box">
             <div class="small">Expert output</div>
@@ -315,19 +344,31 @@ function stopBootStatusPolling() {
     }
 }
 
+function showBootDebug(lines) {
+    let el = $("bootDebug")
+    if (Array.isArray(lines) && lines.length) {
+        el.innerText = lines.join("\n")
+        el.style.display = "block"
+        el.scrollTop = el.scrollHeight
+    } else {
+        el.innerText = ""
+        el.style.display = "none"
+    }
+}
+
 async function checkBootStatus() {
     let r = await fetch("/boot-status")
     let j = await r.json()
     if (Array.isArray(j.debug) && j.debug.length) {
-        $("bootDebug").innerText = j.debug.join("\n")
+        showBootDebug(j.debug)
     }
     if (j.inProgress) {
-        $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
+        $("bootResult").innerText = "Searching for a bootable OS..."
         return
     }
     if (j.accepted) {
         if (j.result && Array.isArray(j.result.debug) && j.result.debug.length) {
-            $("bootDebug").innerText = j.result.debug.join("\n")
+            showBootDebug(j.result.debug)
         }
         setBootUiBusy(false)
         $("bootResult").innerText = "OS handoff initiated successfully. System will restart..."
@@ -337,7 +378,7 @@ async function checkBootStatus() {
     if (j.error) {
         setBootUiBusy(false)
         $("bootResult").innerText = j.error
-        $("bootDebug").innerText = Array.isArray(j.debug) && j.debug.length ? j.debug.join("\n") : ""
+        showBootDebug(Array.isArray(j.debug) ? j.debug : [])
         stopBootStatusPolling()
     }
 }
@@ -624,6 +665,55 @@ async function expertPsidRevert() {
     }
 }
 
+let flashPoller = null
+
+function stopFlashPolling() {
+    if (flashPoller) {
+        clearInterval(flashPoller)
+        flashPoller = null
+    }
+}
+
+function showFlashLog(lines) {
+    let el = $("flashLog")
+    if (Array.isArray(lines) && lines.length) {
+        el.innerText = lines.join("\n")
+        el.style.display = "block"
+        el.scrollTop = el.scrollHeight
+    } else {
+        el.innerText = ""
+        el.style.display = "none"
+    }
+}
+
+async function pollFlashStatus() {
+    try {
+        let r = await fetch("/expert/flash-status", { method: "GET", headers: expertHeaders() })
+        let j = await r.json()
+        if (Array.isArray(j.lines) && j.lines.length) {
+            showFlashLog(j.lines)
+        }
+        if (j.done) {
+            stopFlashPolling()
+            let flashStatus = $("flashStatus")
+            if (j.success) {
+                flashStatus.classList.remove("warn", "bad")
+                flashStatus.classList.add("ok")
+                flashStatus.innerText = "Re-flash completed successfully"
+                appendExpertOutput("Flash completed successfully.\n" + (j.lines || []).join("\n"))
+            } else {
+                flashStatus.classList.remove("warn", "ok")
+                flashStatus.classList.add("bad")
+                flashStatus.innerText = "Re-flash failed: " + (j.error || "unknown error")
+                appendExpertOutput("Flash FAILED: " + (j.error || "unknown") + "\n" + (j.lines || []).join("\n"))
+            }
+            $("uploadBtn").disabled = false
+        }
+    } catch (err) {
+        // Network error during poll — keep trying
+    }
+}
+
 async function expertReflashPBA() {
     try {
         let device = $("expDeviceFlash").value.trim()
@@ -683,7 +773,9 @@ async function expertReflashPBA() {
         flashStatus.style.display = "block"
         flashStatus.classList.remove("ok", "bad", "warn")
         flashStatus.classList.add("warn")
-        flashStatus.innerText = "Re-flashing PBA image to " + device + "... This may take 30-40 seconds. Please wait."
+        flashStatus.innerText = "Uploading PBA image..."
+        $("flashLog").innerText = ""
+        $("flashLog").style.display = "none"
         appendExpertOutput("Starting PBA re-flash operation...")
         
         let form = new FormData()
@@ -704,11 +796,11 @@ async function expertReflashPBA() {
             throw err
         }
         
-        // Success
-        flashStatus.classList.remove("warn", "bad")
-        flashStatus.classList.add("ok")
-        flashStatus.innerText = "Re-flash completed successfully"
-        appendExpertOutput(JSON.stringify(j, null, 2))
+        // Flash started — poll for progress
+        flashStatus.innerText = "Flashing PBA image to " + device + "..."
+        stopFlashPolling()
+        flashPoller = setInterval(pollFlashStatus, 750)
+        pollFlashStatus()
     } catch (err) {
         // Failure
         let flashStatus = $("flashStatus")
@@ -720,11 +812,7 @@ async function expertReflashPBA() {
         } else {
             appendExpertOutput("ERROR: " + (err.message || "pba re-flash failed"))
         }
-        alert(err.message || "PBA re-flash failed")
-    } finally {
-        // Re-enable button
-        let uploadBtn = $("uploadBtn")
-        uploadBtn.disabled = false
+        $("uploadBtn").disabled = false
     }
 }
 
@@ -777,36 +865,10 @@ let selectedKernelIndex = -1
 
 async function boot() {
     if (bootInFlight) return
-    $("bootResult").innerText = ""
+    $("bootResult").innerText = "Searching for a bootable OS..."
     $("bootDebug").innerText = ""
+    $("bootDebug").style.display = "none"
     selectedKernelIndex = -1
-    
-    // Try to list available kernels
-    try {
-        $("bootResult").innerText = "Searching for a bootable OS..."
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 20000)  // 20 seconds for kernel discovery (filesystem walk + cmdline extraction)
-        let r = await fetch("/boot-list", { method: "GET", headers: authHeaders(), signal: controller.signal })
-        clearTimeout(timer)
-        if (r.ok) {
-            let data = await r.json()
-            if (data.kernels && data.kernels.length > 1) {
-                // Multiple kernels available - show selection dialog
-                showKernelSelection(data.kernels)
-                return
-            } else if (data.kernels && data.kernels.length === 1) {
-                selectedKernelIndex = 0
-            }
-        }
-    } catch (err) {
-        // If kernel list fails, just proceed with default
-        if (err.name === "AbortError") {
-            console.warn("Kernel list timed out; continuing with default boot path")
-        } else {
-            console.warn("Failed to list kernels:", err)
-        }
-    }
-    
     proceedWithBoot()
 }
 
@@ -840,7 +902,6 @@ function proceedWithSelectedKernel() {
 
 async function proceedWithBoot() {
     if (bootInFlight) return
-    $("bootResult").innerText = "Bootable OS found. Preparing OS handoff..."
     setBootUiBusy(true)
     try {
         let body = {}
@@ -856,12 +917,10 @@ async function proceedWithBoot() {
             let j = await r.json().catch(() => ({}))
             throw new Error(j.error || "Boot request failed")
         }
-        $("bootResult").innerText = "Boot command accepted. Preparing OS handoff..."
+        $("bootResult").innerText = "Searching for a bootable OS..."
         stopBootStatusPolling()
-        // Poll for status with longer interval to avoid interfering with kexec
         bootStatusPoller = setInterval(() => {
             checkBootStatus().catch(err => {
-                // Network errors expected after successful kexec
                 if (err.message.includes('fetch') || err.message.includes('network')) {
                     setBootUiBusy(false)
                     $("bootResult").innerText = "OS handoff in progress..."
@@ -872,13 +931,12 @@ async function proceedWithBoot() {
                     stopBootStatusPolling()
                 }
             })
-        }, 2000)  // Poll every 2 seconds instead of 750ms
+        }, 750)
         checkBootStatus()
     } catch (err) {
         setBootUiBusy(false)
         $("bootResult").innerText = err.message || "Boot failed"
-        let debug = err.details && Array.isArray(err.details.debug) ? err.details.debug : []
-        $("bootDebug").innerText = debug.length ? debug.join("\n") : ""
+        showBootDebug(err.details && Array.isArray(err.details.debug) ? err.details.debug : [])
     }
 }
 async function reboot() {

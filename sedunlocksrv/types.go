@@ -97,6 +97,14 @@ func (e BootAttemptError) Error() string {
 	return e.Message
 }
 
+type FlashStatus struct {
+	InProgress bool     `json:"inProgress"`
+	Lines      []string `json:"lines"`
+	Error      string   `json:"error,omitempty"`
+	Done       bool     `json:"done"`
+	Success    bool     `json:"success"`
+}
+
 type BootEntry struct {
 	KernelRef    string
 	KernelBase   string

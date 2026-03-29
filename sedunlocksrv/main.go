@@ -69,6 +69,9 @@ var (
 	startupLockedOpal = map[string]struct{}{}
 	bootLaunchState   BootLaunchStatus
 
+	flashMu    sync.RWMutex
+	flashState FlashStatus
+
 	passwordPolicy     = loadPolicy()
 	expertPasswordHash = loadExpertPasswordHash()
 )
@@ -1569,10 +1572,15 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 		}
 
 		// Expand GRUB variables in cmdline
+		rawCmdline := cmdline
 		cmdline = expandGrubVars(cmdline, vars)
+		if rawCmdline != cmdline {
+			recordBootLaunchDebug(fmt.Sprintf("grub-config %s: expanded cmdline %q -> %q", filepath.Base(grubPath), rawCmdline, cmdline))
+		}
 
 		kernelPath := resolveBootPath(mountPoint, kernelRef)
 		if kernelPath == "" {
+			recordBootLaunchDebug(fmt.Sprintf("grub-config %s: kernel ref %q did not resolve on filesystem", filepath.Base(grubPath), kernelRef))
 			continue
 		}
 
@@ -1584,6 +1592,7 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 			if strings.HasPrefix(next, "initrd ") || strings.HasPrefix(next, "initrdefi ") {
 				for _, initrdRef := range splitInitrdLine(next) {
 					if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
+						recordBootLaunchDebug(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
 						return kernelPath, initrdPath, cmdline, true
 					}
 				}
@@ -1634,20 +1643,30 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
+		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: found via loader entries: kernel=%s cmdline=%q", filepath.Base(kernel), cmdline))
 		// If cmdline looks weak, try to augment it via the full fallback chain
 		if looksWeakCmdline(cmdline) {
+			recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: loader entry cmdline is weak, trying findBootCmdline fallback"))
 			if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
+				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 				cmdline = betterCmdline
+			} else {
+				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 			}
 		}
 		return kernel, initrd, cmdline, true
 	}
 	for _, grubPath := range grubConfigs {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
+			recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: found via grub config %s: kernel=%s cmdline=%q", trimMountPrefix(mountPoint, grubPath), filepath.Base(kernel), cmdline))
 			// If cmdline looks weak, try to augment it via the full fallback chain
 			if looksWeakCmdline(cmdline) {
+				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: grub config cmdline is weak, trying findBootCmdline fallback"))
 				if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
+					recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 					cmdline = betterCmdline
+				} else {
+					recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 				}
 			}
 			return kernel, initrd, cmdline, true
@@ -1655,12 +1674,15 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	}
 
 	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
+		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: matched kernel/initrd pair: kernel=%s initrd=%s, searching for cmdline...", filepath.Base(kernel), filepath.Base(initrd)))
 		cmdline, err := findBootCmdline(mountPoint, kernel, device)
 		if err == nil {
 			return kernel, initrd, cmdline, true
 		}
+		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed for matched pair: %v", err))
 		return kernel, initrd, "", true
 	}
+	recordBootLaunchDebug("findBootArtifacts: no boot artifacts found")
 	return "", "", "", false
 }
 
@@ -1707,9 +1729,25 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		}
 		appendDebug("Mounted %s on %s", dev, mountPoint)
 
+		// Log what collectBootFiles found on this mount
+		loaderEntries, grubConfigs, rawKernels, rawInitrds := collectBootFiles(mountPoint)
+		appendDebug("collectBootFiles on %s: loaders=%d grubs=%d kernels=%d initrds=%d", dev, len(loaderEntries), len(grubConfigs), len(rawKernels), len(rawInitrds))
+		for _, g := range grubConfigs {
+			appendDebug("  grub.cfg found: %s", trimMountPrefix(mountPoint, g))
+		}
+		for _, k := range rawKernels {
+			appendDebug("  kernel found: %s", trimMountPrefix(mountPoint, k))
+		}
+		for _, i := range rawInitrds {
+			appendDebug("  initrd found: %s", trimMountPrefix(mountPoint, i))
+		}
+
 		// Collect all boot entries from this mount
 		entries := collectBootCatalog(mountPoint)
 		appendDebug("Boot catalog entries on %s: %d", dev, len(entries))
+		for i, entry := range entries {
+			appendDebug("  catalog[%d]: kernel=%s cmdline=%q source=%s", i, entry.KernelBase, entry.Cmdline, trimMountPrefix(mountPoint, entry.Source))
+		}
 
 		// Also collect raw kernels/initrds for matching
 		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
@@ -1725,7 +1763,10 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 				Cmdline:    cmdline,
 				Source:     "discovered",
 			})
-			appendDebug("Discovered kernel/initrd on %s: %s | %s", dev, rawKernel, rawInitrd)
+			appendDebug("Discovered kernel/initrd on %s: %s | %s | cmdline=%q", dev, rawKernel, rawInitrd, cmdline)
+			if looksWeakCmdline(cmdline) {
+				appendDebug("WARNING: discovered cmdline looks weak: %q", cmdline)
+			}
 		} else {
 			appendDebug("No raw kernel/initrd pair discovered on %s", dev)
 		}
@@ -1865,6 +1906,56 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 	appendBootDebug(&debug, "Found kernel: %s", selected.Kernel)
 	appendBootDebug(&debug, "Found initrd: %s", selected.Initrd)
 	appendBootDebug(&debug, "Found cmdline: %s", selected.Cmdline)
+
+	// If cmdline is empty or weak, try to re-discover a better one
+	if strings.TrimSpace(selected.Cmdline) == "" || looksWeakCmdline(selected.Cmdline) {
+		appendBootDebug(&debug, "Cmdline is weak or empty (%q), attempting re-discovery...", selected.Cmdline)
+
+		// Try findBootCmdline with full fallback chain
+		if betterCmdline, err := findBootCmdline(mountPoint, selected.Kernel, selected.Device); err == nil && !looksWeakCmdline(betterCmdline) {
+			appendBootDebug(&debug, "findBootCmdline found better cmdline: %s", betterCmdline)
+			selected.Cmdline = betterCmdline
+		} else {
+			if err != nil {
+				appendBootDebug(&debug, "findBootCmdline failed: %v", err)
+			} else {
+				appendBootDebug(&debug, "findBootCmdline returned weak cmdline: %q", betterCmdline)
+			}
+		}
+
+		// Try boot catalog matching
+		if looksWeakCmdline(selected.Cmdline) || strings.TrimSpace(selected.Cmdline) == "" {
+			catalog := collectBootCatalog(mountPoint)
+			appendBootDebug(&debug, "Re-checking boot catalog (%d entries) for a better cmdline", len(catalog))
+			if matchedCmdline, source, matched := matchBootEntryCmdline(catalog, selected.Kernel, selected.Initrd); matched && !looksWeakCmdline(matchedCmdline) {
+				appendBootDebug(&debug, "Boot catalog provided better cmdline from %s: %s", source, matchedCmdline)
+				selected.Cmdline = matchedCmdline
+			} else if matched {
+				appendBootDebug(&debug, "Boot catalog matched but cmdline still weak: %q (source: %s)", matchedCmdline, source)
+			}
+		}
+
+		// Try /etc/kernel/cmdline and /etc/default/grub
+		if looksWeakCmdline(selected.Cmdline) || strings.TrimSpace(selected.Cmdline) == "" {
+			if cmdline, found, err := parseKernelCmdlineFile(mountPoint); err == nil && found && !looksWeakCmdline(cmdline) {
+				appendBootDebug(&debug, "/etc/kernel/cmdline provided: %s", cmdline)
+				selected.Cmdline = cmdline
+			} else if cmdline, found, err := parseDefaultGrubCmdline(mountPoint); err == nil && found && !looksWeakCmdline(cmdline) {
+				appendBootDebug(&debug, "/etc/default/grub provided: %s", cmdline)
+				selected.Cmdline = cmdline
+			}
+		}
+
+		// Try synthesizing root= from the mount device if it looks like a root filesystem
+		if looksWeakCmdline(selected.Cmdline) && looksLikeRootFilesystem(mountPoint) {
+			if synthesized, ok := synthesizeRootCmdline(selected.Device, selected.Cmdline); ok {
+				appendBootDebug(&debug, "Synthesized root cmdline from device %s: %s", selected.Device, synthesized)
+				selected.Cmdline = synthesized
+			}
+		}
+
+		appendBootDebug(&debug, "Final cmdline after re-discovery: %s", selected.Cmdline)
+	}
 
 	if strings.TrimSpace(selected.Cmdline) == "" {
 		appendBootDebug(&debug, "Refusing to kexec with an empty kernel command line.")
@@ -2175,8 +2266,13 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 	kernelBase := filepath.Base(kernel)
 	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 
-	candidates := []func() (string, bool, error){
-		func() (string, bool, error) {
+	type namedCandidate struct {
+		name string
+		fn   func() (string, bool, error)
+	}
+
+	candidates := []namedCandidate{
+		{"loader-entries", func() (string, bool, error) {
 			if len(loaderEntries) == 0 {
 				return "", false, fmt.Errorf("no loader entries under %s", mountPoint)
 			}
@@ -2200,9 +2296,9 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 				}
 			}
 			return "", false, fmt.Errorf("kernel command line not found in loader entries")
-		},
+		}},
 		// EFI-specific GRUB paths (checked early for EFI systems)
-		func() (string, bool, error) {
+		{"efi-grub-configs", func() (string, bool, error) {
 			// Search for GRUB config in /boot/efi/EFI/*/grub.cfg (Proxmox, Ubuntu EFI, etc.)
 			efiDir := filepath.Join(mountPoint, "boot", "efi", "EFI")
 			entries, err := os.ReadDir(efiDir)
@@ -2218,19 +2314,17 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 				}
 			}
 			return "", false, fmt.Errorf("kernel command line not found in EFI GRUB configs")
-		},
-		func() (string, bool, error) {
+		}},
+		{"boot/grub/grub.cfg", func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub", "grub.cfg"), mountPoint, kernelBase)
-		},
-		func() (string, bool, error) {
+		}},
+		{"boot/grub2/grub.cfg", func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "boot", "grub2", "grub.cfg"), mountPoint, kernelBase)
-		},
-		func() (string, bool, error) {
+		}},
+		{"grub/grub.cfg", func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), mountPoint, kernelBase)
-		},
-		// Filesystem walk: search for grub.cfg in known boot-related directories
-		// instead of walking the entire filesystem (much faster).
-		func() (string, bool, error) {
+		}},
+		{"boot-dir-walk", func() (string, bool, error) {
 			var bestCmdline string
 			var bestFound bool
 
@@ -2274,38 +2368,45 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 				return bestCmdline, true, nil
 			}
 			return "", false, fmt.Errorf("no grub.cfg found in boot directories")
-		},
-		func() (string, bool, error) {
+		}},
+		{"/etc/kernel/cmdline", func() (string, bool, error) {
 			return parseKernelCmdlineFile(mountPoint)
-		},
-		func() (string, bool, error) {
+		}},
+		{"/etc/default/grub", func() (string, bool, error) {
 			return parseDefaultGrubCmdline(mountPoint)
-		},
+		}},
 	}
 	for _, grubPath := range grubConfigs {
 		path := grubPath
-		candidates = append(candidates, func() (string, bool, error) {
+		candidates = append(candidates, namedCandidate{"extra-grub:" + trimMountPrefix(mountPoint, path), func() (string, bool, error) {
 			return parseGrubCfg(path, mountPoint, kernelBase)
-		})
+		}})
 	}
 
 	// Try candidates in order, but if we find a weak cmdline, keep trying
 	// to see if a later candidate has a better one.
 	var bestCmdline string
-	for _, try := range candidates {
-		if cmdline, found, err := try(); err == nil && found && cmdline != "" {
-			// Skip cmdlines that point to a different device (e.g., sda when we're on nvme0)
-			if !isValidCmdlineForDevice(cmdline, device) {
-				continue // Skip this, keep searching
-			}
-			// If this is strong (has meaningful content), return immediately
-			if !looksWeakCmdline(cmdline) {
-				return cmdline, nil
-			}
-			// Otherwise, save it and keep trying for a better one
-			if bestCmdline == "" {
-				bestCmdline = cmdline
-			}
+	for _, c := range candidates {
+		cmdline, found, err := c.fn()
+		if err != nil || !found || cmdline == "" {
+			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: no result (err=%v)", c.name, err))
+			continue
+		}
+		recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: found %q", c.name, cmdline))
+		// Skip cmdlines that point to a different device (e.g., sda when we're on nvme0)
+		if !isValidCmdlineForDevice(cmdline, device) {
+			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: rejected by isValidCmdlineForDevice (device=%s)", c.name, device))
+			continue
+		}
+		// If this is strong (has meaningful content), return immediately
+		if !looksWeakCmdline(cmdline) {
+			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: accepted (strong)", c.name))
+			return cmdline, nil
+		}
+		recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: weak, saving as fallback", c.name))
+		// Otherwise, save it and keep trying for a better one
+		if bestCmdline == "" {
+			bestCmdline = cmdline
 		}
 	}
 
@@ -2344,7 +2445,9 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 			continue
 		}
 		if cmdline, ok := extractLinuxCmdline(t); ok {
+			rawCmdline := cmdline
 			cmdline = expandGrubVars(cmdline, vars)
+			recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): linux line matched, raw=%q expanded=%q", filepath.Base(grubPath), rawCmdline, cmdline))
 			return cmdline, true, nil
 		}
 	}
@@ -2928,6 +3031,22 @@ func main() {
 		}
 
 		runExpertPBAFlashBytes(w, password, imageData, device, validation)
+	})
+
+	mux.HandleFunc("/expert/flash-status", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		flashMu.RLock()
+		state := FlashStatus{
+			InProgress: flashState.InProgress,
+			Done:       flashState.Done,
+			Success:    flashState.Success,
+			Error:      flashState.Error,
+			Lines:      append([]string(nil), flashState.Lines...),
+		}
+		flashMu.RUnlock()
+		jsonResponse(w, http.StatusOK, state)
 	})
 
 	mux.HandleFunc("/boot-list", func(w http.ResponseWriter, r *http.Request) {

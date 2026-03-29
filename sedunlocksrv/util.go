@@ -2,9 +2,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -155,6 +157,14 @@ func runExpertCommand(w http.ResponseWriter, args ...string) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
+func recordFlashLine(line string) {
+	flashMu.Lock()
+	defer flashMu.Unlock()
+	if flashState.InProgress {
+		flashState.Lines = append(flashState.Lines, line)
+	}
+}
+
 func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []byte, device string, validation []string) {
 	// Write image data to temporary file for sedutil to read
 	tmp, err := os.CreateTemp("", "sedunlocksrv-pba-*.img")
@@ -166,10 +176,10 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		return
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
 
 	if _, err := tmp.Write(imageData); err != nil {
 		tmp.Close()
+		os.Remove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
 			"error":      "failed to write image to temporary file",
 			"validation": validation,
@@ -177,6 +187,7 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		return
 	}
 	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
 			"error":      "failed to finalize temporary image file",
 			"validation": validation,
@@ -184,29 +195,91 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		return
 	}
 
-	// Pause to allow NVMe controller to fully reset state after preflight queries.
-	// Multiple rapid sedutil calls can leave the device in a state where security
-	// commands fail with "NVMe Security Command Error:16396". Experience shows that
-	// 250ms is sometimes insufficient; 1 second provides better reliability.
-	time.Sleep(1 * time.Second)
-
-	out, err := runSedutil(2*time.Minute, "--loadpbaimage", password, tmpPath, device)
-	resp := map[string]string{
-		"command": "sedutil-cli --loadpbaimage <password> <uploaded-image> " + device,
-		"output":  strings.TrimSpace(out),
-	}
-	respAny := map[string]interface{}{
-		"command":    resp["command"],
-		"output":     resp["output"],
-		"validation": validation,
-	}
-	if err != nil {
-		respAny["error"] = err.Error()
-		jsonResponse(w, http.StatusBadRequest, respAny)
+	// Initialize flash state
+	flashMu.Lock()
+	if flashState.InProgress {
+		flashMu.Unlock()
+		os.Remove(tmpPath)
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": "a flash operation is already in progress"})
 		return
 	}
-	respAny["status"] = "ok"
-	jsonResponse(w, http.StatusOK, respAny)
+	flashState = FlashStatus{InProgress: true, Lines: []string{}}
+	flashMu.Unlock()
+
+	// Return immediately — the flash runs in the background
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "flash started"})
+
+	go func() {
+		defer os.Remove(tmpPath)
+		defer func() {
+			flashMu.Lock()
+			flashState.InProgress = false
+			flashState.Done = true
+			flashMu.Unlock()
+		}()
+
+		for _, v := range validation {
+			recordFlashLine("preflight: " + v)
+		}
+
+		// Pause to allow NVMe controller to fully reset state after preflight queries.
+		recordFlashLine("Waiting for NVMe controller settle...")
+		time.Sleep(1 * time.Second)
+
+		recordFlashLine(fmt.Sprintf("Running: sedutil-cli --loadpbaimage <password> <image> %s", device))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
+
+		// Merge stdout and stderr via a pipe so we can read line-by-line
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			flashMu.Lock()
+			flashState.Error = "failed to create stdout pipe: " + err.Error()
+			flashMu.Unlock()
+			return
+		}
+		cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
+
+		if err := cmd.Start(); err != nil {
+			flashMu.Lock()
+			flashState.Error = "failed to start sedutil-cli: " + err.Error()
+			flashMu.Unlock()
+			return
+		}
+
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" {
+				recordFlashLine(line)
+			}
+		}
+		// Also capture any remaining bytes if scanner stopped early
+		if remaining, err := io.ReadAll(stdoutPipe); err == nil && len(remaining) > 0 {
+			for _, line := range strings.Split(strings.TrimSpace(string(remaining)), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					recordFlashLine(line)
+				}
+			}
+		}
+
+		err = cmd.Wait()
+		flashMu.Lock()
+		if ctx.Err() == context.DeadlineExceeded {
+			flashState.Error = "sedutil-cli timed out"
+			flashState.Lines = append(flashState.Lines, "ERROR: sedutil-cli timed out after 2 minutes")
+		} else if err != nil {
+			flashState.Error = "sedutil-cli failed: " + err.Error()
+			flashState.Lines = append(flashState.Lines, "ERROR: "+err.Error())
+		} else {
+			flashState.Success = true
+			flashState.Lines = append(flashState.Lines, "PBA image flashed successfully.")
+		}
+		flashMu.Unlock()
+	}()
 }
 
 func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
