@@ -171,7 +171,7 @@ textarea {
         <div id="bootDebug" class="mono small"></div>
         <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
         <div class="hint">
-            After a successful unlock, the system will automatically search for a bootable OS and boot into it.
+            After a successful unlock, the system will search for bootable kernels and present them for selection.
             Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
             NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
         </div>
@@ -185,8 +185,8 @@ textarea {
 
 <div id="kernelSelectionDialog" class="hidden">
     <div class="box">
-        <div><b>Select Kernel</b></div>
-        <div class="hint">Multiple kernels detected. Choose which one to boot:</div>
+        <div><b>Select Kernel to Boot</b></div>
+        <div class="hint">Choose a kernel and confirm to boot the OS:</div>
         <div id="kernelOptions" class="small"></div>
         <div class="row">
             <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot Selected Kernel</button>
@@ -517,10 +517,10 @@ async function unlock() {
     $("unlockBtn").disabled = false
     refresh()
 
-    // Auto-boot after successful unlock
+    // Auto-discover kernels after successful unlock
     if (authToken) {
-        $("bootResult").innerText = "Searching for a bootable OS..."
-        boot()
+        $("bootResult").innerText = "Searching for bootable kernels..."
+        discoverKernels()
     }
 }
 
@@ -863,23 +863,76 @@ async function checkRAMForFile() {
 
 let selectedKernelIndex = -1
 
-async function boot() {
+async function discoverKernels() {
     if (bootInFlight) return
-    $("bootResult").innerText = "Searching for a bootable OS..."
+    setBootUiBusy(true)
+    $("bootResult").innerText = "Searching for bootable kernels..."
     $("bootDebug").innerText = ""
     $("bootDebug").style.display = "none"
-    selectedKernelIndex = -1
-    proceedWithBoot()
+    $("kernelSelectionDialog").classList.add("hidden")
+    try {
+        let r = await fetch("/boot-list", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", ...authHeaders()}
+        })
+        if (!r.ok) {
+            let j = await r.json().catch(() => ({}))
+            throw new Error(j.error || "Discovery request failed")
+        }
+        stopBootStatusPolling()
+        bootStatusPoller = setInterval(() => {
+            checkDiscoveryStatus().catch(err => {
+                setBootUiBusy(false)
+                $("bootResult").innerText = err.message || "Discovery failed"
+                stopBootStatusPolling()
+            })
+        }, 250)
+        checkDiscoveryStatus()
+    } catch (err) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = err.message || "Discovery failed"
+    }
+}
+
+async function checkDiscoveryStatus() {
+    let r = await fetch("/boot-status")
+    let j = await r.json()
+    if (Array.isArray(j.debug) && j.debug.length) {
+        showBootDebug(j.debug)
+    }
+    if (j.inProgress) {
+        $("bootResult").innerText = "Searching for bootable kernels..."
+        return
+    }
+    stopBootStatusPolling()
+    setBootUiBusy(false)
+    if (j.error) {
+        $("bootResult").innerText = j.error
+        return
+    }
+    if (j.discoveryDone && Array.isArray(j.kernels) && j.kernels.length > 0) {
+        $("bootResult").innerText = j.kernels.length + " bootable kernel(s) found. Select one to boot:"
+        showKernelSelection(j.kernels)
+        return
+    }
+    $("bootResult").innerText = "No bootable kernels found."
+}
+
+async function boot() {
+    if (bootInFlight) return
+    discoverKernels()
 }
 
 function showKernelSelection(kernels) {
     let html = ""
     kernels.forEach((kernel, idx) => {
         let label = kernel.kernelName || "Kernel"
-        if (kernel.cmdline) {
-            label += ` (${kernel.cmdline.substring(0, 40)}...)`
-        }
-        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${idx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}</label>`
+        let details = []
+        if (kernel.initrdName) details.push(kernel.initrdName)
+        if (kernel.source) details.push(kernel.source)
+        if (kernel.cmdline) details.push(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline)
+        let detailStr = details.length ? ` <span style="color:#888">(${details.join(" | ")})</span>` : ""
+        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${idx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
     })
     $("kernelOptions").innerHTML = html
     if (kernels.length > 0) {
@@ -902,22 +955,23 @@ function proceedWithSelectedKernel() {
 
 async function proceedWithBoot() {
     if (bootInFlight) return
+    if (selectedKernelIndex < 0) {
+        $("bootResult").innerText = "Please select a kernel to boot."
+        return
+    }
     setBootUiBusy(true)
+    $("kernelSelectionDialog").classList.add("hidden")
     try {
-        let body = {}
-        if (selectedKernelIndex >= 0) {
-            body = { kernelIndex: selectedKernelIndex }
-        }
         let r = await fetch("/boot", { 
             method: "POST", 
             headers: {"Content-Type": "application/json", ...authHeaders()},
-            body: JSON.stringify(body)
+            body: JSON.stringify({ kernelIndex: selectedKernelIndex })
         })
         if (!r.ok) {
             let j = await r.json().catch(() => ({}))
             throw new Error(j.error || "Boot request failed")
         }
-        $("bootResult").innerText = "Searching for a bootable OS..."
+        $("bootResult").innerText = "Booting selected kernel..."
         stopBootStatusPolling()
         bootStatusPoller = setInterval(() => {
             checkBootStatus().catch(err => {
@@ -931,12 +985,11 @@ async function proceedWithBoot() {
                     stopBootStatusPolling()
                 }
             })
-        }, 750)
+        }, 250)
         checkBootStatus()
     } catch (err) {
         setBootUiBusy(false)
         $("bootResult").innerText = err.message || "Boot failed"
-        showBootDebug(err.details && Array.isArray(err.details.debug) ? err.details.debug : [])
     }
 }
 async function reboot() {

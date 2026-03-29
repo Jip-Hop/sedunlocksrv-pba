@@ -37,7 +37,7 @@ INPUTISO="TinyCorePure64-current.iso"
 BOOTARGS="libata.allow_tpm=1"
 
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="jq.tcz lvm2.tcz"
+EXTENSIONS="jq.tcz lvm2.tcz coreutils.tcz"
 
 CLEAN_MODE=false
 SSHBUILD=false

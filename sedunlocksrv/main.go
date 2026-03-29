@@ -202,6 +202,9 @@ func currentBootLaunchStatus() BootLaunchStatus {
 	if status.Debug != nil {
 		status.Debug = append([]string(nil), status.Debug...)
 	}
+	if status.Kernels != nil {
+		status.Kernels = append([]BootKernelInfo(nil), status.Kernels...)
+	}
 	if status.Result != nil {
 		resultCopy := *status.Result
 		if resultCopy.Debug != nil {
@@ -268,18 +271,57 @@ func finishBootLaunch(result *BootResult, err error) {
 	}
 }
 
-func startBootLaunch() error {
+func startDiscoveryLaunch() error {
 	if err := beginBootLaunch(); err != nil {
 		return err
 	}
 	go func() {
-		result, err := BootSystem()
-		finishBootLaunch(result, err)
+		kernels, debug, err := listAvailableBootKernelsWithDebug()
+		finishDiscovery(kernels, debug, err)
 	}()
 	return nil
 }
 
+func finishDiscovery(kernels []BootKernelInfo, debug []string, err error) {
+	bootStateMu.Lock()
+	defer bootStateMu.Unlock()
+	bootLaunchState.InProgress = false
+	bootLaunchState.DiscoveryDone = true
+	if err != nil {
+		bootLaunchState.Error = err.Error()
+		if bootErr, ok := err.(BootAttemptError); ok {
+			bootLaunchState.Debug = append([]string(nil), bootErr.Debug...)
+		}
+		return
+	}
+	bootLaunchState.Kernels = kernels
+}
+
+func getDiscoveredKernels() []BootKernelInfo {
+	bootStateMu.RLock()
+	defer bootStateMu.RUnlock()
+	if !bootLaunchState.DiscoveryDone || len(bootLaunchState.Kernels) == 0 {
+		return nil
+	}
+	out := make([]BootKernelInfo, len(bootLaunchState.Kernels))
+	copy(out, bootLaunchState.Kernels)
+	return out
+}
+
 func startBootLaunchWithKernel(kernelIndex int) error {
+	// Use previously discovered kernels if available
+	cached := getDiscoveredKernels()
+	if cached != nil {
+		if err := beginBootLaunch(); err != nil {
+			return err
+		}
+		go func() {
+			result, err := bootWithSelectedKernel(cached, kernelIndex)
+			finishBootLaunch(result, err)
+		}()
+		return nil
+	}
+	// Fallback: no cached discovery, run full discovery + boot
 	if err := beginBootLaunch(); err != nil {
 		return err
 	}
@@ -296,7 +338,8 @@ func recordBootLaunchDebug(line string) {
 	if !bootLaunchState.InProgress {
 		return
 	}
-	bootLaunchState.Debug = append(bootLaunchState.Debug, line)
+	stamped := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05.000"), line)
+	bootLaunchState.Debug = append(bootLaunchState.Debug, stamped)
 }
 
 func startupLockedSet() map[string]struct{} {
@@ -916,32 +959,71 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 		*out = append(*out, path)
 	}
 
-	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d == nil || d.IsDir() {
-			return nil
-		}
+	// Minimum file size for kernels/initrds to filter out false positives
+	// (e.g. terminfo entries, dpkg metadata). Real kernels are several MB;
+	// even the smallest compressed kernel exceeds 500KB.
+	const minBootFileSize int64 = 512 * 1024
 
-		base := filepath.Base(path)
-		dir := filepath.Dir(path)
+	isKernelName := func(base string) bool {
 		switch {
-		case strings.EqualFold(base, "grub.cfg"):
-			add(&grubConfigs, path)
-		case filepath.Base(dir) == "entries" && filepath.Base(filepath.Dir(dir)) == "loader" && strings.HasSuffix(base, ".conf"):
-			add(&loaderEntries, path)
 		case strings.HasPrefix(base, "vmlinuz-"),
 			strings.HasPrefix(base, "linux-"),
 			base == "vmlinuz",
 			base == "linux",
 			base == "bzImage":
-			add(&kernels, path)
+			return true
+		default:
+			return false
+		}
+	}
+	isInitrdName := func(base string) bool {
+		switch {
 		case strings.HasPrefix(base, "initrd.img-"),
 			strings.HasPrefix(base, "initramfs-"),
 			base == "initrd",
 			base == "initramfs-linux.img":
-			add(&initrds, path)
+			return true
+		default:
+			return false
 		}
-		return nil
-	})
+	}
+
+	// Search only boot-relevant directories to avoid scanning the entire root
+	// filesystem (which would match thousands of irrelevant files like
+	// usr/share/terminfo/l/linux or var/lib/dpkg/info/linux-base.list).
+	bootDirs := []string{
+		filepath.Join(mountPoint, "boot"),
+		filepath.Join(mountPoint, "efi"),
+		filepath.Join(mountPoint, "EFI"),
+		filepath.Join(mountPoint, "loader"),
+		filepath.Join(mountPoint, "grub"),
+		filepath.Join(mountPoint, "grub2"),
+	}
+
+	for _, dir := range bootDirs {
+		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d == nil || d.IsDir() {
+				return nil
+			}
+			base := filepath.Base(path)
+			parentDir := filepath.Dir(path)
+			switch {
+			case strings.EqualFold(base, "grub.cfg"):
+				add(&grubConfigs, path)
+			case filepath.Base(parentDir) == "entries" && filepath.Base(filepath.Dir(parentDir)) == "loader" && strings.HasSuffix(base, ".conf"):
+				add(&loaderEntries, path)
+			case isKernelName(base):
+				if info, err := d.Info(); err == nil && info.Size() >= minBootFileSize {
+					add(&kernels, path)
+				}
+			case isInitrdName(base):
+				if info, err := d.Info(); err == nil && info.Size() >= minBootFileSize {
+					add(&initrds, path)
+				}
+			}
+			return nil
+		})
+	}
 
 	sort.Strings(loaderEntries)
 	sort.Strings(grubConfigs)
@@ -1819,14 +1901,18 @@ func ListAvailableBootKernels() ([]BootKernelInfo, error) {
 // BootSystemWithKernel boots with a specific kernel selected by index.
 // If kernelIndex < 0, uses the first available kernel.
 func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
-	kernels, discoverDebug, err := listAvailableBootKernelsWithDebug()
+	kernels, _, err := listAvailableBootKernelsWithDebug()
 	if err != nil {
 		return nil, BootAttemptError{
 			Message: err.Error(),
-			Debug:   append(discoverDebug, err.Error()),
+			Debug:   []string{err.Error()},
 		}
 	}
+	return bootWithSelectedKernel(kernels, kernelIndex)
+}
 
+// bootWithSelectedKernel boots a kernel from an already-discovered list.
+func bootWithSelectedKernel(kernels []BootKernelInfo, kernelIndex int) (*BootResult, error) {
 	if len(kernels) == 0 {
 		return nil, BootAttemptError{
 			Message: "no kernels available",
@@ -1842,7 +1928,7 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 	selected := kernels[kernelIndex]
 	debug := make([]string, 0, 32)
 
-	// Get boot drives setup (reuse existing logic)
+	// Get boot drives setup
 	drives := scanDrives()
 	bootCandidates := bootCandidateDrives(drives)
 	var locked []string
@@ -1863,9 +1949,6 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 		}
 	}
 
-	for _, line := range discoverDebug {
-		appendBootDebug(&debug, "kernel-discovery: %s", line)
-	}
 	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
 	appendBootDebug(&debug, "Selected kernel index %d: %s (%s)", kernelIndex, selected.KernelName, selected.Cmdline)
 
@@ -1988,7 +2071,7 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 	}
 	unmount()
 
-	appendBootDebug(&debug, "kexec -l succeeded.")
+	appendBootDebug(&debug, "kexec -l succeeded. Preparing for OS handoff...")
 	result := &BootResult{
 		Kernel:        selected.Kernel,
 		Initrd:        selected.Initrd,
@@ -1998,6 +2081,10 @@ func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
 		FullyUnlocked: fullyUnlocked,
 		Debug:         debug,
 	}
+
+	// Give the web UI time to poll and display the final boot log
+	// before the HTTP server shuts down for kexec.
+	time.Sleep(3 * time.Second)
 
 	// Signal main() to shut down HTTPS cleanly and execute kexec -e.
 	close(kexecReady)
@@ -2165,6 +2252,9 @@ func BootSystem() (*BootResult, error) {
 				Debug:         debug,
 			}
 			finishBootLaunch(result, nil) // Signal success to UI
+			// Give the web UI time to poll and display the final boot log
+			// before the HTTP server shuts down for kexec.
+			time.Sleep(3 * time.Second)
 			// Signal main() to shut down the HTTP server and fire kexec -e.
 			// We must not call kexec -e here — doing so from inside a live
 			// HTTP server goroutine causes it to fail silently because the Go
@@ -3059,18 +3149,17 @@ func main() {
 	})
 
 	mux.HandleFunc("/boot-list", func(w http.ResponseWriter, r *http.Request) {
-		if requireMethod(w, r, http.MethodGet) {
+		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		kernels, debug, err := listAvailableBootKernelsWithDebug()
-		if err != nil {
-			jsonResponse(w, http.StatusServiceUnavailable, map[string]interface{}{"error": err.Error(), "debug": debug})
+		if err := startDiscoveryLaunch(); err != nil {
+			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]interface{}{"kernels": kernels, "debug": debug})
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "discovery started"})
 	})
 
 	mux.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
@@ -3081,23 +3170,15 @@ func main() {
 			return
 		}
 
-		// Check if kernel index is provided in JSON body or query
-		kernelIndex := -1
 		var req struct {
 			KernelIndex int `json:"kernelIndex"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.KernelIndex >= 0 {
-			kernelIndex = req.KernelIndex
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.KernelIndex < 0 {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "kernelIndex is required"})
+			return
 		}
 
-		var err error
-		if kernelIndex >= 0 {
-			err = startBootLaunchWithKernel(kernelIndex)
-		} else {
-			err = startBootLaunch()
-		}
-
-		if err != nil {
+		if err := startBootLaunchWithKernel(req.KernelIndex); err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}

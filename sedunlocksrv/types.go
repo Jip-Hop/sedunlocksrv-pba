@@ -83,12 +83,14 @@ type BootResult struct {
 }
 
 type BootLaunchStatus struct {
-	InProgress bool        `json:"inProgress"`
-	Accepted   bool        `json:"accepted"`
-	Error      string      `json:"error,omitempty"`
-	Debug      []string    `json:"debug,omitempty"`
-	Result     *BootResult `json:"result,omitempty"`
-	StartedAt  time.Time   `json:"-"`
+	InProgress    bool             `json:"inProgress"`
+	Accepted      bool             `json:"accepted"`
+	Error         string           `json:"error,omitempty"`
+	Debug         []string         `json:"debug,omitempty"`
+	Result        *BootResult      `json:"result,omitempty"`
+	StartedAt     time.Time        `json:"-"`
+	DiscoveryDone bool             `json:"discoveryDone,omitempty"`
+	Kernels       []BootKernelInfo `json:"kernels,omitempty"`
 }
 
 type BootAttemptError struct {

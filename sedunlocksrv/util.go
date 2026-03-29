@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -230,7 +231,15 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
+
+		// Use stdbuf -oL to force line-buffered stdout so progress lines
+		// stream in real-time instead of being block-buffered in the pipe.
+		var cmd *exec.Cmd
+		if _, err := exec.LookPath("stdbuf"); err == nil {
+			cmd = exec.CommandContext(ctx, "stdbuf", "-oL", "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
+		} else {
+			cmd = exec.CommandContext(ctx, "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
+		}
 
 		// Merge stdout and stderr via a pipe so we can read line-by-line
 		stdoutPipe, err := cmd.StdoutPipe()
@@ -249,10 +258,25 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 			return
 		}
 
+		// Parse progress lines and only report every 5% to avoid flooding the UI.
+		// sedutil-cli output format: "61334 of 51380224 1% blk=61334"
+		progressRe := regexp.MustCompile(`(\d+)\s+of\s+(\d+)\s+(\d+)%`)
+		lastReportedPct := -1
+
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			if line != "" {
+			if line == "" {
+				continue
+			}
+			if m := progressRe.FindStringSubmatch(line); m != nil {
+				pct, _ := strconv.Atoi(m[3])
+				if pct < lastReportedPct+5 && pct != 100 {
+					continue // skip until next 5% boundary
+				}
+				lastReportedPct = pct
+				recordFlashLine(fmt.Sprintf("Writing PBA image... %d%%", pct))
+			} else {
 				recordFlashLine(line)
 			}
 		}
