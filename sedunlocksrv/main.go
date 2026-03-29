@@ -556,11 +556,16 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 			continue
 		}
 		err1 := exec.Command("sedutil-cli", "--setlockingrange", "0", "rw", password, d.Device).Run()
+		// Brief delay to let drive firmware settle between OPAL commands
+		time.Sleep(200 * time.Millisecond)
 		err2 := exec.Command("sedutil-cli", "--setmbrdone", "on", password, d.Device).Run()
 		success := err1 == nil && err2 == nil
 		if success {
 			successAny = true
 			rescanBlockDeviceLayout(d.Device)
+			// Let the kernel and udev fully process the partition table
+			// change before anything tries to scan the new partitions.
+			time.Sleep(500 * time.Millisecond)
 		}
 		results = append(results, UnlockResult{Device: d.Device, Success: success})
 	}
@@ -782,13 +787,22 @@ func availableLVMTools() []string {
 
 func activateLVM() {
 	if haveRuntimeCommand("pvscan") {
-		_ = exec.Command("pvscan", "--cache").Run()
+		recordBootLaunchDebug("Running pvscan --cache...")
+		if err := runCommandTimeout(10*time.Second, "pvscan", "--cache"); err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("pvscan --cache failed: %v", err))
+		}
 	}
 	if haveRuntimeCommand("vgscan") {
-		_ = exec.Command("vgscan", "--mknodes").Run()
+		recordBootLaunchDebug("Running vgscan --mknodes...")
+		if err := runCommandTimeout(10*time.Second, "vgscan", "--mknodes"); err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("vgscan --mknodes failed: %v", err))
+		}
 	}
 	if haveRuntimeCommand("vgchange") {
-		_ = exec.Command("vgchange", "-ay").Run()
+		recordBootLaunchDebug("Running vgchange -ay...")
+		if err := runCommandTimeout(10*time.Second, "vgchange", "-ay"); err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("vgchange -ay failed: %v", err))
+		}
 	}
 }
 
@@ -1728,6 +1742,46 @@ func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
 	return "", "", false
 }
 
+// matchAllKernelInitrdPairs matches all kernels with their initrds by version suffix.
+// Returns pairs sorted newest-first (reverse lexicographic order).
+func matchAllKernelInitrdPairs(kernels, initrds []string) [][2]string {
+	initrdBySuffix := make(map[string]string, len(initrds))
+	for _, initrd := range initrds {
+		base := filepath.Base(initrd)
+		switch {
+		case strings.HasPrefix(base, "initrd.img-"):
+			initrdBySuffix[strings.TrimPrefix(base, "initrd.img-")] = initrd
+		case strings.HasPrefix(base, "initramfs-"):
+			suffix := strings.TrimPrefix(base, "initramfs-")
+			suffix = strings.TrimSuffix(suffix, ".img")
+			suffix = strings.TrimSuffix(suffix, ".gz")
+			suffix = strings.TrimSuffix(suffix, ".xz")
+			initrdBySuffix[suffix] = initrd
+		}
+	}
+
+	sorted := append([]string(nil), kernels...)
+	sort.Strings(sorted)
+	pairs := make([][2]string, 0, len(sorted))
+	for i := len(sorted) - 1; i >= 0; i-- {
+		kernel := sorted[i]
+		base := filepath.Base(kernel)
+		var suffix string
+		switch {
+		case strings.HasPrefix(base, "vmlinuz-"):
+			suffix = strings.TrimPrefix(base, "vmlinuz-")
+		case strings.HasPrefix(base, "linux-"):
+			suffix = strings.TrimPrefix(base, "linux-")
+		default:
+			continue
+		}
+		if initrd, ok := initrdBySuffix[suffix]; ok {
+			pairs = append(pairs, [2]string{kernel, initrd})
+		}
+	}
+	return pairs
+}
+
 func findBootArtifacts(mountPoint, device string) (string, string, string, bool) {
 	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 
@@ -1783,6 +1837,13 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		recordBootLaunchDebug(line)
 	}
 
+	// Brief pause to let drive firmware and udev settle after a recent
+	// unlock. Without this, sedutil-cli --scan / --query and LVM commands
+	// can hit the drive before it has fully transitioned out of the locked
+	// state, causing hangs identical to the flash-after-query race.
+	appendDebug("Waiting for drive firmware to settle...")
+	time.Sleep(1 * time.Second)
+
 	drives := scanDrives()
 	bootCandidates := bootCandidateDrives(drives)
 	appendDebug("Boot candidates: %s", strings.Join(bootCandidates, ", "))
@@ -1795,7 +1856,9 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	_ = os.MkdirAll(mountPoint, 0755)
 
 	// Activate LVM in case kernels are on LVM volumes
+	appendDebug("Activating LVM...")
 	activateLVM()
+	appendDebug("LVM activation complete.")
 
 	searchDevices, err := buildBootSearchDevices(bootCandidates)
 	if err != nil {
@@ -1841,25 +1904,59 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		}
 
 		// Also collect raw kernels/initrds for matching
-		if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
-			name := filepath.Base(rawKernel)
-			initrdName := filepath.Base(rawInitrd)
+		// Match ALL kernel/initrd pairs, not just the first one
+		allPairs := matchAllKernelInitrdPairs(rawKernels, rawInitrds)
+		appendDebug("Matched %d kernel/initrd pairs on %s", len(allPairs), dev)
+
+		for _, pair := range allPairs {
+			rawKernel, rawInitrd := pair[0], pair[1]
+			// Try to find the best cmdline for this kernel
+			cmdline, err := findBootCmdline(mountPoint, rawKernel, dev)
+			if err != nil {
+				cmdline = ""
+			}
+			// Enhance weak cmdlines with synthesized root=
+			if (cmdline == "" || looksWeakCmdline(cmdline)) && looksLikeRootFilesystem(mountPoint) {
+				if synthesized, ok := synthesizeRootCmdline(dev, cmdline); ok {
+					appendDebug("  Synthesized cmdline for %s: %q", filepath.Base(rawKernel), synthesized)
+					cmdline = synthesized
+				}
+			}
 			kernels = append(kernels, BootKernelInfo{
 				Index:      len(kernels),
 				Device:     dev,
 				Kernel:     rawKernel,
-				KernelName: name,
+				KernelName: filepath.Base(rawKernel),
 				Initrd:     rawInitrd,
-				InitrdName: initrdName,
+				InitrdName: filepath.Base(rawInitrd),
 				Cmdline:    cmdline,
 				Source:     "discovered",
 			})
-			appendDebug("Discovered kernel/initrd on %s: %s | %s | cmdline=%q", dev, rawKernel, rawInitrd, cmdline)
-			if looksWeakCmdline(cmdline) {
-				appendDebug("WARNING: discovered cmdline looks weak: %q", cmdline)
+			appendDebug("  Kernel: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
+		}
+
+		// If no pairs matched but findBootArtifacts can find something (e.g. from loader entries/grub)
+		if len(allPairs) == 0 {
+			if rawKernel, rawInitrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
+				if (cmdline == "" || looksWeakCmdline(cmdline)) && looksLikeRootFilesystem(mountPoint) {
+					if synthesized, ok := synthesizeRootCmdline(dev, cmdline); ok {
+						cmdline = synthesized
+					}
+				}
+				kernels = append(kernels, BootKernelInfo{
+					Index:      len(kernels),
+					Device:     dev,
+					Kernel:     rawKernel,
+					KernelName: filepath.Base(rawKernel),
+					Initrd:     rawInitrd,
+					InitrdName: filepath.Base(rawInitrd),
+					Cmdline:    cmdline,
+					Source:     "discovered",
+				})
+				appendDebug("  Artifact: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
+			} else {
+				appendDebug("No kernel/initrd pairs found on %s", dev)
 			}
-		} else {
-			appendDebug("No raw kernel/initrd pair discovered on %s", dev)
 		}
 
 		// Add entries from boot catalog as alternatives
