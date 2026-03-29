@@ -137,14 +137,13 @@ textarea {
         </label>
         <div class="row">
             <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
-            <button class="secondary-btn hidden" id="bootBtn" onclick="boot()">Boot</button>
         </div>
         <div id="unlockResult" class="small"></div>
         <div id="bootResult" class="small"></div>
         <div id="bootDebug" class="mono small"></div>
         <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
         <div class="hint">
-            Use <b>Boot</b> to kexec directly into the OS while keeping unlocked state.
+            After a successful unlock, the system will automatically search for a bootable OS and boot into it.
             Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
             NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
         </div>
@@ -303,12 +302,10 @@ function renderExpertFlashTargets(status) {
 
 function setBootUiBusy(busy) {
     bootInFlight = busy
-    $("bootBtn").disabled = busy
     $("unlockBtn").disabled = busy
     $("rebootBtn").disabled = busy
     $("shutdownBtn").disabled = busy
     $("bootTransition").classList.toggle("hidden", !busy)
-    $("bootBtn").innerText = busy ? "Booting..." : "Boot"
 }
 
 function stopBootStatusPolling() {
@@ -422,7 +419,6 @@ async function refresh() {
     $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary} | ${attemptsSummary}`
     $("buildInfo").innerText = j.build ? `Build: ${j.build}` : ""
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
-    $("bootBtn").classList.toggle("hidden", !j.bootReady)
     renderChangeTargets(j)
     renderExpertFlashTargets(j)
 }
@@ -471,10 +467,20 @@ async function unlock() {
     } catch (err) {
         $("unlockResult").innerText = err.message || "Unlock failed"
         alert(err.message || "Unlock failed")
+        $("pw").value = ""
+        $("unlockBtn").disabled = false
+        refresh()
+        return
     }
     $("pw").value = ""
     $("unlockBtn").disabled = false
     refresh()
+
+    // Auto-boot after successful unlock
+    if (authToken) {
+        $("bootResult").innerText = "Searching for a bootable OS..."
+        boot()
+    }
 }
 
 async function changePw() {
@@ -777,7 +783,7 @@ async function boot() {
     
     // Try to list available kernels
     try {
-        $("bootResult").innerText = "Checking available kernels..."
+        $("bootResult").innerText = "Searching for a bootable OS..."
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 20000)  // 20 seconds for kernel discovery (filesystem walk + cmdline extraction)
         let r = await fetch("/boot-list", { method: "GET", headers: authHeaders(), signal: controller.signal })
@@ -834,7 +840,7 @@ function proceedWithSelectedKernel() {
 
 async function proceedWithBoot() {
     if (bootInFlight) return
-    $("bootResult").innerText = "Preparing OS handoff..."
+    $("bootResult").innerText = "Bootable OS found. Preparing OS handoff..."
     setBootUiBusy(true)
     try {
         let body = {}
