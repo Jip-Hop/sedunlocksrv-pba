@@ -1363,34 +1363,39 @@ func isValidCmdlineForDevice(cmdline, device string) bool {
 		return true
 	}
 
+	// Allow non-device-path root specifiers (UUID, PARTUUID, LABEL, ZFS, etc.)
+	// These cannot be meaningfully compared to a block device path.
+	for _, prefix := range []string{"UUID=", "PARTUUID=", "LABEL=", "PARTLABEL=", "ZFS=", "/dev/mapper/", "/dev/dm-"} {
+		if strings.HasPrefix(rootDevice, prefix) {
+			return true
+		}
+	}
+
+	// Allow unexpanded GRUB variables (e.g., ${cmdline_root})
+	if strings.Contains(rootDevice, "${") || strings.Contains(rootDevice, "$") {
+		return true
+	}
+
 	// Normalize device names for comparison
 	// e.g., /dev/nvme0n1p2 or nvme0n1p2
 	deviceBase := filepath.Base(device)
 	rootBase := filepath.Base(rootDevice)
 
-	// Check for exact match or prefix match
-	// Examples:
-	//   device=/dev/nvme0n1p2, root=/dev/nvme0n1p2 → match
-	//   device=/dev/nvme0n1p2, root=/dev/mapper/pve-root (symlink) → mismatch (weak, but allow)
-	//   device=/dev/sda1, root=/dev/sda1 → match
-	//   device=/dev/nvme0n1p2, root=/dev/sda1 → mismatch (strong, reject)
-
-	// If root device is a mapper or symlink, be permissive (it might resolve to the current device)
+	// If root device is a mapper or contains a hyphen (LVM style), be permissive
 	if strings.Contains(rootBase, "mapper") || strings.Contains(rootBase, "-") {
 		return true
 	}
 
-	// If root device contains letters at the end (sda, sdb, nvme0, nvme1, etc.),
-	// make sure it's the same disk family as current device
+	// Compare disk families: strip partition numbers to get base disk name
 	currentDisk := strings.TrimRight(strings.TrimRight(deviceBase, "0123456789"), "p")
 	rootDisk := strings.TrimRight(strings.TrimRight(rootBase, "0123456789"), "p")
 
-	// Reject if they're different physical drives
+	// Reject only if both are plain /dev/ paths on clearly different physical drives
 	if currentDisk != "" && rootDisk != "" && currentDisk != rootDisk {
-		return false // Different drives, reject
+		return false
 	}
 
-	return true // Same drive or mapper, allow
+	return true
 }
 
 func summarizeBootEntry(entry BootEntry) string {
@@ -2223,44 +2228,52 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 		func() (string, bool, error) {
 			return parseGrubCfg(filepath.Join(mountPoint, "grub", "grub.cfg"), mountPoint, kernelBase)
 		},
-		// Filesystem walk: search entire mount for grub.cfg files
+		// Filesystem walk: search for grub.cfg in known boot-related directories
+		// instead of walking the entire filesystem (much faster).
 		func() (string, bool, error) {
 			var bestCmdline string
 			var bestFound bool
-			var foundStrong bool // Flag to signal early exit
 
-			_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
-				if foundStrong {
-					return filepath.SkipDir // Already found strong cmdline, stop walking
-				}
-				if err != nil || d == nil || d.IsDir() {
-					return nil
-				}
+			// Check targeted paths where grub.cfg is typically found
+			grubSearchDirs := []string{
+				filepath.Join(mountPoint, "boot"),
+				filepath.Join(mountPoint, "efi"),
+				filepath.Join(mountPoint, "grub"),
+				filepath.Join(mountPoint, "grub2"),
+			}
 
-				// Check for grub.cfg files
-				if filepath.Base(path) == "grub.cfg" {
-					if cmdline, found, err := parseGrubCfg(path, mountPoint, kernelBase); err == nil && found && cmdline != "" {
-						// If not weak, mark strong and stop searching
-						if !looksWeakCmdline(cmdline) {
-							bestCmdline = cmdline
-							bestFound = true
-							foundStrong = true
-							return filepath.SkipDir // Stop walking
-						}
-						// Otherwise save and keep walking
-						if bestCmdline == "" {
-							bestCmdline = cmdline
-							bestFound = true
+			for _, searchDir := range grubSearchDirs {
+				if _, err := os.Stat(searchDir); err != nil {
+					continue
+				}
+				_ = filepath.WalkDir(searchDir, func(path string, d fs.DirEntry, err error) error {
+					if err != nil || d == nil || d.IsDir() {
+						return nil
+					}
+					if filepath.Base(path) == "grub.cfg" {
+						if cmdline, found, err := parseGrubCfg(path, mountPoint, kernelBase); err == nil && found && cmdline != "" {
+							if !looksWeakCmdline(cmdline) {
+								bestCmdline = cmdline
+								bestFound = true
+								return fs.SkipAll
+							}
+							if bestCmdline == "" {
+								bestCmdline = cmdline
+								bestFound = true
+							}
 						}
 					}
+					return nil
+				})
+				if bestFound && !looksWeakCmdline(bestCmdline) {
+					break
 				}
-				return nil
-			})
+			}
 
 			if bestFound {
 				return bestCmdline, true, nil
 			}
-			return "", false, fmt.Errorf("no grub.cfg found by filesystem walk")
+			return "", false, fmt.Errorf("no grub.cfg found in boot directories")
 		},
 		func() (string, bool, error) {
 			return parseKernelCmdlineFile(mountPoint)
@@ -2320,7 +2333,9 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	vars := parseGrubVars(grubPath)
+	lines := parseGrubLinesWithContinuation(string(data))
+	for _, line := range lines {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
 			continue
@@ -2329,6 +2344,7 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 			continue
 		}
 		if cmdline, ok := extractLinuxCmdline(t); ok {
+			cmdline = expandGrubVars(cmdline, vars)
 			return cmdline, true, nil
 		}
 	}
