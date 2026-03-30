@@ -632,7 +632,11 @@ populate_initrd_application_tree() {
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
     mkdir -p "${BUILD_TMPDIR}/core/etc/modprobe.d"
-    echo "blacklist dm_thin_pool" >"${BUILD_TMPDIR}/core/etc/modprobe.d/blacklist-thin.conf"
+    printf '%s\n' \
+        "blacklist dm_thin_pool" \
+        "install dm_thin_pool /bin/true" \
+        "install dm-thin-pool /bin/true" \
+        >"${BUILD_TMPDIR}/core/etc/modprobe.d/blacklist-thin.conf"
     write_runtime_network_config
 }
 

@@ -130,7 +130,8 @@ type BootKernelInfo struct {
 	Initrd     string `json:"initrd"`
 	InitrdName string `json:"initrdName"` // e.g., "initrd.img-6.8.12-9-pve"
 	Cmdline    string `json:"cmdline"`
-	Source     string `json:"source"` // e.g., "GRUB" or "loader.conf"
+	Source     string `json:"source"`   // e.g., "GRUB" or "loader.conf"
+	Recovery   bool   `json:"recovery"` // true if cmdline indicates recovery mode
 }
 
 // PasswordPolicy describes complexity requirements for setting a new password.

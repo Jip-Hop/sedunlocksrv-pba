@@ -278,6 +278,9 @@ input[type="password"] {
         <div class="box">
             <div class="section-label">Select Kernel to Boot</div>
             <div class="hint" style="margin-top:2px">Choose a kernel and confirm to boot the OS:</div>
+            <label class="checkbox-row" style="margin-top:6px">
+                <input type="checkbox" id="hideRecovery" checked onchange="renderKernelList()"> Hide Recovery Kernels
+            </label>
             <div id="kernelOptions" class="small" style="margin-top:8px"></div>
             <div class="row" style="margin-top:10px">
                 <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot</button>
@@ -999,6 +1002,7 @@ async function checkRAMForFile() {
 }
 
 let selectedKernelIndex = -1
+let allKernels = []
 
 async function discoverKernels() {
     if (bootInFlight) return
@@ -1060,25 +1064,36 @@ async function boot() {
     discoverKernels()
 }
 
-function showKernelSelection(kernels) {
+function renderKernelList() {
+    let hideRecovery = $("hideRecovery").checked
     let html = ""
-    kernels.forEach((kernel, idx) => {
+    let visibleCount = 0
+    allKernels.forEach((kernel, realIdx) => {
+        if (hideRecovery && kernel.recovery) return
         let label = kernel.kernelName || "Kernel"
+        if (kernel.recovery) label = "[Recovery] " + label
         let details = []
         if (kernel.initrdName) details.push(kernel.initrdName)
         if (kernel.source) details.push(kernel.source)
         if (kernel.cmdline) details.push(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline)
         let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
-        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${idx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
-        if (idx === 0 && kernels.length > 1) {
-            html += '<hr class="kernel-separator">'
-        }
+        if (visibleCount === 1) html += '<hr class="kernel-separator">'
+        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
+        visibleCount++
     })
     $("kernelOptions").innerHTML = html
-    if (kernels.length > 0) {
-        document.querySelector('input[name="kernelChoice"]').checked = true
-        selectedKernelIndex = 0
+    let firstRadio = document.querySelector('input[name="kernelChoice"]')
+    if (firstRadio) {
+        firstRadio.checked = true
+        selectedKernelIndex = parseInt(firstRadio.value)
+    } else {
+        selectedKernelIndex = -1
     }
+}
+
+function showKernelSelection(kernels) {
+    allKernels = kernels
+    renderKernelList()
     $("kernelSelectionDialog").classList.remove("hidden")
 }
 

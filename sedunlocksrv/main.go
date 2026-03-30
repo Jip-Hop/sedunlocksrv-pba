@@ -1491,6 +1491,20 @@ func looksWeakCmdline(cmdline string) bool {
 	return true
 }
 
+// looksLikeRecoveryCmdline returns true if the cmdline contains flags
+// commonly used for GRUB recovery/safe-mode entries.
+func looksLikeRecoveryCmdline(cmdline string) bool {
+	for _, f := range strings.Fields(cmdline) {
+		switch f {
+		case "single", "recovery", "emergency", "rescue",
+			"systemd.unit=rescue.target",
+			"systemd.unit=emergency.target":
+			return true
+		}
+	}
+	return false
+}
+
 // isValidCmdlineForDevice checks if a kernel cmdline's root= device
 // matches the device we're currently booting from. This prevents using
 // cmdlines meant for other drives (e.g., encrypted sda when we're on nvme0).
@@ -2051,6 +2065,22 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		appendDebug("Boot search exhausted with zero kernels")
 		return nil, debug, fmt.Errorf("no kernels found on boot devices")
 	}
+
+	// Deduplicate kernels by (kernelName, initrdName, cmdline).
+	// First occurrence wins — discovered entries appear before catalog.
+	seen := make(map[string]bool)
+	deduped := kernels[:0]
+	for _, k := range kernels {
+		key := k.KernelName + "\x00" + k.InitrdName + "\x00" + k.Cmdline
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		k.Index = len(deduped)
+		k.Recovery = looksLikeRecoveryCmdline(k.Cmdline)
+		deduped = append(deduped, k)
+	}
+	kernels = deduped
 
 	appendDebug("Boot search finished with %d kernel candidates", len(kernels))
 	return kernels, debug, nil
