@@ -727,6 +727,16 @@ EOF
         "install dm_thin_pool /bin/true" \
         "install dm-thin-pool /bin/true" \
         >"${BUILD_TMPDIR}/core/etc/modprobe.d/blacklist-thin.conf"
+
+    # Tell LVM itself to skip thin-provisioning entirely. Without this,
+    # vgchange -ay iterates every thin/thin-pool LV even though the kernel
+    # module is suppressed, printing a slow "Can't process" warning per LV.
+    mkdir -p "${BUILD_TMPDIR}/core/etc/lvm"
+    cat >"${BUILD_TMPDIR}/core/etc/lvm/lvm.conf" <<'LVMEOF'
+global {
+    thin_disabled = 1
+}
+LVMEOF
     write_runtime_network_config
 }
 

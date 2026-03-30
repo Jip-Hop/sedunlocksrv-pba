@@ -1019,9 +1019,15 @@ func activateLVM() {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 	if haveRuntimeCommand("vgchange") {
-		// --sysinit avoids normal userspace/udev synchronization paths that can
-		// stall in this minimal PBA environment and trigger the 3s timeout.
-		runLVMStep(3*time.Second, "vgchange", "-ay", "--sysinit")
+		// Activate only non-thin LVs. The --config override tells LVM to
+		// completely skip thin-provisioning targets so it does not iterate
+		// every thin/thin-pool LV to emit "Can't process" warnings (which
+		// is what actually causes the timeout on Proxmox systems with many
+		// thin volumes). The modprobe wrapper already suppresses the kernel
+		// module load, but LVM still probes each LV unless thin is disabled
+		// at the LVM config level.
+		runLVMStep(3*time.Second, "vgchange", "-ay",
+			"--config", "global{thin_disabled=1}")
 	}
 }
 
