@@ -925,7 +925,15 @@ func activateLVM() {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 	if haveRuntimeCommand("vgchange") {
-		runLVMStep(10*time.Second, "vgchange", "-ay")
+		// --noudevsync: do not wait for udev to create device nodes.
+		// The PBA has no udev running, so without this flag vgchange
+		// hangs indefinitely after activating LVs in metadata.
+		runLVMStep(10*time.Second, "vgchange", "-ay", "--noudevsync")
+	}
+	// vgchange --noudevsync skips device node creation. Run vgscan
+	// --mknodes again to create /dev/mapper/* nodes manually.
+	if haveRuntimeCommand("vgscan") {
+		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 }
 
