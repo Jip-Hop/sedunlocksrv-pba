@@ -694,6 +694,14 @@ populate_initrd_application_tree() {
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
     mkdir -p "${BUILD_TMPDIR}/core/sbin"
+
+    # IMPORTANT: /sbin/modprobe in TinyCore is usually a symlink to BusyBox.
+    # If we redirect into that symlink path, the shell follows the link and
+    # overwrites /bin/busybox itself, which then breaks chroot commands
+    # (including /sbin/depmod) with "Too many levels of symbolic links".
+    # Always remove the existing path first so we create a real wrapper file.
+    rm -f "${BUILD_TMPDIR}/core/sbin/modprobe"
+
     cat >"${BUILD_TMPDIR}/core/sbin/modprobe" <<'EOF'
 #!/bin/sh
 # BusyBox modprobe wrapper for PBA runtime.
@@ -846,6 +854,17 @@ slim_initrd_filesystem() {
 repack_initrd_to_boot() {
     local initrd_out_abs
     initrd_out_abs="$(cd "${BUILD_TMPDIR}/fs/boot" && pwd)/corepure64.gz"
+
+    # Sanity check before depmod: if BusyBox was corrupted by a previous build
+    # artifact (for example from writing through a symlinked /sbin/modprobe),
+    # fail with a clear remediation path.
+    if ! chroot "${BUILD_TMPDIR}/core" /bin/busybox true >/dev/null 2>&1; then
+        echo "❌ BusyBox sanity check failed inside ${BUILD_TMPDIR}/core." >&2
+        echo "   This usually indicates a stale/corrupted build tree (e.g. symlink-follow overwrite)." >&2
+        echo "   Run: ./build.sh --clean   then rebuild." >&2
+        exit 1
+    fi
+
     chroot "${BUILD_TMPDIR}/core" /sbin/depmod "${TC_KERNEL_VERSION}"
     (
         cd "${BUILD_TMPDIR}/core"
