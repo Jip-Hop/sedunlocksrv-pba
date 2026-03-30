@@ -713,7 +713,7 @@ for arg in "$@"; do
     case "$arg" in
         dm_thin_pool|dm-thin-pool)
             echo "pba modprobe wrapper: suppressing $arg" >&2
-            exit 0
+            exit 1
             ;;
     esac
 done
