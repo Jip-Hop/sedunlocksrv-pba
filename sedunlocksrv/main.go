@@ -83,9 +83,9 @@ var buildVersion = "dev"
 // These are scaled by settleFactor (set via --settle= build flag, injected at compile time).
 // Ratio is 1 : 2.5 : 5 (inter-command : partition : discovery).
 const (
-	baseOpalInterCmdDelay = 200 * time.Millisecond  // between setlockingrange and setmbrdone
-	basePartitionSettle   = 500 * time.Millisecond  // after rescanBlockDeviceLayout
-	baseDiscoverySettle   = 1000 * time.Millisecond // before discovery starts
+	baseOpalInterCmdDelay = 50 * time.Millisecond  // between setlockingrange and setmbrdone
+	basePartitionSettle   = 125 * time.Millisecond // after rescanBlockDeviceLayout
+	baseDiscoverySettle   = 250 * time.Millisecond // before discovery starts
 )
 
 // settleFactorStr is set at compile time via -ldflags "-X main.settleFactorStr=...".
@@ -829,7 +829,7 @@ func activateLVM() {
 	}
 	if haveRuntimeCommand("vgchange") {
 		recordBootLaunchDebug("Running vgchange -ay...")
-		if err := runCommandTimeout(10*time.Second, "vgchange", "-ay"); err != nil {
+		if err := runCommandTimeout(3*time.Second, "vgchange", "-ay"); err != nil {
 			recordBootLaunchDebug(fmt.Sprintf("vgchange -ay failed: %v", err))
 		}
 	}
@@ -1239,6 +1239,16 @@ func trimGrubValue(raw string) string {
 	return raw
 }
 
+// hasGrubPrefix checks if a trimmed line starts with a GRUB directive keyword
+// followed by a space or tab. GRUB2's grub-mkconfig uses tabs as separators.
+func hasGrubPrefix(line, keyword string) bool {
+	if !strings.HasPrefix(line, keyword) {
+		return false
+	}
+	rest := line[len(keyword):]
+	return len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t')
+}
+
 func expandGrubVars(s string, vars map[string]string) string {
 	out := s
 	for i := 0; i < 4; i++ {
@@ -1305,8 +1315,8 @@ func grubConfigChain(grubPath, mountPoint string) []string {
 		for _, line := range strings.Split(string(data), "\n") {
 			t := strings.TrimSpace(line)
 			switch {
-			case strings.HasPrefix(t, "set "):
-				assignment := strings.TrimSpace(strings.TrimPrefix(t, "set "))
+			case hasGrubPrefix(t, "set"):
+				assignment := strings.TrimSpace(t[4:])
 				key, value, ok := strings.Cut(assignment, "=")
 				if !ok {
 					continue
@@ -1316,8 +1326,8 @@ func grubConfigChain(grubPath, mountPoint string) []string {
 					continue
 				}
 				vars[key] = trimGrubValue(expandGrubVars(value, vars))
-			case strings.HasPrefix(t, "configfile "):
-				ref := strings.TrimSpace(strings.TrimPrefix(t, "configfile "))
+			case hasGrubPrefix(t, "configfile"):
+				ref := strings.TrimSpace(t[11:])
 				if next := resolveGrubConfigRef(mountPoint, ref, vars); next != "" {
 					walk(next)
 				}
@@ -1350,26 +1360,9 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 	// Parse lines with continuation handling
 	lines := parseGrubLinesWithContinuation(string(data))
 
-	// Debug: count linux lines and dump first 40 chars of each
-	var linuxLineCount int
-	for _, line := range lines {
-		lt := strings.TrimSpace(line)
-		lower := strings.ToLower(lt)
-		if strings.HasPrefix(lower, "linux ") || strings.HasPrefix(lower, "linux\t") ||
-			strings.HasPrefix(lower, "linuxefi ") || strings.HasPrefix(lower, "linuxefi\t") {
-			linuxLineCount++
-			preview := lt
-			if len(preview) > 40 {
-				preview = preview[:40]
-			}
-			recordBootLaunchDebug(fmt.Sprintf("grubCatalog(%s): linux-like line: %q", filepath.Base(grubPath), preview))
-		}
-	}
-	recordBootLaunchDebug(fmt.Sprintf("grubCatalog(%s): total lines=%d, linux-like lines=%d", filepath.Base(grubPath), len(lines), linuxLineCount))
-
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
+		if !hasGrubPrefix(t, "linux") && !hasGrubPrefix(t, "linuxefi") {
 			continue
 		}
 		kernelRef, cmdline, ok := splitKernelLine(t)
@@ -1383,10 +1376,10 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 		var initrdRefs []string
 		for j := i + 1; j < len(lines); j++ {
 			next := strings.TrimSpace(lines[j])
-			if strings.HasPrefix(next, "linux ") || strings.HasPrefix(next, "linuxefi ") || strings.HasPrefix(next, "menuentry ") {
+			if hasGrubPrefix(next, "linux") || hasGrubPrefix(next, "linuxefi") || hasGrubPrefix(next, "menuentry") {
 				break
 			}
-			if strings.HasPrefix(next, "initrd ") || strings.HasPrefix(next, "initrdefi ") {
+			if hasGrubPrefix(next, "initrd") || hasGrubPrefix(next, "initrdefi") {
 				initrdRefs = append(initrdRefs, splitInitrdLine(next)...)
 			}
 		}
@@ -1706,9 +1699,8 @@ func parseGrubVars(grubPath string) map[string]string {
 	lines := parseGrubLinesWithContinuation(string(data))
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(t, "set "):
-			assignment := strings.TrimSpace(strings.TrimPrefix(t, "set "))
+		if hasGrubPrefix(t, "set") {
+			assignment := strings.TrimSpace(t[4:])
 			key, value, ok := strings.Cut(assignment, "=")
 			if !ok {
 				continue
@@ -1736,7 +1728,7 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 	lines := parseGrubLinesWithContinuation(string(data))
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
+		if !hasGrubPrefix(t, "linux") && !hasGrubPrefix(t, "linuxefi") {
 			continue
 		}
 		kernelRef, cmdline, ok := splitKernelLine(t)
@@ -1759,10 +1751,10 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 
 		for j := i + 1; j < len(lines); j++ {
 			next := strings.TrimSpace(lines[j])
-			if strings.HasPrefix(next, "linux ") || strings.HasPrefix(next, "linuxefi ") || strings.HasPrefix(next, "menuentry ") {
+			if hasGrubPrefix(next, "linux") || hasGrubPrefix(next, "linuxefi") || hasGrubPrefix(next, "menuentry") {
 				break
 			}
-			if strings.HasPrefix(next, "initrd ") || strings.HasPrefix(next, "initrdefi ") {
+			if hasGrubPrefix(next, "initrd") || hasGrubPrefix(next, "initrdefi") {
 				for _, initrdRef := range splitInitrdLine(next) {
 					if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
 						recordBootLaunchDebug(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
@@ -2709,26 +2701,9 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	vars := parseGrubVars(grubPath)
 	lines := parseGrubLinesWithContinuation(string(data))
 
-	// Debug: count linux lines and dump first 40 chars of each
-	var linuxLineCount int
-	for _, line := range lines {
-		lt := strings.TrimSpace(line)
-		lower := strings.ToLower(lt)
-		if strings.HasPrefix(lower, "linux ") || strings.HasPrefix(lower, "linux\t") ||
-			strings.HasPrefix(lower, "linuxefi ") || strings.HasPrefix(lower, "linuxefi\t") {
-			linuxLineCount++
-			preview := lt
-			if len(preview) > 40 {
-				preview = preview[:40]
-			}
-			recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): linux-like line: %q", filepath.Base(grubPath), preview))
-		}
-	}
-	recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): total lines=%d, linux-like lines=%d, kernelBase=%q", filepath.Base(grubPath), len(lines), linuxLineCount, kernelBase))
-
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
-		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
+		if !hasGrubPrefix(t, "linux") && !hasGrubPrefix(t, "linuxefi") {
 			continue
 		}
 		if kernelBase != "" && !strings.Contains(t, kernelBase) {
