@@ -40,6 +40,7 @@ SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="jq.tcz lvm2.tcz coreutils.tcz"
 
 SETTLE_FACTOR=""
+DEBUG_LEVEL="1"
 
 CLEAN_MODE=false
 SSHBUILD=false
@@ -89,7 +90,6 @@ detect_repo_url_from_origin() {
     if [ -z "${remote}" ]; then
         return 1
     fi
-
     case "${remote}" in
         http://*|https://*)
             echo "${remote%.git}"
@@ -196,6 +196,7 @@ print_usage() {
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
     echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
     echo "          [--settle=FACTOR]  # scale firmware settling delays (default: 1.0; e.g. 0.5 = half)" >&2
+    echo "          [--debug-level=0|1|2]  # 0=verbose, 1=normal (default), 2=quiet" >&2
     echo "          [--expert-password=VALUE]  # if omitted, you will be prompted to enter one" >&2
     echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
     echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
@@ -245,6 +246,7 @@ parse_args() {
             --bond-lacp-rate=*)      BOND_LACP_RATE="${arg#*=}" ;;
             --bond-xmit-hash-policy=*) BOND_XMIT_HASH_POLICY="${arg#*=}" ;;
             --settle=*)              SETTLE_FACTOR="${arg#*=}" ;;
+            --debug-level=*)         DEBUG_LEVEL="${arg#*=}" ;;
             --sedutil-fork=*)        SEDUTIL_FORK="${arg#*=}" ;;
             *)
                 echo "Unknown option: $arg" >&2
@@ -302,6 +304,11 @@ validate_network_settings() {
     case "${SSH_CURL_INSECURE}" in
         auto|true|false) ;;
         *) echo "SSH_CURL_INSECURE must be auto, true, or false (current: ${SSH_CURL_INSECURE})" >&2; exit 1 ;;
+    esac
+
+    case "${DEBUG_LEVEL}" in
+        0|1|2) ;;
+        *) echo "DEBUG_LEVEL must be 0, 1, or 2 (current: ${DEBUG_LEVEL})" >&2; exit 1 ;;
     esac
 
 }
@@ -433,9 +440,9 @@ build_sedunlocksrv_go() {
             echo "❌ go build (test compile) failed"; exit 1
         fi
         echo "--- Building sedunlocksrv (linux/amd64) ---"
-        local ldflags="-s -w -X main.buildVersion=${build_id}"
+        local ldflags="-s -w -X main.buildVersion=${build_id} -X main.debugLevelStr=${DEBUG_LEVEL}"
         [ -n "${SETTLE_FACTOR}" ] && ldflags="${ldflags} -X main.settleFactorStr=${SETTLE_FACTOR}"
-        if [ -n "${REPO_URL}" ] && [ -n "${git_tag}" ]; then
+        if [ -n "${REPO_URL}" ]; then
             ldflags="${ldflags} -X main.repoURL=${REPO_URL}"
         fi
         if env GOOS=linux GOARCH=amd64 go build -ldflags="${ldflags}" -trimpath -o sedunlocksrv; then
@@ -686,6 +693,26 @@ populate_initrd_application_tree() {
     cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
+    mkdir -p "${BUILD_TMPDIR}/core/sbin"
+    cat >"${BUILD_TMPDIR}/core/sbin/modprobe" <<'EOF'
+#!/bin/sh
+# BusyBox modprobe wrapper for PBA runtime.
+# BusyBox modprobe does not support kmod's full install/alias semantics.
+# Intercept dm-thin-pool requests so LVM does not spend time trying to load
+# unsupported targets in this minimal pre-boot environment.
+
+for arg in "$@"; do
+    case "$arg" in
+        dm_thin_pool|dm-thin-pool)
+            echo "pba modprobe wrapper: suppressing $arg" >&2
+            exit 0
+            ;;
+    esac
+done
+
+exec /bin/busybox modprobe "$@"
+EOF
+    chmod +x "${BUILD_TMPDIR}/core/sbin/modprobe"
     mkdir -p "${BUILD_TMPDIR}/core/etc/modprobe.d"
     printf '%s\n' \
         "blacklist dm_thin_pool" \

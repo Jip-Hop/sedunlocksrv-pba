@@ -92,7 +92,17 @@ const (
 // settleFactorStr is set at compile time via -ldflags "-X main.settleFactorStr=...".
 var settleFactorStr string
 
+// debugLevelStr is set at compile time via -ldflags "-X main.debugLevelStr=...".
+var debugLevelStr string
+
+const (
+	debugVerbose = 0 // full trace
+	debugNormal  = 1 // user-facing progress
+	debugQuiet   = 2 // suppress logs
+)
+
 var settleFactor = parseSettleFactor()
+var debugLevel = parseDebugLevel()
 
 func parseSettleFactor() float64 {
 	if settleFactorStr != "" {
@@ -106,6 +116,34 @@ func parseSettleFactor() float64 {
 // settleDelay returns a base duration scaled by the global settleFactor.
 func settleDelay(base time.Duration) time.Duration {
 	return time.Duration(math.Round(float64(base) * settleFactor))
+}
+
+func parseDebugLevel() int {
+	if debugLevelStr != "" {
+		if n, err := strconv.Atoi(debugLevelStr); err == nil && n >= debugVerbose && n <= debugQuiet {
+			return n
+		}
+	}
+	return debugNormal
+}
+
+func shouldEmitDebug(level int) bool {
+	// Smaller number means more verbosity: 0 logs everything, 2 logs almost nothing.
+	return debugLevel <= level
+}
+
+func dbgPrintf(level int, format string, args ...interface{}) {
+	if !shouldEmitDebug(level) {
+		return
+	}
+	log.Printf(format, args...)
+}
+
+func dbgPrintln(level int, args ...interface{}) {
+	if !shouldEmitDebug(level) {
+		return
+	}
+	log.Println(args...)
 }
 
 type filteredHTTPLogWriter struct{}
@@ -127,7 +165,7 @@ func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
 			return len(p), nil
 		}
 	}
-	log.Printf("[http] %s", msg)
+	dbgPrintf(debugNormal, "[http] %s", msg)
 	return len(p), nil
 }
 
@@ -258,7 +296,7 @@ func beginBootLaunch() error {
 	if bootLaunchState.InProgress {
 		// Auto-reset if the previous boot has been stuck for over 2 minutes
 		if time.Since(bootLaunchState.StartedAt) > 2*time.Minute {
-			log.Printf("Auto-resetting stale boot-in-progress state (started %s ago)", time.Since(bootLaunchState.StartedAt).Round(time.Second))
+			dbgPrintf(debugNormal, "Auto-resetting stale boot-in-progress state (started %s ago)", time.Since(bootLaunchState.StartedAt).Round(time.Second))
 			resetBootLaunchStateLocked()
 		} else {
 			return fmt.Errorf("boot is already in progress")
@@ -363,6 +401,22 @@ func startBootLaunchWithKernel(kernelIndex int) error {
 }
 
 func recordBootLaunchDebug(line string) {
+	// Level 1: user-facing progress and actionable diagnostics.
+	if !shouldEmitDebug(debugNormal) {
+		return
+	}
+	recordBootLaunchDebugStamped(line)
+}
+
+func recordBootLaunchDebugVerbose(line string) {
+	// Level 0: deep internals useful when tracing parser/device behavior.
+	if !shouldEmitDebug(debugVerbose) {
+		return
+	}
+	recordBootLaunchDebugStamped(line)
+}
+
+func recordBootLaunchDebugStamped(line string) {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	if !bootLaunchState.InProgress {
@@ -608,10 +662,10 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 	} else {
 		mu.Lock()
 		failedAttempts++
-		log.Printf("Failed unlock attempt %d/%d\n", failedAttempts, maxAttempts)
+		dbgPrintf(debugNormal, "Failed unlock attempt %d/%d", failedAttempts, maxAttempts)
 		if failedAttempts >= maxAttempts {
 			mu.Unlock()
-			log.Println("Max failed attempts reached. Powering off.")
+			dbgPrintln(debugNormal, "Max failed attempts reached. Powering off.")
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 				exec.Command("poweroff", "-nf").Run()
@@ -849,22 +903,26 @@ func runCommandWithOutputTimeout(timeout time.Duration, name string, args ...str
 }
 
 func logModprobeThinPoolDebug() {
-	recordBootLaunchDebug("LVM debug: collecting dm-thin-pool module policy state...")
+	recordBootLaunchDebugVerbose("LVM debug: collecting dm-thin-pool module policy state...")
+	modprobeIsBusyBox := false
 
 	if modprobePath, err := exec.LookPath("modprobe"); err == nil {
 		resolved := modprobePath
 		if realPath, e := filepath.EvalSymlinks(modprobePath); e == nil && realPath != "" {
 			resolved = realPath
 		}
-		recordBootLaunchDebug(fmt.Sprintf("modprobe path: %s (resolved: %s)", modprobePath, resolved))
+		if strings.Contains(strings.ToLower(resolved), "busybox") {
+			modprobeIsBusyBox = true
+		}
+		recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe path: %s (resolved: %s)", modprobePath, resolved))
 	} else {
-		recordBootLaunchDebug("modprobe path lookup failed")
+		recordBootLaunchDebugVerbose("modprobe path lookup failed")
 	}
 
 	for _, cfg := range []string{"/etc/modprobe.d/blacklist-thin.conf", "/etc/modprobe.d/blacklist.conf", "/etc/modprobe.conf"} {
 		b, err := os.ReadFile(cfg)
 		if err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("modprobe config not readable: %s (%v)", cfg, err))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config not readable: %s (%v)", cfg, err))
 			continue
 		}
 		matches := make([]string, 0, 4)
@@ -878,27 +936,31 @@ func logModprobeThinPoolDebug() {
 			}
 		}
 		if len(matches) == 0 {
-			recordBootLaunchDebug(fmt.Sprintf("modprobe config %s: no dm-thin-pool rules", cfg))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config %s: no dm-thin-pool rules", cfg))
 			continue
 		}
-		recordBootLaunchDebug(fmt.Sprintf("modprobe config %s rules: %s", cfg, strings.Join(matches, " | ")))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config %s rules: %s", cfg, strings.Join(matches, " | ")))
 	}
 
 	if haveRuntimeCommand("modprobe") {
-		if out, err := runCommandWithOutputTimeout(2*time.Second, "modprobe", "-c"); err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("modprobe -c failed: %v", err))
+		if modprobeIsBusyBox {
+			recordBootLaunchDebugVerbose("modprobe implementation is BusyBox; skipping unsupported modprobe -c dump")
 		} else {
-			matches := make([]string, 0, 4)
-			for _, line := range strings.Split(out, "\n") {
-				t := strings.TrimSpace(line)
-				if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
-					matches = append(matches, t)
-				}
-			}
-			if len(matches) == 0 {
-				recordBootLaunchDebug("modprobe -c: no dm-thin-pool entries")
+			if out, err := runCommandWithOutputTimeout(2*time.Second, "modprobe", "-c"); err != nil {
+				recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe -c failed: %v", err))
 			} else {
-				recordBootLaunchDebug(fmt.Sprintf("modprobe -c entries: %s", strings.Join(matches, " | ")))
+				matches := make([]string, 0, 4)
+				for _, line := range strings.Split(out, "\n") {
+					t := strings.TrimSpace(line)
+					if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
+						matches = append(matches, t)
+					}
+				}
+				if len(matches) == 0 {
+					recordBootLaunchDebugVerbose("modprobe -c: no dm-thin-pool entries")
+				} else {
+					recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe -c entries: %s", strings.Join(matches, " | ")))
+				}
 			}
 		}
 	}
@@ -911,23 +973,23 @@ func logModprobeThinPoolDebug() {
 				break
 			}
 		}
-		recordBootLaunchDebug(fmt.Sprintf("/proc/modules contains dm_thin_pool: %t", thinLoaded))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("/proc/modules contains dm_thin_pool: %t", thinLoaded))
 	}
 
 	if haveRuntimeCommand("dmsetup") {
 		if out, err := runCommandWithOutputTimeout(2*time.Second, "dmsetup", "targets"); err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("dmsetup targets failed: %v", err))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("dmsetup targets failed: %v", err))
 		} else {
 			hasThinTarget := false
 			for _, line := range strings.Split(out, "\n") {
 				t := strings.TrimSpace(line)
 				if strings.HasPrefix(t, "thin-pool") || strings.HasPrefix(t, "thin ") || strings.Contains(t, " thin-pool ") {
 					hasThinTarget = true
-					recordBootLaunchDebug(fmt.Sprintf("dmsetup target: %s", t))
+					recordBootLaunchDebugVerbose(fmt.Sprintf("dmsetup target: %s", t))
 				}
 			}
 			if !hasThinTarget {
-				recordBootLaunchDebug("dmsetup targets: thin/thin-pool target not listed")
+				recordBootLaunchDebugVerbose("dmsetup targets: thin/thin-pool target not listed")
 			}
 		}
 	}
@@ -1877,12 +1939,12 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 		rawCmdline := cmdline
 		cmdline = expandGrubVars(cmdline, vars)
 		if rawCmdline != cmdline {
-			recordBootLaunchDebug(fmt.Sprintf("grub-config %s: expanded cmdline %q -> %q", filepath.Base(grubPath), rawCmdline, cmdline))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: expanded cmdline %q -> %q", filepath.Base(grubPath), rawCmdline, cmdline))
 		}
 
 		kernelPath := resolveBootPath(mountPoint, kernelRef)
 		if kernelPath == "" {
-			recordBootLaunchDebug(fmt.Sprintf("grub-config %s: kernel ref %q did not resolve on filesystem", filepath.Base(grubPath), kernelRef))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: kernel ref %q did not resolve on filesystem", filepath.Base(grubPath), kernelRef))
 			continue
 		}
 
@@ -1894,7 +1956,7 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 			if hasGrubPrefix(next, "initrd") || hasGrubPrefix(next, "initrdefi") {
 				for _, initrdRef := range splitInitrdLine(next) {
 					if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
-						recordBootLaunchDebug(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
+						recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
 						return kernelPath, initrdPath, cmdline, true
 					}
 				}
@@ -1985,30 +2047,30 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
-		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: found via loader entries: kernel=%s cmdline=%q", filepath.Base(kernel), cmdline))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: found via loader entries: kernel=%s cmdline=%q", filepath.Base(kernel), cmdline))
 		// If cmdline looks weak, try to augment it via the full fallback chain
 		if looksWeakCmdline(cmdline) {
-			recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: loader entry cmdline is weak, trying findBootCmdline fallback"))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: loader entry cmdline is weak, trying findBootCmdline fallback"))
 			if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
-				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
+				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 				cmdline = betterCmdline
 			} else {
-				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
+				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 			}
 		}
 		return kernel, initrd, cmdline, true
 	}
 	for _, grubPath := range grubConfigs {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
-			recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: found via grub config %s: kernel=%s cmdline=%q", trimMountPrefix(mountPoint, grubPath), filepath.Base(kernel), cmdline))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: found via grub config %s: kernel=%s cmdline=%q", trimMountPrefix(mountPoint, grubPath), filepath.Base(kernel), cmdline))
 			// If cmdline looks weak, try to augment it via the full fallback chain
 			if looksWeakCmdline(cmdline) {
-				recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: grub config cmdline is weak, trying findBootCmdline fallback"))
+				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: grub config cmdline is weak, trying findBootCmdline fallback"))
 				if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
-					recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
+					recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 					cmdline = betterCmdline
 				} else {
-					recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
+					recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 				}
 			}
 			return kernel, initrd, cmdline, true
@@ -2016,21 +2078,25 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	}
 
 	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
-		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: matched kernel/initrd pair: kernel=%s initrd=%s, searching for cmdline...", filepath.Base(kernel), filepath.Base(initrd)))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: matched kernel/initrd pair: kernel=%s initrd=%s, searching for cmdline...", filepath.Base(kernel), filepath.Base(initrd)))
 		cmdline, err := findBootCmdline(mountPoint, kernel, device)
 		if err == nil {
 			return kernel, initrd, cmdline, true
 		}
-		recordBootLaunchDebug(fmt.Sprintf("findBootArtifacts: findBootCmdline failed for matched pair: %v", err))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed for matched pair: %v", err))
 		return kernel, initrd, "", true
 	}
-	recordBootLaunchDebug("findBootArtifacts: no boot artifacts found")
+	recordBootLaunchDebugVerbose("findBootArtifacts: no boot artifacts found")
 	return "", "", "", false
 }
 
 func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	debug := make([]string, 0, 64)
 	appendDebug := func(format string, args ...interface{}) {
+		// Discovery progress is considered level-1 logging and is hidden in quiet mode.
+		if !shouldEmitDebug(debugNormal) {
+			return
+		}
 		line := fmt.Sprintf(format, args...)
 		debug = append(debug, line)
 		recordBootLaunchDebug(line)
@@ -2207,13 +2273,6 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 
 	appendDebug("Boot search finished with %d kernel candidates", len(kernels))
 	return kernels, debug, nil
-}
-
-// ListAvailableBootKernels discovers all available kernel/initrd pairs without booting.
-// Returns a slice of BootKernelInfo for selection by the user.
-func ListAvailableBootKernels() ([]BootKernelInfo, error) {
-	kernels, _, err := listAvailableBootKernelsWithDebug()
-	return kernels, err
 }
 
 // BootSystemWithKernel boots with a specific kernel selected by index.
@@ -2461,7 +2520,7 @@ func BootSystem() (*BootResult, error) {
 		if partitions, err := listDevicePartitions(bootDrive); err == nil {
 			appendBootDebug(&debug, "Visible partitions after refresh for %s: %s", bootDrive, strings.Join(partitions, ", "))
 			for _, part := range partitions {
-				appendBootDebug(&debug, "Block type for %s: %s", part, probeBlockType(part))
+				appendBootDebugVerbose(&debug, "Block type for %s: %s", part, probeBlockType(part))
 			}
 		}
 	}
@@ -2497,7 +2556,7 @@ func BootSystem() (*BootResult, error) {
 			for _, e := range entries {
 				names = append(names, e.Name())
 			}
-			appendBootDebug(&debug, "Mount root contents: %s", strings.Join(names, " "))
+			appendBootDebugVerbose(&debug, "Mount root contents: %s", strings.Join(names, " "))
 		}
 
 		unmount := func() {
@@ -2512,10 +2571,10 @@ func BootSystem() (*BootResult, error) {
 			appendBootDebug(&debug, "Cataloged %d boot entries from %s", len(entries), dev)
 			for i, entry := range entries {
 				if i >= 4 {
-					appendBootDebug(&debug, "Additional boot entries on %s omitted: %d", dev, len(entries)-i)
+					appendBootDebugVerbose(&debug, "Additional boot entries on %s omitted: %d", dev, len(entries)-i)
 					break
 				}
-				appendBootDebug(&debug, "Boot entry %d on %s: %s", i+1, dev, summarizeBootEntry(entry))
+				appendBootDebugVerbose(&debug, "Boot entry %d on %s: %s", i+1, dev, summarizeBootEntry(entry))
 			}
 		}
 
@@ -2592,9 +2651,9 @@ func BootSystem() (*BootResult, error) {
 			return result, nil
 		}
 		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
-		appendBootDebug(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
+		appendBootDebugVerbose(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
 		if files := snapshotMountFiles(mountPoint, 40); len(files) > 0 {
-			appendBootDebug(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
+			appendBootDebugVerbose(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
 		}
 		appendBootDebug(&debug, "No boot artifacts found on %s", dev)
 		unmount()
@@ -2806,21 +2865,21 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 	for _, c := range candidates {
 		cmdline, found, err := c.fn()
 		if err != nil || !found || cmdline == "" {
-			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: no result (err=%v)", c.name, err))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: no result (err=%v)", c.name, err))
 			continue
 		}
-		recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: found %q", c.name, cmdline))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: found %q", c.name, cmdline))
 		// Skip cmdlines that point to a different device (e.g., sda when we're on nvme0)
 		if !isValidCmdlineForDevice(cmdline, device) {
-			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: rejected by isValidCmdlineForDevice (device=%s)", c.name, device))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: rejected by isValidCmdlineForDevice (device=%s)", c.name, device))
 			continue
 		}
 		// If this is strong (has meaningful content), return immediately
 		if !looksWeakCmdline(cmdline) {
-			recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: accepted (strong)", c.name))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: accepted (strong)", c.name))
 			return cmdline, nil
 		}
-		recordBootLaunchDebug(fmt.Sprintf("findBootCmdline[%s]: weak, saving as fallback", c.name))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: weak, saving as fallback", c.name))
 		// Otherwise, save it and keep trying for a better one
 		if bestCmdline == "" {
 			bestCmdline = cmdline
@@ -2865,7 +2924,7 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 		if cmdline, ok := extractLinuxCmdline(t); ok {
 			rawCmdline := cmdline
 			cmdline = expandGrubVars(cmdline, vars)
-			recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): linux line matched, raw=%q expanded=%q", filepath.Base(grubPath), rawCmdline, cmdline))
+			recordBootLaunchDebugVerbose(fmt.Sprintf("parseSingleGrubCfg(%s): linux line matched, raw=%q expanded=%q", filepath.Base(grubPath), rawCmdline, cmdline))
 			return cmdline, true, nil
 		}
 	}
@@ -2896,7 +2955,7 @@ func consoleInterface() {
 
 		old, err := term.MakeRaw(fd)
 		if err != nil {
-			log.Printf("term.MakeRaw failed: %v", err)
+			dbgPrintf(debugNormal, "term.MakeRaw failed: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -2924,7 +2983,7 @@ func activeMenu(fd int) {
 
 		old, err := term.MakeRaw(fd)
 		if err != nil {
-			log.Printf("term.MakeRaw failed: %v", err)
+			dbgPrintf(debugNormal, "term.MakeRaw failed: %v", err)
 			return
 		}
 
@@ -3155,11 +3214,12 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 // ============================================================
 
 func main() {
-	log.Printf("Settle factor: %.2f (inter-cmd=%s, partition=%s, discovery=%s)",
+	dbgPrintf(debugNormal, "Settle factor: %.2f (inter-cmd=%s, partition=%s, discovery=%s)",
 		settleFactor,
 		settleDelay(baseOpalInterCmdDelay),
 		settleDelay(basePartitionSettle),
 		settleDelay(baseDiscoverySettle))
+	dbgPrintf(debugNormal, "Debug level: %d (0=verbose, 1=normal, 2=quiet)", debugLevel)
 
 	initializeBootState()
 	go consoleInterface()
@@ -3176,7 +3236,7 @@ func main() {
 			ErrorLog: httpErrorLog,
 		}
 		if err := redirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[http] redirect server failed: %v", err)
+			dbgPrintf(debugNormal, "[http] redirect server failed: %v", err)
 		}
 	}()
 
@@ -3551,7 +3611,7 @@ func main() {
 		kexecFailed <- err
 		// Restart the HTTPS server so the web UI can reconnect and display
 		// the error via /boot-status rather than getting a dead connection.
-		log.Printf("kexec -e failed: %v — restarting HTTPS server", err)
+		dbgPrintf(debugNormal, "kexec -e failed: %v — restarting HTTPS server", err)
 		if err := httpsSrv.ListenAndServeTLS("server.crt", "server.key"); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTPS server restart failed: %v", err)
 		}

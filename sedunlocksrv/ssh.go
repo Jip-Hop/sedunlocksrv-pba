@@ -2,7 +2,6 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/exec"
 )
@@ -17,12 +16,12 @@ func startSSHService() {
 			if err := os.Symlink(multi, symlinkPath); err == nil {
 				dropbearBin = symlinkPath
 			} else {
-				log.Printf("[ssh] failed to prepare dropbearmulti symlink: %v", err)
+				dbgPrintf(debugNormal, "[ssh] failed to prepare dropbearmulti symlink: %v", err)
 			}
 		}
 	}
 	if dropbearBin == "" {
-		log.Println("[ssh] dropbear not present; SSH UI disabled")
+		dbgPrintln(debugNormal, "[ssh] dropbear not present; SSH UI disabled")
 		return
 	}
 
@@ -39,7 +38,7 @@ func startSSHService() {
 		"/etc/dropbear/dropbear_rsa_host_key",
 	)
 	if ed25519Key == "" && ecdsaKey == "" && rsaKey == "" {
-		log.Println("[ssh] dropbear keys not present; SSH UI disabled")
+		dbgPrintln(debugNormal, "[ssh] dropbear keys not present; SSH UI disabled")
 		return
 	}
 
@@ -64,13 +63,13 @@ func startSSHService() {
 
 	cmd := exec.Command(dropbearBin, args...)
 	if err := cmd.Start(); err != nil {
-		log.Printf("[ssh] failed to start dropbear: %v", err)
+		dbgPrintf(debugNormal, "[ssh] failed to start dropbear: %v", err)
 		return
 	}
-	log.Printf("[ssh] dropbear started on port 2222 (pid %d)", cmd.Process.Pid)
+	dbgPrintf(debugNormal, "[ssh] dropbear started on port 2222 (pid %d)", cmd.Process.Pid)
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			log.Printf("[ssh] dropbear exited: %v", err)
+			dbgPrintf(debugNormal, "[ssh] dropbear exited: %v", err)
 		}
 	}()
 }

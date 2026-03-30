@@ -173,7 +173,6 @@ input[type="password"] {
     color: #7ee787;
     display: none;
 }
-#bootDebug { }
 #flashLog {
     white-space: pre-wrap;
     word-break: break-word;
@@ -268,6 +267,13 @@ input[type="password"] {
     font-weight: 600;
     color: #e6edf3;
 }
+.build-info {
+    margin-top: 10px;
+}
+.build-label {
+    margin-right: 6px;
+    color: #8b949e;
+}
 .build-tag {
     display: inline-block;
     font-size: 11px;
@@ -314,16 +320,18 @@ a.build-link:hover {
 <div class="box">
     <div id="status"></div>
     <div id="statusSummary" class="small" style="margin-top:6px"></div>
-    <div id="buildInfo" class="small"></div>
+    <div id="buildInfo" class="small build-info"></div>
 </div>
 
 <div id="unlockTab">
     <div class="box">
-        <input id="pw" type="password" placeholder="Disk Password">
-        <label class="checkbox-row">
-            <input type="checkbox" id="showUnlock"> Show Password
-        </label>
-        <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
+        <div id="unlockPasswordEntry">
+            <input id="pw" type="password" placeholder="Disk Password">
+            <label class="checkbox-row">
+                <input type="checkbox" id="showUnlock"> Show Password
+            </label>
+            <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
+        </div>
         <div id="unlockResult" class="small" style="margin-top:8px"></div>
         <div id="bootResult" class="small"></div>
         <div id="bootDebug" class="log-box"></div>
@@ -626,6 +634,25 @@ function validateNewPassword() {
     }
 }
 
+function buildVersionHTML(build, repoURL) {
+    if (!build) return ""
+    const label = `<span class="build-label">Build Version:</span>`
+    const baseRepoURL = (repoURL || "").replace(/\/+$/, '')
+    if (!baseRepoURL) {
+        return `${label}<span class="build-tag">${build}</span>`
+    }
+
+    // Non-tag local builds are formatted as YYYYMMDD-HHMM-<gitsha>; link those to the commit.
+    const commitMatch = build.match(/^\d{8}-\d{4}-([0-9a-f]{7,40})$/i)
+    if (commitMatch) {
+        const commitURL = `${baseRepoURL}/commit/${commitMatch[1]}`
+        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${build}</a>`
+    }
+
+    const releaseURL = `${baseRepoURL}/releases/tag/${encodeURIComponent(build)}`
+    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${build}</a>`
+}
+
 async function refresh() {
     if (bootInFlight) return
     let r = await fetch("/status")
@@ -658,6 +685,8 @@ async function refresh() {
     let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
     let bootSummary = j.bootReady ? (j.bootDrives || []).join(", ") || "yes" : "none yet"
+    let failedUnlockAttempts = j.failedAttempts || 0
+    let maxUnlockAttempts = j.maxAttempts || 0
     let remaining = j.attemptsRemaining || 0
     let remainColor = remaining <= 1 ? "#f85149" : remaining <= 2 ? "#d29922" : "#3fb950"
     $("statusSummary").innerHTML = `<div class="status-bar">`
@@ -665,18 +694,10 @@ async function refresh() {
         + `<span class="stat-item">OPAL <span class="stat-val">${opalCount}</span></span>`
         + `<span class="stat-item">Locked <span class="stat-val" style="color:${lockedCount ? '#f85149' : '#3fb950'}">${lockedCount}</span></span>`
         + `<span class="stat-item">Boot-ready <span class="stat-val">${bootSummary}</span></span>`
-        + `<span class="stat-item">Attempts left <span class="stat-val" style="color:${remainColor}">${remaining}</span></span>`
+        + `<span class="stat-item">Failed unlock attempts <span class="stat-val">${failedUnlockAttempts}/${maxUnlockAttempts}</span></span>`
+        + `<span class="stat-item">Attempts before lockout <span class="stat-val" style="color:${remainColor}">${remaining}</span></span>`
         + `</div>`
-    if (j.build) {
-        if (j.repoURL) {
-            const releaseURL = j.repoURL.replace(/\/+$/, '') + '/releases/tag/' + encodeURIComponent(j.build)
-            $("buildInfo").innerHTML = `<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${j.build}</a>`
-        } else {
-            $("buildInfo").innerHTML = `<span class="build-tag">${j.build}</span>`
-        }
-    } else {
-        $("buildInfo").innerHTML = ""
-    }
+    $("buildInfo").innerHTML = buildVersionHTML(j.build, j.repoURL)
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     renderChangeTargets(j)
     renderExpertFlashTargets(j)
@@ -827,11 +848,13 @@ async function syncExpertState() {
         let j = await r.json()
         let configured = !!j.configured
         let authenticated = !!j.authenticated
+        $("unlockPasswordEntry").classList.toggle("hidden", authenticated)
         if (!configured) {
             $("expertStatus").innerText = "Expert mode is not configured on this image."
             $("expertActions").classList.add("hidden")
             expertToken = ""
             sessionStorage.removeItem("sedunlocksrvExpertToken")
+            $("unlockPasswordEntry").classList.remove("hidden")
             return
         }
         if (!authenticated) {
@@ -839,6 +862,7 @@ async function syncExpertState() {
             $("expertActions").classList.add("hidden")
             expertToken = ""
             sessionStorage.removeItem("sedunlocksrvExpertToken")
+            $("unlockPasswordEntry").classList.remove("hidden")
             return
         }
         $("expertStatus").innerText = "Expert actions unlocked for this session."
@@ -846,6 +870,7 @@ async function syncExpertState() {
     } catch (err) {
         $("expertStatus").innerText = "Unable to verify expert session state."
         $("expertActions").classList.add("hidden")
+        $("unlockPasswordEntry").classList.remove("hidden")
     }
 }
 

@@ -22,6 +22,7 @@
 # TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key
 # SSH_CURL_INSECURE="auto"      # auto: false when custom TLS cert/key are used, else true
+# DEBUG_LEVEL="1"               # 0=verbose trace, 1=normal progress (default), 2=quiet
 # EXPERT_PASSWORD=""            # optional; if empty, build.sh will prompt you to enter a password (no complexity requirements)
 
 # --- PBA runtime (wired into tc-config where supported) ---

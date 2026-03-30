@@ -132,8 +132,25 @@ func availableRAMBytes() (int64, error) {
 // ============================================================
 
 func appendBootDebug(debug *[]string, format string, args ...interface{}) {
+	appendBootDebugAtLevel(debug, debugNormal, format, args...)
+}
+
+func appendBootDebugVerbose(debug *[]string, format string, args ...interface{}) {
+	appendBootDebugAtLevel(debug, debugVerbose, format, args...)
+}
+
+func appendBootDebugAtLevel(debug *[]string, level int, format string, args ...interface{}) {
+	// This helper keeps the in-memory debug slice and boot-status stream in sync
+	// while honoring the global build-time debug level.
+	if !shouldEmitDebug(level) {
+		return
+	}
 	line := fmt.Sprintf(format, args...)
 	*debug = append(*debug, line)
+	if level == debugVerbose {
+		recordBootLaunchDebugVerbose(line)
+		return
+	}
 	recordBootLaunchDebug(line)
 }
 

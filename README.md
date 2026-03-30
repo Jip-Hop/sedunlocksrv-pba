@@ -104,7 +104,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - GRUB line continuation handling
    - `systemd-boot` partition detection
    - Support for LVM, LUKS, and split `/boot` layouts
-   - Optional `file` command inspection for non-standard kernel names: `--enable-binary-inspection`
+   - Built-in native binary inspection for non-standard kernel names (no extra build flag required)
 
 ---
 
@@ -124,6 +124,29 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 6. After unlock:
    - Use `Boot` for fast warm handoff via `kexec`
    - Use `Reboot` for a full hardware/firmware restart path
+
+## Boot Flow (Locked OPAL -> kexec)
+
+```mermaid
+flowchart TD
+   A[Power on with locked OPAL drive] --> B[PBA image boots in TinyCore]
+   B --> C[sedunlocksrv starts Web UI / Console / optional SSH]
+   C --> D[User submits unlock password]
+   D --> E[Run sedutil unlock commands on startup-locked OPAL drives]
+   E --> F{Any startup-locked OPAL drive unlocked?}
+   F -- no --> G[Boot blocked, remain in PBA]
+   F -- yes --> H[Refresh partition table and activate LVM]
+   H --> I[Discover boot artifacts kernel/initrd/cmdline]
+   I --> J{Kernel candidates found?}
+   J -- no --> K[Show diagnostics and remain in PBA]
+   J -- yes --> L[Web UI: show kernel list]
+   L --> M[Default view hides recovery kernels]
+   M --> N[User selects kernel and confirms Boot]
+   N --> O[kexec -l loads selected kernel+initrd+cmdline]
+   O --> P[HTTP server shuts down cleanly]
+   P --> Q[kexec -e executes]
+   Q --> R[Installed OS takes over]
+```
 
 ## Versioning and Snapshot Releases (No Binary Upload)
 - You can publish a versioned release as a source-code snapshot only (for example `v1.0.0`) without compiling or uploading a `.img` binary.
@@ -150,6 +173,7 @@ Notes:
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
+- **Recovery Kernels in Web UI**: Kernel discovery may include normal and recovery boot entries. Recovery kernels are hidden by default in the web flow (`Hide Recovery Kernels` checked). Users can uncheck the option to show them, and recovery entries are labeled with a `[Recovery]` prefix.
 - **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If admin access is needed, the build must be redone with a new password.
 - **Expert Re-flash PBA**: In the Expert tab you can upload a replacement `.img` file and re-flash PBA on a target drive. You must provide the current drive password, target `/dev/...` path, and type `FLASH` to confirm. The web UI performs preflight checks and rejects files above 128 MiB, matching the project's OPAL2 PBA size guideline. The server also validates that the uploaded image matches the build's expected disk layout: DOS MBR, one bootable `0xEF` partition from the `sfdisk` recipe, and a readable FAT32 boot partition created by `mkfs.fat -F32`. The Expert output panel shows the validation summary so you can see exactly what passed before the flash runs. Use with care: selecting the wrong target can break boot access for that device.
 - **Expert Revert TPer**: This operation attempts to revert the TPer (Trusted Peripheral) to factory state using the current drive password. This is a destructive operation that can invalidate existing unlock configuration and ownership metadata. Use this only when standard unlock paths fail or when you need to completely reset the drive's security configuration. You must provide the target device path, current drive password, and type `REVERT` to confirm. The Expert output panel shows the sedutil output for diagnostic purposes.
@@ -237,7 +261,7 @@ Before running `./build.sh`, verify:
 - `sedunlocksrv/server.crt` and `sedunlocksrv/server.key` exist if you are supplying custom TLS certs.
 - `ssh/authorized_keys` exists if you plan to build with `--ssh`.
 - `tc/tc-config` contains your expected network/boot behavior.
-- Expert password plan is set: either pass `--expert-password=...` or set `EXPERT_PASSWORD` in `build.conf`. If omitted, build generates a random 16-digit expert password and prints it once.
+- Expert password plan is set: either pass `--expert-password=...` or set `EXPERT_PASSWORD` in `build.conf`. If omitted, `build.sh` prompts you to enter and confirm one interactively.
 
 ## 🚀 Build Execution
 ```bash
@@ -258,7 +282,6 @@ Resolution order:
 Useful flags:
 - `--clean`: remove build artifacts and cache before building.
 - `--ssh`: include SSH unlock interface (`dropbear`) in the image.
-- `--enable-binary-inspection`: add `file` command for improved kernel/initrd detection (see **Boot Discovery** section below).
 - `--keymap=NAME`: set Tiny Core console keymap (for example `fr-latin9`).
 - `--bootargs=...`: set kernel command line for the PBA boot entry.
 - `--exclude-netdev=...`: exclude interfaces from runtime network setup.
@@ -276,6 +299,7 @@ Useful flags:
 - `--tls-cert=/path/to/server.crt`: use custom TLS certificate.
 - `--tls-key=/path/to/server.key`: use custom TLS private key.
 - `--ssh-curl-insecure=auto|true|false`: control whether SSH helper uses `curl -k`.
+- `--debug-level=0|1|2`: runtime log verbosity (`0` verbose trace, `1` normal progress, `2` quiet).
 - `--expert-password=...`: set expert password input at build; runtime stores only hash.
 - `--sedutil-fork=ChubbyAnt`: switch sedutil source fork (`Drive-Trust-Alliance` default).
 - `--config=/path/to/file`: load build variables from an alternate config file.
@@ -298,6 +322,12 @@ Boot discovery uses a combination of:
 2. **Binary inspection** — native Go code detects kernel and initrd files by their actual binary headers and structure, working with any naming convention
 
 This dual approach handles 100% of cases without requiring external tools or extra build flags.
+
+---
+
+## Historical Upstream README (Unmaintained)
+The content below this line is copied from the original upstream project for historical reference only.
+It is not maintained as part of this fork's active documentation.
 
 ---
 
