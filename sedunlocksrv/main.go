@@ -905,99 +905,6 @@ func runCommandWithOutputTimeout(timeout time.Duration, name string, args ...str
 	return extra, nil
 }
 
-func logModprobeThinPoolDebug() {
-	recordBootLaunchDebugVerbose("LVM debug: collecting dm-thin-pool module policy state...")
-	modprobeIsBusyBox := false
-
-	if modprobePath, err := exec.LookPath("modprobe"); err == nil {
-		resolved := modprobePath
-		if realPath, e := filepath.EvalSymlinks(modprobePath); e == nil && realPath != "" {
-			resolved = realPath
-		}
-		if strings.Contains(strings.ToLower(resolved), "busybox") {
-			modprobeIsBusyBox = true
-		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe path: %s (resolved: %s)", modprobePath, resolved))
-	} else {
-		recordBootLaunchDebugVerbose("modprobe path lookup failed")
-	}
-
-	for _, cfg := range []string{"/etc/modprobe.d/blacklist-thin.conf", "/etc/modprobe.d/blacklist.conf", "/etc/modprobe.conf"} {
-		b, err := os.ReadFile(cfg)
-		if err != nil {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config not readable: %s (%v)", cfg, err))
-			continue
-		}
-		matches := make([]string, 0, 4)
-		for _, line := range strings.Split(string(b), "\n") {
-			t := strings.TrimSpace(line)
-			if t == "" || strings.HasPrefix(t, "#") {
-				continue
-			}
-			if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
-				matches = append(matches, t)
-			}
-		}
-		if len(matches) == 0 {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config %s: no dm-thin-pool rules", cfg))
-			continue
-		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe config %s rules: %s", cfg, strings.Join(matches, " | ")))
-	}
-
-	if haveRuntimeCommand("modprobe") {
-		if modprobeIsBusyBox {
-			recordBootLaunchDebugVerbose("modprobe implementation is BusyBox; skipping unsupported modprobe -c dump")
-		} else {
-			if out, err := runCommandWithOutputTimeout(2*time.Second, "modprobe", "-c"); err != nil {
-				recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe -c failed: %v", err))
-			} else {
-				matches := make([]string, 0, 4)
-				for _, line := range strings.Split(out, "\n") {
-					t := strings.TrimSpace(line)
-					if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
-						matches = append(matches, t)
-					}
-				}
-				if len(matches) == 0 {
-					recordBootLaunchDebugVerbose("modprobe -c: no dm-thin-pool entries")
-				} else {
-					recordBootLaunchDebugVerbose(fmt.Sprintf("modprobe -c entries: %s", strings.Join(matches, " | ")))
-				}
-			}
-		}
-	}
-
-	if b, err := os.ReadFile("/proc/modules"); err == nil {
-		thinLoaded := false
-		for _, line := range strings.Split(string(b), "\n") {
-			if strings.HasPrefix(line, "dm_thin_pool ") || strings.HasPrefix(line, "dm-thin-pool ") {
-				thinLoaded = true
-				break
-			}
-		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("/proc/modules contains dm_thin_pool: %t", thinLoaded))
-	}
-
-	if haveRuntimeCommand("dmsetup") {
-		if out, err := runCommandWithOutputTimeout(2*time.Second, "dmsetup", "targets"); err != nil {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("dmsetup targets failed: %v", err))
-		} else {
-			hasThinTarget := false
-			for _, line := range strings.Split(out, "\n") {
-				t := strings.TrimSpace(line)
-				if strings.HasPrefix(t, "thin-pool") || strings.HasPrefix(t, "thin ") || strings.Contains(t, " thin-pool ") {
-					hasThinTarget = true
-					recordBootLaunchDebugVerbose(fmt.Sprintf("dmsetup target: %s", t))
-				}
-			}
-			if !hasThinTarget {
-				recordBootLaunchDebugVerbose("dmsetup targets: thin/thin-pool target not listed")
-			}
-		}
-	}
-}
-
 func runLVMStep(timeout time.Duration, name string, args ...string) {
 	recordBootLaunchDebugVerbose(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
 	out, err := runCommandWithOutputTimeout(timeout, name, args...)
@@ -1011,22 +918,13 @@ func runLVMStep(timeout time.Duration, name string, args ...string) {
 }
 
 func activateLVM() {
-	logModprobeThinPoolDebug()
 	if haveRuntimeCommand("pvscan") {
 		runLVMStep(10*time.Second, "pvscan", "--cache")
 	}
 	if haveRuntimeCommand("vgscan") {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
-	// Use lvchange with --select to activate only non-thin LVs.
-	// vgchange -ay iterates every LV including thin/thin-pool volumes,
-	// printing a slow "Can't process" warning per LV when the dm-thin-pool
-	// kernel module is missing (common on Proxmox with many VMs). Using
-	// lvchange -ay -S 'segtype!~^thin' skips them entirely at the LVM
-	// metadata level so activation completes in under a second.
-	if haveRuntimeCommand("lvchange") {
-		runLVMStep(3*time.Second, "lvchange", "-ay", "-S", "segtype!~^thin")
-	} else if haveRuntimeCommand("vgchange") {
+	if haveRuntimeCommand("vgchange") {
 		runLVMStep(3*time.Second, "vgchange", "-ay")
 	}
 }

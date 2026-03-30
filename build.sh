@@ -693,40 +693,6 @@ populate_initrd_application_tree() {
     cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
-    mkdir -p "${BUILD_TMPDIR}/core/sbin"
-
-    # IMPORTANT: /sbin/modprobe in TinyCore is usually a symlink to BusyBox.
-    # If we redirect into that symlink path, the shell follows the link and
-    # overwrites /bin/busybox itself, which then breaks chroot commands
-    # (including /sbin/depmod) with "Too many levels of symbolic links".
-    # Always remove the existing path first so we create a real wrapper file.
-    rm -f "${BUILD_TMPDIR}/core/sbin/modprobe"
-
-    cat >"${BUILD_TMPDIR}/core/sbin/modprobe" <<'EOF'
-#!/bin/sh
-# BusyBox modprobe wrapper for PBA runtime.
-# BusyBox modprobe does not support kmod's full install/alias semantics.
-# Intercept dm-thin-pool requests so LVM does not spend time trying to load
-# unsupported targets in this minimal pre-boot environment.
-
-for arg in "$@"; do
-    case "$arg" in
-        dm_thin_pool|dm-thin-pool)
-            echo "pba modprobe wrapper: suppressing $arg" >&2
-            exit 0
-            ;;
-    esac
-done
-
-exec /bin/busybox modprobe "$@"
-EOF
-    chmod +x "${BUILD_TMPDIR}/core/sbin/modprobe"
-    mkdir -p "${BUILD_TMPDIR}/core/etc/modprobe.d"
-    printf '%s\n' \
-        "blacklist dm_thin_pool" \
-        "install dm_thin_pool /bin/true" \
-        "install dm-thin-pool /bin/true" \
-        >"${BUILD_TMPDIR}/core/etc/modprobe.d/blacklist-thin.conf"
     write_runtime_network_config
 }
 
