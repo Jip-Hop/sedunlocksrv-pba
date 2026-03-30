@@ -85,7 +85,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    ./build.sh                                        # You will be prompted for expert password
    
    # Expert password via CLI (bypasses prompt)
-   ./build.sh --expert-password="MySecret!"
+   ./build.sh --expert-password='MySecret!'
    
    # Complexity: no requirements
    ./build.sh --password-complexity=off
@@ -112,7 +112,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Or pass as CLI flags instead
 3. Build image: `sudo ./build.sh --ssh` (with SSH UI) or `sudo ./build.sh` (web + console only)
    - If expert password not in build.conf/CLI, you will be prompted to enter it
-   - Example with custom settings: `sudo ./build.sh --expert-password="PASS" --password-complexity=off`
+   - Example with custom settings: `sudo ./build.sh --expert-password='PASS' --password-complexity=off`
 4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, see origianl fork for great details
 5. Boot target machine into PBA and unlock drives from:
    - Web UI: `https://<pba-ip>/`
