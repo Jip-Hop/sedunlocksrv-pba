@@ -47,5 +47,8 @@
 # REQUIRE_NUMBER="true"         # require numeric digits (0-9)
 # REQUIRE_SPECIAL="true"        # require special characters
 
+# --- Firmware settling delays ---
+# SETTLE_FACTOR=""              # scale all firmware settling delays; default 1.0 (e.g. 0.5 = half, 2.0 = double)
+
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
 # SEDUTIL_FORK=""               # or ChubbyAnt / chubbyant

@@ -25,7 +25,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -81,7 +80,7 @@ var (
 var buildVersion = "dev"
 
 // Settling delays — base values at settle-factor 1.0.
-// These are scaled by settleFactor (set via --settle CLI flag).
+// These are scaled by settleFactor (set via --settle= build flag, injected at compile time).
 // Ratio is 1 : 2.5 : 5 (inter-command : partition : discovery).
 const (
 	baseOpalInterCmdDelay = 200 * time.Millisecond  // between setlockingrange and setmbrdone
@@ -89,7 +88,19 @@ const (
 	baseDiscoverySettle   = 1000 * time.Millisecond // before discovery starts
 )
 
-var settleFactor float64 = 1.0
+// settleFactorStr is set at compile time via -ldflags "-X main.settleFactorStr=...".
+var settleFactorStr string
+
+var settleFactor = parseSettleFactor()
+
+func parseSettleFactor() float64 {
+	if settleFactorStr != "" {
+		if f, err := strconv.ParseFloat(settleFactorStr, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	return 1.0
+}
 
 // settleDelay returns a base duration scaled by the global settleFactor.
 func settleDelay(base time.Duration) time.Duration {
@@ -2952,11 +2963,6 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 // ============================================================
 
 func main() {
-	flag.Float64Var(&settleFactor, "settle", 1.0, "Settling delay factor (scales all firmware timing delays; e.g. 0.5 = half, 2.0 = double)")
-	flag.Parse()
-	if settleFactor < 0 {
-		settleFactor = 0
-	}
 	log.Printf("Settle factor: %.2f (inter-cmd=%s, partition=%s, discovery=%s)",
 		settleFactor,
 		settleDelay(baseOpalInterCmdDelay),

@@ -39,6 +39,8 @@ BOOTARGS="libata.allow_tpm=1"
 SEDUTILBINFILENAME="sedutil-cli"
 EXTENSIONS="jq.tcz lvm2.tcz coreutils.tcz"
 
+SETTLE_FACTOR=""
+
 CLEAN_MODE=false
 SSHBUILD=false
 KEYMAP=""
@@ -157,6 +159,7 @@ print_usage() {
     echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
     echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
+    echo "          [--settle=FACTOR]  # scale firmware settling delays (default: 1.0; e.g. 0.5 = half)" >&2
     echo "          [--expert-password=VALUE]  # if omitted, you will be prompted to enter one" >&2
     echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
     echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
@@ -203,6 +206,7 @@ parse_args() {
             --bond-miimon=*)         BOND_MIIMON="${arg#*=}" ;;
             --bond-lacp-rate=*)      BOND_LACP_RATE="${arg#*=}" ;;
             --bond-xmit-hash-policy=*) BOND_XMIT_HASH_POLICY="${arg#*=}" ;;
+            --settle=*)              SETTLE_FACTOR="${arg#*=}" ;;
             --sedutil-fork=*)        SEDUTIL_FORK="${arg#*=}" ;;
             *)
                 echo "Unknown option: $arg" >&2
@@ -377,7 +381,9 @@ build_sedunlocksrv_go() {
             echo "❌ go build (test compile) failed"; exit 1
         fi
         echo "--- Building sedunlocksrv (linux/amd64) ---"
-        if env GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.buildVersion=${build_id}" -trimpath -o sedunlocksrv; then
+        local ldflags="-s -w -X main.buildVersion=${build_id}"
+        [ -n "${SETTLE_FACTOR}" ] && ldflags="${ldflags} -X main.settleFactorStr=${SETTLE_FACTOR}"
+        if env GOOS=linux GOARCH=amd64 go build -ldflags="${ldflags}" -trimpath -o sedunlocksrv; then
             chown 1001:50 sedunlocksrv
             chmod +x sedunlocksrv
         else
