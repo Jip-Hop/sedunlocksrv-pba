@@ -224,8 +224,68 @@ input[type="password"] {
     font-weight: 500;
     white-space: nowrap;
     min-width: 110px;
-    text-align: right;
     flex-shrink: 0;
+}
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.drive-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #21262d;
+    border: 1px solid #30363d;
+}
+.drive-badge .drive-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.drive-badge.locked   { border-color: #f8514966; background: #1a0f0f; }
+.drive-badge.unlocked { border-color: #3fb95066; background: #0f1a0f; }
+.drive-badge.nonopal  { border-color: #d2992244; background: #1a170f; }
+.status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+    color: #8b949e;
+    margin-top: 8px;
+}
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.stat-val {
+    font-weight: 600;
+    color: #e6edf3;
+}
+.build-tag {
+    display: inline-block;
+    font-size: 11px;
+    color: #8b949e;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+a.build-link {
+    text-decoration: none;
+    color: #58a6ff;
+    cursor: pointer;
+}
+a.build-link:hover {
+    color: #79c0ff;
+    border-color: #58a6ff;
 }
 /* Scrollbar styling for log areas */
 .log-box::-webkit-scrollbar { width: 6px; }
@@ -305,8 +365,8 @@ input[type="password"] {
             <div class="pw-reqs" id="pwReqs"></div>
         </div>
         <div class="pw-field-row">
-            <div id="pwMatch" class="pw-match"></div>
             <input id="conf" type="password" placeholder="Confirm Password">
+            <div id="pwMatch" class="pw-match"></div>
         </div>
         <label class="checkbox-row">
             <input type="checkbox" id="showChange"> Show Passwords
@@ -576,10 +636,12 @@ async function refresh() {
     let interfaces = Array.isArray(j.interfaces) ? j.interfaces : []
 
     drives.forEach(d => {
-        let icon = d.locked ? "LOCKED" : "UNLOCKED"
-        let opalLabel = d.opal ? "OPAL" : "NON-OPAL"
-        let color = d.opal ? (d.locked ? "bad" : "ok") : "warn"
-        html += `<div class="${color}">${d.device} - ${icon} - ${opalLabel}</div>`
+        let isLocked = d.locked
+        let isOpal = d.opal
+        let cls = isOpal ? (isLocked ? "locked" : "unlocked") : "nonopal"
+        let icon = isOpal ? (isLocked ? "&#x1F512;" : "&#x1F513;") : "&#x1F4BE;"
+        let stateText = isOpal ? (isLocked ? "Locked" : "Unlocked") : "Non-OPAL"
+        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${d.device} &mdash; ${stateText}</div>`
     })
 
     interfaces.forEach(iface => {
@@ -594,11 +656,27 @@ async function refresh() {
     let opalDrives = drives.filter(d => d.opal)
     let opalCount = opalDrives.length
     let lockedCount = opalDrives.filter(d => d.locked).length
-    $("status").innerHTML = html || "<div class='warn'>No drives detected</div>"
-    let bootSummary = j.bootReady ? `Boot-ready drives: ${(j.bootDrives || []).join(", ") || "yes"}` : "Boot-ready drives: none yet"
-    let attemptsSummary = `Failed unlock attempts: ${j.failedAttempts || 0}/${j.maxAttempts || 0} (${j.attemptsRemaining || 0} remaining)`
-    $("statusSummary").innerText = `Drives reported: ${drives.length} | OPAL: ${opalCount} | Locked: ${lockedCount} | ${bootSummary} | ${attemptsSummary}`
-    $("buildInfo").innerText = j.build ? `Build: ${j.build}` : ""
+    $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
+    let bootSummary = j.bootReady ? (j.bootDrives || []).join(", ") || "yes" : "none yet"
+    let remaining = j.attemptsRemaining || 0
+    let remainColor = remaining <= 1 ? "#f85149" : remaining <= 2 ? "#d29922" : "#3fb950"
+    $("statusSummary").innerHTML = `<div class="status-bar">`
+        + `<span class="stat-item">Drives <span class="stat-val">${drives.length}</span></span>`
+        + `<span class="stat-item">OPAL <span class="stat-val">${opalCount}</span></span>`
+        + `<span class="stat-item">Locked <span class="stat-val" style="color:${lockedCount ? '#f85149' : '#3fb950'}">${lockedCount}</span></span>`
+        + `<span class="stat-item">Boot-ready <span class="stat-val">${bootSummary}</span></span>`
+        + `<span class="stat-item">Attempts left <span class="stat-val" style="color:${remainColor}">${remaining}</span></span>`
+        + `</div>`
+    if (j.build) {
+        if (j.repoURL) {
+            const releaseURL = j.repoURL.replace(/\/+$/, '') + '/releases/tag/' + encodeURIComponent(j.build)
+            $("buildInfo").innerHTML = `<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${j.build}</a>`
+        } else {
+            $("buildInfo").innerHTML = `<span class="build-tag">${j.build}</span>`
+        }
+    } else {
+        $("buildInfo").innerHTML = ""
+    }
     $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
     renderChangeTargets(j)
     renderExpertFlashTargets(j)
@@ -1206,6 +1284,20 @@ loadPolicy()
 refresh()
 syncExpertState()
 setInterval(refresh, 5000)
+
+// Restore kernel selection if discovery already completed before page load
+async function restoreBootState() {
+    try {
+        let r = await fetch("/boot-status")
+        let j = await r.json()
+        if (j.discoveryDone && Array.isArray(j.kernels) && j.kernels.length > 0) {
+            $("bootResult").innerText = j.kernels.length + " bootable kernel(s) found. Select one to boot:"
+            showKernelSelection(j.kernels)
+            if (Array.isArray(j.debug) && j.debug.length) showBootDebug(j.debug)
+        }
+    } catch (err) { /* ignore on load */ }
+}
+restoreBootState()
 
 // Set up RAM check listener for PBA image file selection
 $("expPbaImage").addEventListener("change", checkRAMForFile)

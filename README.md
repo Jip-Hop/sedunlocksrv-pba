@@ -125,6 +125,26 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Use `Boot` for fast warm handoff via `kexec`
    - Use `Reboot` for a full hardware/firmware restart path
 
+## Versioning and Snapshot Releases (No Binary Upload)
+- You can publish a versioned release as a source-code snapshot only (for example `v1.0.0`) without compiling or uploading a `.img` binary.
+- This repository includes a GitHub Actions workflow at `.github/workflows/release.yml` that creates a GitHub Release when you push a `v*` tag.
+- Version numbers are manual and intentional: tag only when features are implemented, tested, and ready for general consumption.
+
+Example flow:
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Notes:
+- GitHub automatically provides source archives (`.zip` and `.tar.gz`) for tagged releases.
+- Commits between tags do not need a new version number.
+- To confirm the current commit is exactly on a version tag before building, run:
+   ```bash
+   git tag --points-at HEAD
+   ```
+   If this prints `v1.0.0` (or another version tag), `./build.sh` will use that tag as the build version.
+
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.

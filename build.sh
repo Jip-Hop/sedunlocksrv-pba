@@ -366,7 +366,13 @@ build_sedunlocksrv_go() {
         maj=$(echo "${go_version}" | cut -d. -f1)
         min=$(echo "${go_version}" | cut -d. -f2)
         git_rev=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo "nogit")
-        build_id="${BUILD_DATE}-${git_rev}"
+        local git_tag
+        git_tag=$(git -C .. describe --tags --exact-match HEAD 2>/dev/null || echo "")
+        if [ -n "${git_tag}" ]; then
+            build_id="${git_tag}"
+        else
+            build_id="${BUILD_DATE}-${git_rev}"
+        fi
         if [ "${maj}" -lt 1 ] || [ "${min}" -lt 21 ]; then
             echo "❌ Go 1.21+ required (found: ${go_version})"
             exit 1
@@ -383,6 +389,9 @@ build_sedunlocksrv_go() {
         echo "--- Building sedunlocksrv (linux/amd64) ---"
         local ldflags="-s -w -X main.buildVersion=${build_id}"
         [ -n "${SETTLE_FACTOR}" ] && ldflags="${ldflags} -X main.settleFactorStr=${SETTLE_FACTOR}"
+        if [ -n "${REPO_URL}" ] && [ -n "${git_tag}" ]; then
+            ldflags="${ldflags} -X main.repoURL=${REPO_URL}"
+        fi
         if env GOOS=linux GOARCH=amd64 go build -ldflags="${ldflags}" -trimpath -o sedunlocksrv; then
             chown 1001:50 sedunlocksrv
             chmod +x sedunlocksrv

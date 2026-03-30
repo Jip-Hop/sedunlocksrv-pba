@@ -31,6 +31,7 @@ type StatusResponse struct {
 	MaxAttempts       int                      `json:"maxAttempts"`
 	AttemptsRemaining int                      `json:"attemptsRemaining"`
 	Build             string                   `json:"build,omitempty"`
+	RepoURL           string                   `json:"repoURL,omitempty"`
 }
 
 type DriveDiagnostics struct {

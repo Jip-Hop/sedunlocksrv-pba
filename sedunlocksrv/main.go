@@ -78,6 +78,7 @@ var (
 )
 
 var buildVersion = "dev"
+var repoURL = ""
 
 // Settling delays — base values at settle-factor 1.0.
 // These are scaled by settleFactor (set via --settle= build flag, injected at compile time).
@@ -408,6 +409,7 @@ func currentStatus() StatusResponse {
 		MaxAttempts:       max,
 		AttemptsRemaining: remaining,
 		Build:             buildVersion,
+		RepoURL:           repoURL,
 	}
 }
 
@@ -814,24 +816,145 @@ func availableLVMTools() []string {
 	return tools
 }
 
-func activateLVM() {
-	if haveRuntimeCommand("pvscan") {
-		recordBootLaunchDebug("Running pvscan --cache...")
-		if err := runCommandTimeout(10*time.Second, "pvscan", "--cache"); err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("pvscan --cache failed: %v", err))
+func trimForDebug(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) > max {
+		return s[:max] + " ...[truncated]"
+	}
+	return s
+}
+
+func runCommandWithOutputTimeout(timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	extra := strings.TrimSpace(string(out))
+	if ctx.Err() == context.DeadlineExceeded {
+		if extra != "" {
+			return extra, fmt.Errorf("%s timed out after %s (%s)", name, timeout, trimForDebug(extra, 1500))
 		}
+		return "", fmt.Errorf("%s timed out after %s", name, timeout)
+	}
+	if err != nil {
+		if extra != "" {
+			return extra, fmt.Errorf("%s failed: %v (%s)", name, err, trimForDebug(extra, 1500))
+		}
+		return "", fmt.Errorf("%s failed: %v", name, err)
+	}
+	return extra, nil
+}
+
+func logModprobeThinPoolDebug() {
+	recordBootLaunchDebug("LVM debug: collecting dm-thin-pool module policy state...")
+
+	if modprobePath, err := exec.LookPath("modprobe"); err == nil {
+		resolved := modprobePath
+		if realPath, e := filepath.EvalSymlinks(modprobePath); e == nil && realPath != "" {
+			resolved = realPath
+		}
+		recordBootLaunchDebug(fmt.Sprintf("modprobe path: %s (resolved: %s)", modprobePath, resolved))
+	} else {
+		recordBootLaunchDebug("modprobe path lookup failed")
+	}
+
+	for _, cfg := range []string{"/etc/modprobe.d/blacklist-thin.conf", "/etc/modprobe.d/blacklist.conf", "/etc/modprobe.conf"} {
+		b, err := os.ReadFile(cfg)
+		if err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("modprobe config not readable: %s (%v)", cfg, err))
+			continue
+		}
+		matches := make([]string, 0, 4)
+		for _, line := range strings.Split(string(b), "\n") {
+			t := strings.TrimSpace(line)
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
+			}
+			if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
+				matches = append(matches, t)
+			}
+		}
+		if len(matches) == 0 {
+			recordBootLaunchDebug(fmt.Sprintf("modprobe config %s: no dm-thin-pool rules", cfg))
+			continue
+		}
+		recordBootLaunchDebug(fmt.Sprintf("modprobe config %s rules: %s", cfg, strings.Join(matches, " | ")))
+	}
+
+	if haveRuntimeCommand("modprobe") {
+		if out, err := runCommandWithOutputTimeout(2*time.Second, "modprobe", "-c"); err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("modprobe -c failed: %v", err))
+		} else {
+			matches := make([]string, 0, 4)
+			for _, line := range strings.Split(out, "\n") {
+				t := strings.TrimSpace(line)
+				if strings.Contains(t, "dm_thin_pool") || strings.Contains(t, "dm-thin-pool") {
+					matches = append(matches, t)
+				}
+			}
+			if len(matches) == 0 {
+				recordBootLaunchDebug("modprobe -c: no dm-thin-pool entries")
+			} else {
+				recordBootLaunchDebug(fmt.Sprintf("modprobe -c entries: %s", strings.Join(matches, " | ")))
+			}
+		}
+	}
+
+	if b, err := os.ReadFile("/proc/modules"); err == nil {
+		thinLoaded := false
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "dm_thin_pool ") || strings.HasPrefix(line, "dm-thin-pool ") {
+				thinLoaded = true
+				break
+			}
+		}
+		recordBootLaunchDebug(fmt.Sprintf("/proc/modules contains dm_thin_pool: %t", thinLoaded))
+	}
+
+	if haveRuntimeCommand("dmsetup") {
+		if out, err := runCommandWithOutputTimeout(2*time.Second, "dmsetup", "targets"); err != nil {
+			recordBootLaunchDebug(fmt.Sprintf("dmsetup targets failed: %v", err))
+		} else {
+			hasThinTarget := false
+			for _, line := range strings.Split(out, "\n") {
+				t := strings.TrimSpace(line)
+				if strings.HasPrefix(t, "thin-pool") || strings.HasPrefix(t, "thin ") || strings.Contains(t, " thin-pool ") {
+					hasThinTarget = true
+					recordBootLaunchDebug(fmt.Sprintf("dmsetup target: %s", t))
+				}
+			}
+			if !hasThinTarget {
+				recordBootLaunchDebug("dmsetup targets: thin/thin-pool target not listed")
+			}
+		}
+	}
+}
+
+func runLVMStep(timeout time.Duration, name string, args ...string) {
+	recordBootLaunchDebug(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
+	out, err := runCommandWithOutputTimeout(timeout, name, args...)
+	if err != nil {
+		recordBootLaunchDebug(fmt.Sprintf("%s %s failed: %v", name, strings.Join(args, " "), err))
+		return
+	}
+	if trimmed := trimForDebug(out, 600); trimmed != "" {
+		recordBootLaunchDebug(fmt.Sprintf("%s %s output: %s", name, strings.Join(args, " "), trimmed))
+	}
+}
+
+func activateLVM() {
+	logModprobeThinPoolDebug()
+	if haveRuntimeCommand("pvscan") {
+		runLVMStep(10*time.Second, "pvscan", "--cache")
 	}
 	if haveRuntimeCommand("vgscan") {
-		recordBootLaunchDebug("Running vgscan --mknodes...")
-		if err := runCommandTimeout(10*time.Second, "vgscan", "--mknodes"); err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("vgscan --mknodes failed: %v", err))
-		}
+		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 	if haveRuntimeCommand("vgchange") {
-		recordBootLaunchDebug("Running vgchange -ay...")
-		if err := runCommandTimeout(3*time.Second, "vgchange", "-ay"); err != nil {
-			recordBootLaunchDebug(fmt.Sprintf("vgchange -ay failed: %v", err))
-		}
+		runLVMStep(3*time.Second, "vgchange", "-ay")
 	}
 }
 

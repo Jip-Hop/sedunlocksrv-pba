@@ -52,3 +52,6 @@
 
 # --- sedutil source (empty or unset = Drive-Trust-Alliance) ---
 # SEDUTIL_FORK=""               # or ChubbyAnt / chubbyant
+
+# --- GitHub release linking ---
+# REPO_URL=""                   # e.g. "https://github.com/YourUser/sedunlocksrv-pba"; build tag links to releases when set + HEAD has a git tag
