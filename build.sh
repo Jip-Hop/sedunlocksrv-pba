@@ -59,6 +59,7 @@ BOND_XMIT_HASH_POLICY="1"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
 SSH_CURL_INSECURE="auto"
+REPO_URL=""
 EXPERT_PASSWORD=""
 EXPERT_PASSWORD_HASH=""
 
@@ -80,6 +81,41 @@ REMAINING_ARGS=()
 
 have_command() {
     command -v "$1" >/dev/null 2>&1
+}
+
+detect_repo_url_from_origin() {
+    local remote host path
+    remote="$(git -C .. config --get remote.origin.url 2>/dev/null || true)"
+    if [ -z "${remote}" ]; then
+        return 1
+    fi
+
+    case "${remote}" in
+        http://*|https://*)
+            echo "${remote%.git}"
+            return 0
+            ;;
+        git@*:* )
+            host="${remote#git@}"
+            host="${host%%:*}"
+            path="${remote#*:}"
+            path="${path%.git}"
+            [ -n "${host}" ] && [ -n "${path}" ] || return 1
+            echo "https://${host}/${path}"
+            return 0
+            ;;
+        ssh://git@*/*)
+            host="${remote#ssh://git@}"
+            host="${host%%/*}"
+            path="${remote#ssh://git@${host}/}"
+            path="${path%.git}"
+            [ -n "${host}" ] && [ -n "${path}" ] || return 1
+            echo "https://${host}/${path}"
+            return 0
+            ;;
+    esac
+
+    return 1
 }
 
 require_file() {
@@ -164,6 +200,7 @@ print_usage() {
     echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
     echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
     echo "          [--require-number=true|false] [--require-special=true|false]" >&2
+    echo "          [--repo-url=URL]" >&2
     echo "          [--gateway=ADDR] [--dns=ADDRS] [--sedutil-fork=ChubbyAnt]" >&2
 }
 
@@ -195,6 +232,7 @@ parse_args() {
             --tls-cert=*)            TLS_CERT_PATH="${arg#*=}" ;;
             --tls-key=*)             TLS_KEY_PATH="${arg#*=}" ;;
             --ssh-curl-insecure=*)   SSH_CURL_INSECURE="${arg#*=}" ;;
+            --repo-url=*)            REPO_URL="${arg#*=}" ;;
             --expert-password=*)     EXPERT_PASSWORD="${arg#*=}" ;;
             --password-complexity=*)  PASSWORD_COMPLEXITY_ON="${arg#*=}" ;;
             --min-password-length=*)  MIN_PASSWORD_LENGTH="${arg#*=}" ;;
@@ -368,6 +406,14 @@ build_sedunlocksrv_go() {
         git_rev=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo "nogit")
         local git_tag
         git_tag=$(git -C .. describe --tags --exact-match HEAD 2>/dev/null || echo "")
+        if [ -z "${REPO_URL}" ]; then
+            local detected_repo_url
+            detected_repo_url="$(detect_repo_url_from_origin || true)"
+            if [ -n "${detected_repo_url}" ]; then
+                REPO_URL="${detected_repo_url}"
+                echo "--- Auto-detected REPO_URL from origin: ${REPO_URL} ---"
+            fi
+        fi
         if [ -n "${git_tag}" ]; then
             build_id="${git_tag}"
         else

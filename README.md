@@ -139,6 +139,8 @@ git push origin v1.0.0
 Notes:
 - GitHub automatically provides source archives (`.zip` and `.tar.gz`) for tagged releases.
 - Commits between tags do not need a new version number.
+- `REPO_URL` is auto-detected from `remote.origin.url` during build when not explicitly set.
+- To override detection, set `REPO_URL="https://github.com/<owner>/<repo>"` in `build.conf` or pass `--repo-url=...` to `build.sh`.
 - To confirm the current commit is exactly on a version tag before building, run:
    ```bash
    git tag --points-at HEAD
