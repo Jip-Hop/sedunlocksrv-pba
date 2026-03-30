@@ -925,7 +925,7 @@ func activateLVM() {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 	if haveRuntimeCommand("vgchange") {
-		runLVMStep(3*time.Second, "vgchange", "-ay")
+		runLVMStep(10*time.Second, "vgchange", "-ay")
 	}
 }
 
