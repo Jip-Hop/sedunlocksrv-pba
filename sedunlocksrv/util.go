@@ -6,11 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +156,25 @@ func runExpertCommand(w http.ResponseWriter, args ...string) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
+// splitOnCRorLF is a bufio.SplitFunc that splits on \r or \n.
+// sedutil-cli writes progress using \r (carriage return) to overwrite
+// the same line, so the default bufio.ScanLines (which splits on \n)
+// would never see intermediate progress updates.
+func splitOnCRorLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b == '\r' || b == '\n' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
 func recordFlashLine(line string) {
 	flashMu.Lock()
 	defer flashMu.Unlock()
@@ -232,65 +249,52 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
-		// Use stdbuf -oL to force line-buffered stdout so progress lines
-		// stream in real-time instead of being block-buffered in the pipe.
-		var cmd *exec.Cmd
-		if _, err := exec.LookPath("stdbuf"); err == nil {
-			cmd = exec.CommandContext(ctx, "stdbuf", "-oL", "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
-		} else {
-			cmd = exec.CommandContext(ctx, "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
-		}
+		// Use stdbuf -o0 to disable stdout buffering so we can read
+		// sedutil-cli's \r-delimited progress lines in real time.
+		cmd := exec.CommandContext(ctx, "stdbuf", "-o0", "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
 
-		// Merge stdout and stderr via a pipe so we can read line-by-line
+		// Pipe stdout for progress; capture stderr for LOG messages
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
+			recordFlashLine("ERROR: failed to create stdout pipe: " + err.Error())
 			flashMu.Lock()
-			flashState.Error = "failed to create stdout pipe: " + err.Error()
+			flashState.Error = "failed to create stdout pipe"
 			flashMu.Unlock()
 			return
 		}
-		cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
+		var stderrBuf strings.Builder
+		cmd.Stderr = &stderrBuf
 
 		if err := cmd.Start(); err != nil {
+			recordFlashLine("ERROR: failed to start sedutil-cli: " + err.Error())
 			flashMu.Lock()
-			flashState.Error = "failed to start sedutil-cli: " + err.Error()
+			flashState.Error = "failed to start: " + err.Error()
 			flashMu.Unlock()
 			return
 		}
 
-		// Parse progress lines and only report every 5% to avoid flooding the UI.
-		// sedutil-cli output format: "61334 of 51380224 1% blk=61334"
-		progressRe := regexp.MustCompile(`(\d+)\s+of\s+(\d+)\s+(\d+)%`)
-		lastReportedPct := -1
-
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			if m := progressRe.FindStringSubmatch(line); m != nil {
-				pct, _ := strconv.Atoi(m[3])
-				if pct < lastReportedPct+5 && pct != 100 {
-					continue // skip until next 5% boundary
-				}
-				lastReportedPct = pct
-				recordFlashLine(fmt.Sprintf("Writing PBA image... %d%%", pct))
-			} else {
-				recordFlashLine(line)
-			}
-		}
-		// Also capture any remaining bytes if scanner stopped early
-		if remaining, err := io.ReadAll(stdoutPipe); err == nil && len(remaining) > 0 {
-			for _, line := range strings.Split(strings.TrimSpace(string(remaining)), "\n") {
-				line = strings.TrimSpace(line)
+		// Read stdout splitting on \r or \n to capture progress lines
+		go func() {
+			scanner := bufio.NewScanner(stdoutPipe)
+			scanner.Split(splitOnCRorLF)
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
 				if line != "" {
 					recordFlashLine(line)
 				}
 			}
-		}
+		}()
 
 		err = cmd.Wait()
+
+		// Capture any stderr LOG messages
+		for _, line := range strings.Split(strings.TrimSpace(stderrBuf.String()), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				recordFlashLine(line)
+			}
+		}
+
 		flashMu.Lock()
 		if ctx.Err() == context.DeadlineExceeded {
 			flashState.Error = "sedutil-cli timed out"

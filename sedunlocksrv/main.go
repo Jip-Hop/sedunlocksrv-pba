@@ -25,10 +25,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -77,6 +79,22 @@ var (
 )
 
 var buildVersion = "dev"
+
+// Settling delays — base values at settle-factor 1.0.
+// These are scaled by settleFactor (set via --settle CLI flag).
+// Ratio is 1 : 2.5 : 5 (inter-command : partition : discovery).
+const (
+	baseOpalInterCmdDelay = 200 * time.Millisecond  // between setlockingrange and setmbrdone
+	basePartitionSettle   = 500 * time.Millisecond  // after rescanBlockDeviceLayout
+	baseDiscoverySettle   = 1000 * time.Millisecond // before discovery starts
+)
+
+var settleFactor float64 = 1.0
+
+// settleDelay returns a base duration scaled by the global settleFactor.
+func settleDelay(base time.Duration) time.Duration {
+	return time.Duration(math.Round(float64(base) * settleFactor))
+}
 
 type filteredHTTPLogWriter struct{}
 
@@ -557,7 +575,7 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 		}
 		err1 := exec.Command("sedutil-cli", "--setlockingrange", "0", "rw", password, d.Device).Run()
 		// Brief delay to let drive firmware settle between OPAL commands
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(settleDelay(baseOpalInterCmdDelay))
 		err2 := exec.Command("sedutil-cli", "--setmbrdone", "on", password, d.Device).Run()
 		success := err1 == nil && err2 == nil
 		if success {
@@ -565,7 +583,7 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 			rescanBlockDeviceLayout(d.Device)
 			// Let the kernel and udev fully process the partition table
 			// change before anything tries to scan the new partitions.
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(settleDelay(basePartitionSettle))
 		}
 		results = append(results, UnlockResult{Device: d.Device, Success: success})
 	}
@@ -1841,8 +1859,9 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	// unlock. Without this, sedutil-cli --scan / --query and LVM commands
 	// can hit the drive before it has fully transitioned out of the locked
 	// state, causing hangs identical to the flash-after-query race.
-	appendDebug("Waiting for drive firmware to settle...")
-	time.Sleep(1 * time.Second)
+	delay := settleDelay(baseDiscoverySettle)
+	appendDebug("Waiting for drive firmware to settle (%s at factor %.2f)...", delay, settleFactor)
+	time.Sleep(delay)
 
 	drives := scanDrives()
 	bootCandidates := bootCandidateDrives(drives)
@@ -2933,6 +2952,17 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 // ============================================================
 
 func main() {
+	flag.Float64Var(&settleFactor, "settle", 1.0, "Settling delay factor (scales all firmware timing delays; e.g. 0.5 = half, 2.0 = double)")
+	flag.Parse()
+	if settleFactor < 0 {
+		settleFactor = 0
+	}
+	log.Printf("Settle factor: %.2f (inter-cmd=%s, partition=%s, discovery=%s)",
+		settleFactor,
+		settleDelay(baseOpalInterCmdDelay),
+		settleDelay(basePartitionSettle),
+		settleDelay(baseDiscoverySettle))
+
 	initializeBootState()
 	go consoleInterface()
 	startSSHService()
