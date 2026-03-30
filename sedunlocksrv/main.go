@@ -1018,16 +1018,16 @@ func activateLVM() {
 	if haveRuntimeCommand("vgscan") {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
-	if haveRuntimeCommand("vgchange") {
-		// Activate only non-thin LVs. The --config override tells LVM to
-		// completely skip thin-provisioning targets so it does not iterate
-		// every thin/thin-pool LV to emit "Can't process" warnings (which
-		// is what actually causes the timeout on Proxmox systems with many
-		// thin volumes). The modprobe wrapper already suppresses the kernel
-		// module load, but LVM still probes each LV unless thin is disabled
-		// at the LVM config level.
-		runLVMStep(3*time.Second, "vgchange", "-ay",
-			"--config", "global{thin_disabled=1}")
+	// Use lvchange with --select to activate only non-thin LVs.
+	// vgchange -ay iterates every LV including thin/thin-pool volumes,
+	// printing a slow "Can't process" warning per LV when the dm-thin-pool
+	// kernel module is missing (common on Proxmox with many VMs). Using
+	// lvchange -ay -S 'segtype!~^thin' skips them entirely at the LVM
+	// metadata level so activation completes in under a second.
+	if haveRuntimeCommand("lvchange") {
+		runLVMStep(3*time.Second, "lvchange", "-ay", "-S", "segtype!~^thin")
+	} else if haveRuntimeCommand("vgchange") {
+		runLVMStep(3*time.Second, "vgchange", "-ay")
 	}
 }
 
