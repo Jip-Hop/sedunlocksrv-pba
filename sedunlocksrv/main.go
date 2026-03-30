@@ -996,14 +996,14 @@ func logModprobeThinPoolDebug() {
 }
 
 func runLVMStep(timeout time.Duration, name string, args ...string) {
-	recordBootLaunchDebug(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
+	recordBootLaunchDebugVerbose(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
 	out, err := runCommandWithOutputTimeout(timeout, name, args...)
 	if err != nil {
-		recordBootLaunchDebug(fmt.Sprintf("%s %s failed: %v", name, strings.Join(args, " "), err))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("%s %s failed: %v", name, strings.Join(args, " "), err))
 		return
 	}
 	if trimmed := trimForDebug(out, 600); trimmed != "" {
-		recordBootLaunchDebug(fmt.Sprintf("%s %s output: %s", name, strings.Join(args, " "), trimmed))
+		recordBootLaunchDebugVerbose(fmt.Sprintf("%s %s output: %s", name, strings.Join(args, " "), trimmed))
 	}
 }
 
@@ -1016,7 +1016,9 @@ func activateLVM() {
 		runLVMStep(10*time.Second, "vgscan", "--mknodes")
 	}
 	if haveRuntimeCommand("vgchange") {
-		runLVMStep(3*time.Second, "vgchange", "-ay")
+		// --sysinit avoids normal userspace/udev synchronization paths that can
+		// stall in this minimal PBA environment and trigger the 3s timeout.
+		runLVMStep(3*time.Second, "vgchange", "-ay", "--sysinit")
 	}
 }
 
@@ -1126,7 +1128,7 @@ func buildBootSearchDevices(bootDrives []string) ([]string, error) {
 		}
 	}
 
-	activateLVM()
+	// LVM activation is performed by callers before this function.
 	for _, lv := range listLogicalVolumes() {
 		add(lv)
 	}
@@ -2101,6 +2103,14 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		debug = append(debug, line)
 		recordBootLaunchDebug(line)
 	}
+	appendDebugVerbose := func(format string, args ...interface{}) {
+		if !shouldEmitDebug(debugVerbose) {
+			return
+		}
+		line := fmt.Sprintf(format, args...)
+		debug = append(debug, line)
+		recordBootLaunchDebugVerbose(line)
+	}
 
 	// Brief pause to let drive firmware and udev settle after a recent
 	// unlock. Without this, sedutil-cli --scan / --query and LVM commands
@@ -2131,53 +2141,53 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		appendDebug("buildBootSearchDevices failed: %v", err)
 		return nil, debug, err
 	}
-	appendDebug("Search devices: %s", strings.Join(searchDevices, ", "))
+	appendDebugVerbose("Search devices: %s", strings.Join(searchDevices, ", "))
 
 	kernels := make([]BootKernelInfo, 0, 8)
 
 	for _, dev := range searchDevices {
-		appendDebug("Trying mount target: %s", dev)
+		appendDebugVerbose("Trying mount target: %s", dev)
 		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
-			appendDebug("Mount failed for %s: %v", dev, err)
+			appendDebugVerbose("Mount failed for %s: %v", dev, err)
 			continue
 		}
 
 		unmount := func() {
 			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
-				appendDebug("Unmount failed for %s: %v", dev, err)
+				appendDebugVerbose("Unmount failed for %s: %v", dev, err)
 			}
 		}
-		appendDebug("Mounted %s on %s", dev, mountPoint)
+		appendDebugVerbose("Mounted %s on %s", dev, mountPoint)
 
 		// Log detected OS if this is a root filesystem
 		if osID, osName := readOSRelease(mountPoint); osID != "" {
-			appendDebug("Detected OS on %s: %s (%s)", dev, osName, osID)
+			appendDebugVerbose("Detected OS on %s: %s (%s)", dev, osName, osID)
 		}
 
 		// Log what collectBootFiles found on this mount
 		loaderEntries, grubConfigs, rawKernels, rawInitrds := collectBootFiles(mountPoint)
-		appendDebug("collectBootFiles on %s: loaders=%d grubs=%d kernels=%d initrds=%d", dev, len(loaderEntries), len(grubConfigs), len(rawKernels), len(rawInitrds))
+		appendDebugVerbose("collectBootFiles on %s: loaders=%d grubs=%d kernels=%d initrds=%d", dev, len(loaderEntries), len(grubConfigs), len(rawKernels), len(rawInitrds))
 		for _, g := range grubConfigs {
-			appendDebug("  grub.cfg found: %s", trimMountPrefix(mountPoint, g))
+			appendDebugVerbose("  grub.cfg found: %s", trimMountPrefix(mountPoint, g))
 		}
 		for _, k := range rawKernels {
-			appendDebug("  kernel found: %s", trimMountPrefix(mountPoint, k))
+			appendDebugVerbose("  kernel found: %s", trimMountPrefix(mountPoint, k))
 		}
 		for _, i := range rawInitrds {
-			appendDebug("  initrd found: %s", trimMountPrefix(mountPoint, i))
+			appendDebugVerbose("  initrd found: %s", trimMountPrefix(mountPoint, i))
 		}
 
 		// Collect all boot entries from this mount
 		entries := collectBootCatalog(mountPoint)
-		appendDebug("Boot catalog entries on %s: %d", dev, len(entries))
+		appendDebugVerbose("Boot catalog entries on %s: %d", dev, len(entries))
 		for i, entry := range entries {
-			appendDebug("  catalog[%d]: kernel=%s cmdline=%q source=%s", i, entry.KernelBase, entry.Cmdline, trimMountPrefix(mountPoint, entry.Source))
+			appendDebugVerbose("  catalog[%d]: kernel=%s cmdline=%q source=%s", i, entry.KernelBase, entry.Cmdline, trimMountPrefix(mountPoint, entry.Source))
 		}
 
 		// Also collect raw kernels/initrds for matching
 		// Match ALL kernel/initrd pairs, not just the first one
 		allPairs := matchAllKernelInitrdPairs(rawKernels, rawInitrds)
-		appendDebug("Matched %d kernel/initrd pairs on %s", len(allPairs), dev)
+		appendDebugVerbose("Matched %d kernel/initrd pairs on %s", len(allPairs), dev)
 
 		for _, pair := range allPairs {
 			rawKernel, rawInitrd := pair[0], pair[1]
@@ -2189,7 +2199,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 			// Enhance weak cmdlines with synthesized root=
 			if (cmdline == "" || looksWeakCmdline(cmdline)) && looksLikeRootFilesystem(mountPoint) {
 				if synthesized, ok := synthesizeRootCmdline(dev, cmdline); ok {
-					appendDebug("  Synthesized cmdline for %s: %q", filepath.Base(rawKernel), synthesized)
+					appendDebugVerbose("  Synthesized cmdline for %s: %q", filepath.Base(rawKernel), synthesized)
 					cmdline = synthesized
 				}
 			}
@@ -2203,7 +2213,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 				Cmdline:    cmdline,
 				Source:     "discovered",
 			})
-			appendDebug("  Kernel: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
+			appendDebugVerbose("  Kernel: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
 		}
 
 		// If no pairs matched but findBootArtifacts can find something (e.g. from loader entries/grub)
@@ -2224,9 +2234,9 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 					Cmdline:    cmdline,
 					Source:     "discovered",
 				})
-				appendDebug("  Artifact: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
+				appendDebugVerbose("  Artifact: %s | %s | cmdline=%q", filepath.Base(rawKernel), filepath.Base(rawInitrd), cmdline)
 			} else {
-				appendDebug("No kernel/initrd pairs found on %s", dev)
+				appendDebugVerbose("No kernel/initrd pairs found on %s", dev)
 			}
 		}
 
@@ -2246,7 +2256,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 			}
 		}
 
-		appendDebug("Kernel candidates accumulated so far: %d", len(kernels))
+		appendDebugVerbose("Kernel candidates accumulated so far: %d", len(kernels))
 		unmount()
 	}
 
@@ -2340,7 +2350,7 @@ func bootWithSelectedKernel(kernels []BootKernelInfo, kernelIndex int) (*BootRes
 	mountPoint := "/mnt/proxmox"
 	_ = os.MkdirAll(mountPoint, 0755)
 	if err := runCommandTimeout(4*time.Second, "mount", "-r", selected.Device, mountPoint); err != nil {
-		appendBootDebug(&debug, "Failed to mount selected device %s: %v", selected.Device, err)
+		appendBootDebugVerbose(&debug, "Failed to mount selected device %s: %v", selected.Device, err)
 		return nil, BootAttemptError{
 			Message: fmt.Sprintf("failed to mount selected boot device: %v", err),
 			Debug:   debug,
@@ -2547,7 +2557,7 @@ func BootSystem() (*BootResult, error) {
 	for _, dev := range searchDevices {
 		appendBootDebug(&debug, "Trying mount target: %s", dev)
 		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
-			appendBootDebug(&debug, "Mount failed: %s", err)
+			appendBootDebugVerbose(&debug, "Mount failed: %s", err)
 			continue
 		}
 
@@ -2561,7 +2571,7 @@ func BootSystem() (*BootResult, error) {
 
 		unmount := func() {
 			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
-				appendBootDebug(&debug, "Unmount failed for %s: %v", dev, err)
+				appendBootDebugVerbose(&debug, "Unmount failed for %s: %v", dev, err)
 			}
 		}
 		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
