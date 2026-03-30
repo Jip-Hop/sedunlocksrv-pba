@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,48 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 		return true
 	}
 	return false
+}
+
+// limitBody caps the request body size for JSON endpoints.
+// 64 KB is generous for any JSON payload this server accepts.
+const maxJSONBodyBytes int64 = 64 * 1024
+
+func limitBody(r *http.Request) {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxJSONBodyBytes)
+}
+
+// validDevicePath is a strict allowlist for /dev/ device paths.
+var validDevicePath = regexp.MustCompile(`^/dev/[a-zA-Z0-9_-]+$`)
+
+func validateDevicePath(device string) bool {
+	cleaned := filepath.Clean(device)
+	return cleaned == device && validDevicePath.MatchString(cleaned)
+}
+
+// checkOrigin validates the Origin header on state-changing requests.
+// Returns true (and writes an error response) if the request should be rejected.
+func checkOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No Origin header — same-origin request or non-browser client; allow.
+		return false
+	}
+	// Allow requests whose Origin matches the Host the server is listening on.
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+	// Strip port from both for comparison.
+	hostNoPort := strings.Split(host, ":")[0]
+	// Origin is a full URL like "https://192.168.1.10:443"
+	originTrimmed := strings.TrimPrefix(strings.TrimPrefix(origin, "https://"), "http://")
+	originHost := strings.Split(originTrimmed, ":")[0]
+	originHost = strings.TrimSuffix(originHost, "/")
+	if strings.EqualFold(originHost, hostNoPort) || strings.EqualFold(originHost, "localhost") || originHost == "127.0.0.1" {
+		return false
+	}
+	jsonResponse(w, http.StatusForbidden, map[string]string{"error": "cross-origin request rejected"})
+	return true
 }
 
 // ============================================================

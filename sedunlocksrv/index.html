@@ -456,6 +456,12 @@ a.build-link:hover {
 <script>
 const $ = id => document.getElementById(id)
 
+function esc(s) {
+    let d = document.createElement("div")
+    d.appendChild(document.createTextNode(s))
+    return d.innerHTML
+}
+
 let policy = {}
 let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
 let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
@@ -479,7 +485,7 @@ function renderChangeTargets(status) {
     }
     $("changeTargets").innerHTML = eligible.map(d => {
         let checked = defaultSelected.includes(d.device) ? "checked" : ""
-        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${d.device}" ${checked}> ${d.device}</label>`
+        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${esc(d.device)}" ${checked}> ${esc(d.device)}</label>`
     }).join("")
 }
 
@@ -499,7 +505,7 @@ function renderExpertFlashTargets(status) {
     select.disabled = false
     select.innerHTML = '<option value="">Select OPAL2 drive...</option>' + opal.map(d => {
         let state = d.locked ? "locked" : "unlocked"
-        return `<option value="${d.device}">${d.device} (${state})</option>`
+        return `<option value="${esc(d.device)}">${esc(d.device)} (${state})</option>`
     }).join("")
 
     if (opal.some(d => d.device === prev)) {
@@ -641,18 +647,18 @@ function buildVersionHTML(build, repoURL) {
     const label = `<span class="build-label">Build Version:</span>`
     const baseRepoURL = (repoURL || "").replace(/\/+$/, '')
     if (!baseRepoURL) {
-        return `${label}<span class="build-tag">${build}</span>`
+        return `${label}<span class="build-tag">${esc(build)}</span>`
     }
 
     // Non-tag local builds are formatted as YYYYMMDD-HHMM-<gitsha>; link those to the commit.
     const commitMatch = build.match(/^\d{8}-\d{4}-([0-9a-f]{7,40})$/i)
     if (commitMatch) {
         const commitURL = `${baseRepoURL}/commit/${commitMatch[1]}`
-        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${build}</a>`
+        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${esc(build)}</a>`
     }
 
     const releaseURL = `${baseRepoURL}/releases/tag/${encodeURIComponent(build)}`
-    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${build}</a>`
+    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${esc(build)}</a>`
 }
 
 async function refresh() {
@@ -670,23 +676,23 @@ async function refresh() {
         let cls = isOpal ? (isLocked ? "locked" : "unlocked") : "nonopal"
         let icon = isOpal ? (isLocked ? "&#x1F512;" : "&#x1F513;") : "&#x1F4BE;"
         let stateText = isOpal ? (isLocked ? "Locked" : "Unlocked") : "Non-OPAL"
-        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${d.device} &mdash; ${stateText}</div>`
+        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${esc(d.device)} &mdash; ${stateText}</div>`
     })
 
     interfaces.forEach(iface => {
         let link = iface.carrier ? "LINK" : "NO-LINK"
         let extra = []
-        if (iface.mac) extra.push(iface.mac)
-        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.join(", "))
+        if (iface.mac) extra.push(esc(iface.mac))
+        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.map(esc).join(", "))
         if (iface.loopback) extra.push("loopback")
-        ifaceHtml += `<div>${iface.name} - ${iface.state} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
+        ifaceHtml += `<div>${esc(iface.name)} - ${esc(iface.state)} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
     })
 
     let opalDrives = drives.filter(d => d.opal)
     let opalCount = opalDrives.length
     let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
-    let bootSummary = j.bootReady ? (j.bootDrives || []).join(", ") || "yes" : "none yet"
+    let bootSummary = j.bootReady ? esc((j.bootDrives || []).join(", ") || "yes") : "none yet"
     let failedUnlockAttempts = j.failedAttempts || 0
     let maxUnlockAttempts = j.maxAttempts || 0
     let remaining = j.attemptsRemaining || 0
@@ -1175,12 +1181,12 @@ function renderKernelList() {
     let visibleCount = 0
     allKernels.forEach((kernel, realIdx) => {
         if (hideRecovery && kernel.recovery) return
-        let label = kernel.kernelName || "Kernel"
+        let label = kernel.kernelName ? esc(kernel.kernelName) : "Kernel"
         if (kernel.recovery) label = "[Recovery] " + label
         let details = []
-        if (kernel.initrdName) details.push(kernel.initrdName)
-        if (kernel.source) details.push(kernel.source)
-        if (kernel.cmdline) details.push(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline)
+        if (kernel.initrdName) details.push(esc(kernel.initrdName))
+        if (kernel.source) details.push(esc(kernel.source))
+        if (kernel.cmdline) details.push(esc(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline))
         let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
         if (visibleCount === 1) html += '<hr class="kernel-separator">'
         html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`

@@ -1,17 +1,16 @@
 # 🚀 Enhanced TCG Opal 2.0 PBA
 
-This is an enhanced fork designed for home server and personal use.
 
 ### ✨ Key Enhancements
 *   **Integrated Go Backend**: A single, high-performance Go binary manages the **Web UI (80/443)** and **Interactive Console** simultaneously.
-*   **kexec Boot**: Transitions directly into the Proxmox kernel after unlocking, bypassing BIOS POST for faster, more reliable "warm" boots that maintain drive authorization.
+*   **kexec Boot**: Transitions directly into the a linux kernel after unlocking, bypassing BIOS POST for faster, more reliable "warm" boots that maintain drive authorization.
 *   **LACP Networking**: Native 802.3ad (Mode 4) bonding via `sysfs` with a 30-second synchronization loop to ensure connectivity before service start.
 *   **Hardened Security**: 
     *   Strict password complexity (12+ chars, Upper/Lower/Numeric/Special).
     *   HTTPS-enforced web interface with automatic Port 80 redirection.
     *   SSH management restricted via `authorized_keys` command execution.
 *   **Modern Console UI**: Interactive dashboard with real-time drive status, masked password entry, and a 30-second privacy timeout.
-*   **Optimized Build**: Fully automated, "no-cache" build process using TinyCore 15.x and optimized Go binaries (`-ldflags="-s -w"`).
+*   **Optimized Build**: Fully automated, "no-cache" build process using TinyCore 15.x and optimized Go binaries.
 
 ---
 
@@ -24,7 +23,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 - ✅ **Warm Boot Support** — `kexec` integration for faster, OPAL-state-preserving boots
 - ✅ **Advanced Networking** — LACP 802.3ad bonding + static IP configuration (original: DHCP only)
 - ✅ **Security Hardening** — Password complexity rules, HTTPS enforcement, token-gating, expert mode isolation
-- ✅ **Enhanced Boot Discovery** — Pattern matching + native binary inspection for non-standard kernel naming
+- ✅ **Enhanced Boot Discovery** — Pattern matching for non-standard kernel naming
 - ✅ **Better Reliability** — Console fallback if networking fails, drive diagnostics, real-time status display
 - ✅ **Configuration Flexibility** — GRUB variable expansion, line continuation handling, multiple boot loader support
 
@@ -36,7 +35,6 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 - ✅ Multiple keyboard mapping support
 - ✅ BIOS + UEFI boot support
 - ✅ Reboot functionality
-- ✅ All original architecture and boot discovery patterns
 
 ---
 
@@ -53,7 +51,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Automatic fallback if boot discovery fails
 
 **Security**: Beyond original SSH command restrictions, this fork adds:
-   - **Expert Mode**: Separate password-protected access to advanced administrative functions (changed at build time, no complexity requirements)
+   - **Expert Mode**: Separate password-protected access to advanced administrative functions 
    - **Expert Re-flash Flow**: Advanced tab can upload a new PBA image and run `sedutil-cli --loadpbaimage` against a selected drive
    - Password complexity enforcement for unlock password changes (12+ chars, Upper/Lower/Numeric/Special by default; configurable)
    - HTTPS-enforced web interface (HTTP auto-redirects to HTTPS)
@@ -62,8 +60,8 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 **Password Configuration**:
    
    *Expert Password (Web UI Expert Tab):* 
-   - Provides access to advanced operations (diagnostics, drive queries, etc.)
-   - Set once at build time, not changed by end users
+   - Provides access to advanced operations (Revert TPer, PSID Revert, Flash PBA)
+   - Password is set once at build time, not changed by end users
    - If not provided via `--expert-password=VALUE` or `build.conf`, you will be prompted to enter and confirm a password during build
    - No complexity requirements — user can use any characters (spaces, symbols, etc.)
    - Build prints a confirmation message when set via prompt
@@ -99,12 +97,11 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    ./build.sh
    ```
 
-**Boot Discovery**: Original uses filename patterns. This fork enhances with:
+**Boot Discovery**:
    - GRUB configuration parsing with variable expansion
    - GRUB line continuation handling
    - `systemd-boot` partition detection
    - Support for LVM, LUKS, and split `/boot` layouts
-   - Built-in native binary inspection for non-standard kernel names (no extra build flag required)
 
 ---
 
@@ -116,7 +113,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 3. Build image: `sudo ./build.sh --ssh` (with SSH UI) or `sudo ./build.sh` (web + console only)
    - If expert password not in build.conf/CLI, you will be prompted to enter it
    - Example with custom settings: `sudo ./build.sh --expert-password="PASS" --password-complexity=off`
-4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, then enable locking
+4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, see origianl fork for great details
 5. Boot target machine into PBA and unlock drives from:
    - Web UI: `https://<pba-ip>/`
    - SSH UI (optional): `ssh -p 2222 tc@<pba-ip>`
@@ -170,15 +167,24 @@ Notes:
    ```
    If this prints `v1.0.0` (or another version tag), `./build.sh` will use that tag as the build version.
 
+## Security Notes & Known Limitations
+
+- **Unauthenticated `/reboot` and `/poweroff` endpoints**: These endpoints are intentionally unauthenticated. In the PBA context there is no acceptable way to supply a session token for power operations — the user may need to reboot or power off without having unlocked any drives. This is by design.
+- **Passwords visible in `/proc/cmdline`**: Disk passwords are passed as command-line arguments to `sedutil-cli` and are therefore visible in `/proc/<pid>/cmdline` while the process runs. This is a limitation of `sedutil-cli` itself and cannot be mitigated without upstream changes. The PBA environment is a single-user, ephemeral boot image where only the operator has access.
+- **Single active session**: Only one web session token exists at a time. A new login invalidates the previous session. This is by design: the PBA is a single-user environment and does not need concurrent session support.
+- **Docker build path**: The `Dockerfile` is provided for convenience but has not been tested with the current version of this fork. Use the native build host path (`sudo ./build.sh`) for production images.
+
+---
+
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
 - **Recovery Kernels in Web UI**: Kernel discovery may include normal and recovery boot entries. Recovery kernels are hidden by default in the web flow (`Hide Recovery Kernels` checked). Users can uncheck the option to show them, and recovery entries are labeled with a `[Recovery]` prefix.
-- **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If admin access is needed, the build must be redone with a new password.
+- **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If a new EXpert Mode password is needed, the build must be redone with a new password.
 - **Expert Re-flash PBA**: In the Expert tab you can upload a replacement `.img` file and re-flash PBA on a target drive. You must provide the current drive password, target `/dev/...` path, and type `FLASH` to confirm. The web UI performs preflight checks and rejects files above 128 MiB, matching the project's OPAL2 PBA size guideline. The server also validates that the uploaded image matches the build's expected disk layout: DOS MBR, one bootable `0xEF` partition from the `sfdisk` recipe, and a readable FAT32 boot partition created by `mkfs.fat -F32`. The Expert output panel shows the validation summary so you can see exactly what passed before the flash runs. Use with care: selecting the wrong target can break boot access for that device.
 - **Expert Revert TPer**: This operation attempts to revert the TPer (Trusted Peripheral) to factory state using the current drive password. This is a destructive operation that can invalidate existing unlock configuration and ownership metadata. Use this only when standard unlock paths fail or when you need to completely reset the drive's security configuration. You must provide the target device path, current drive password, and type `REVERT` to confirm. The Expert output panel shows the sedutil output for diagnostic purposes.
 - **Expert PSID Revert**: This is a last-resort factory reset using the Physical Security ID (PSID) printed on the drive's label. This operation **completely erases access to all existing encrypted data** and resets the drive to its original factory state. Only use this when no other recovery method is available and you accept data loss. You must provide the target device path, the PSID value from the drive's label, and type `ERASE` to confirm. The Expert output panel shows the sedutil output.
-- **Password Changes**: When users change unlock passwords (pressing `P` in console or using web UI password change):
+- **Unlock Password Changes**: When users change unlock passwords (pressing `P` in console or using web UI password change):
   - The complexity requirements set at build time are enforced (see "Password Configuration" above)
   - Requirements are displayed before the user enters the new password
   - Password change is intentionally target-based: select which drive(s) to update
@@ -186,12 +192,10 @@ Notes:
 - SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
 - SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
 
-- Web `Boot` and console `Boot` both use the same backend boot discovery logic, but the web flow is asynchronous. If the page shows `Booting...` for a while, wait for the machine to hand off before assuming it failed.
 - If `Boot` cannot find a kernel or initrd, inspect whether your system uses a split EFI plus LVM `/boot` or root layout. This project is designed to search those layouts, but real-world GRUB arrangements vary.
 - If password change reports that `Admin1` updated but `SID` did not, the drive may still unlock with the new password while firmware is blocking SID changes. Check Block SID settings before assuming the whole password update failed.
 
 - Test both `Boot` and `Reboot` on your actual hardware. Some systems behave well with `kexec`, while others still need a full firmware restart for NICs, storage, or other platform state.
-- If you plan to change SID passwords, check BIOS and TPM security settings ahead of time and verify that Block SID is not preventing the update.
 
 ---
 
@@ -260,7 +264,6 @@ source ~/.bashrc
 Before running `./build.sh`, verify:
 - `sedunlocksrv/server.crt` and `sedunlocksrv/server.key` exist if you are supplying custom TLS certs.
 - `ssh/authorized_keys` exists if you plan to build with `--ssh`.
-- `tc/tc-config` contains your expected network/boot behavior.
 - Expert password plan is set: either pass `--expert-password=...` or set `EXPERT_PASSWORD` in `build.conf`. If omitted, `build.sh` prompts you to enter and confirm one interactively.
 
 ## 🚀 Build Execution
@@ -317,11 +320,8 @@ The PBA automatically discovers your installed operating system's kernel and ini
 - **Custom kernels**: Non-standard names (`kernel`, `bzImage`, custom naming schemes) are detected via binary inspection
 - **Split layouts**: Supports separate EFI and `/boot` partitions, LVM-backed root, and complex arrangements
 
-Boot discovery uses a combination of:
-1. **Filename pattern matching** — for standard kernel names (`vmlinuz*`, `initrd*`, `bzImage`, etc.)
-2. **Binary inspection** — native Go code detects kernel and initrd files by their actual binary headers and structure, working with any naming convention
-
-This dual approach handles 100% of cases without requiring external tools or extra build flags.
+Boot discovery uses:
+1. **Filename pattern matching** — for standard kernel names (`vmlinuz*`, `initrd*`, `bzImage`, etc.). The source code contains notes for adding a pattern if you use a non-standard or custom name.
 
 ---
 

@@ -63,6 +63,9 @@ var (
 	mu             sync.Mutex
 	unlockMu       sync.Mutex
 
+	expertFailedAttempts int
+	expertMu             sync.Mutex
+
 	sessionMu         sync.RWMutex
 	apiSessionToken   string
 	expertSessionTok  string
@@ -3241,7 +3244,7 @@ func main() {
 		redirectSrv := &http.Server{
 			Addr: ":80",
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, "https://"+r.Host+r.URL.String(), http.StatusMovedPermanently)
+				http.Redirect(w, r, "https://localhost"+r.URL.String(), http.StatusMovedPermanently)
 			}),
 			ErrorLog: httpErrorLog,
 		}
@@ -3282,6 +3285,10 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
+		limitBody(r)
 		var req struct {
 			Password string `json:"password"`
 		}
@@ -3310,9 +3317,13 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireSessionToken(w, r) {
 			return
 		}
+		limitBody(r)
 		var req struct {
 			CurrentPassword string   `json:"currentPassword"`
 			NewPassword     string   `json:"newPassword"`
@@ -3340,10 +3351,26 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if expertPasswordHash == "" {
 			jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "expert auth is not configured"})
 			return
 		}
+		expertMu.Lock()
+		if expertFailedAttempts >= maxAttempts {
+			expertMu.Unlock()
+			dbgPrintln(debugNormal, "Max expert auth attempts reached. Powering off.")
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				exec.Command("poweroff", "-nf").Run()
+			}()
+			jsonResponse(w, http.StatusForbidden, map[string]string{"error": "maximum failed attempts reached"})
+			return
+		}
+		expertMu.Unlock()
+		limitBody(r)
 		var req struct {
 			Password string `json:"password"`
 		}
@@ -3352,9 +3379,26 @@ func main() {
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(expertPasswordHash), []byte(req.Password)); err != nil {
+			expertMu.Lock()
+			expertFailedAttempts++
+			dbgPrintf(debugNormal, "Failed expert auth attempt %d/%d", expertFailedAttempts, maxAttempts)
+			if expertFailedAttempts >= maxAttempts {
+				expertMu.Unlock()
+				dbgPrintln(debugNormal, "Max expert auth attempts reached. Powering off.")
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					exec.Command("poweroff", "-nf").Run()
+				}()
+				jsonResponse(w, http.StatusForbidden, map[string]string{"error": "maximum failed attempts reached"})
+				return
+			}
+			expertMu.Unlock()
 			jsonResponse(w, http.StatusForbidden, map[string]string{"error": "invalid expert password"})
 			return
 		}
+		expertMu.Lock()
+		expertFailedAttempts = 0
+		expertMu.Unlock()
 		token, err := mintExpertToken()
 		if err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create expert session"})
@@ -3377,9 +3421,13 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireExpertToken(w, r) {
 			return
 		}
+		limitBody(r)
 		var req struct {
 			Device   string `json:"device"`
 			Password string `json:"password"`
@@ -3389,8 +3437,8 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if !strings.HasPrefix(req.Device, "/dev/") {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+		if !validateDevicePath(req.Device) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a valid /dev path"})
 			return
 		}
 		if req.Confirm != "REVERT" {
@@ -3404,9 +3452,13 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireExpertToken(w, r) {
 			return
 		}
+		limitBody(r)
 		var req struct {
 			Device  string `json:"device"`
 			PSID    string `json:"psid"`
@@ -3416,8 +3468,8 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if !strings.HasPrefix(req.Device, "/dev/") {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+		if !validateDevicePath(req.Device) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a valid /dev path"})
 			return
 		}
 		if strings.TrimSpace(req.PSID) == "" {
@@ -3453,6 +3505,9 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireExpertToken(w, r) {
 			return
 		}
@@ -3469,8 +3524,8 @@ func main() {
 		password := r.FormValue("password")
 		confirm := strings.TrimSpace(r.FormValue("confirm"))
 
-		if !strings.HasPrefix(device, "/dev/") {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a /dev path"})
+		if !validateDevicePath(device) {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a valid /dev path"})
 			return
 		}
 		if !isOpal2Drive(device) {
@@ -3547,6 +3602,9 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
@@ -3561,10 +3619,14 @@ func main() {
 		if requireMethod(w, r, http.MethodPost) {
 			return
 		}
+		if checkOrigin(w, r) {
+			return
+		}
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
 
+		limitBody(r)
 		var req struct {
 			KernelIndex int `json:"kernelIndex"`
 		}
