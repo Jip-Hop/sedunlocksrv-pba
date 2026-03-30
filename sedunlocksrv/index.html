@@ -2,136 +2,241 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SED Unlock</title>
 <style>
+*,*::before,*::after { box-sizing: border-box; }
 body {
-    background: #111;
-    color: #eee;
-    font-family: monospace;
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
     max-width: 900px;
-    margin: auto;
-    padding: 10px;
+    margin: 0 auto;
+    padding: 16px;
 }
-h2 { text-align: center; }
+h2 {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin: 8px 0 16px;
+    color: #f0f6fc;
+}
 .box {
-    border: 1px solid #444;
-    padding: 10px;
-    margin-bottom: 10px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: #161b22;
 }
 button {
-    background: #0e639c;
+    background: #238636;
     color: #fff;
-    border: 1px solid #0e639c;
-    padding: 8px 10px;
-    margin-top: 5px;
-    transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    border: 1px solid rgba(240,246,252,0.1);
+    border-radius: 6px;
+    padding: 8px 16px;
+    margin-top: 6px;
+    width: 230px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
 }
 button:hover {
-    opacity: 0.88;
+    opacity: 0.9;
     transform: translateY(-1px);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+}
+button:active {
+    transform: translateY(0);
 }
 button:disabled {
-    opacity: 0.5;
+    opacity: 0.4;
     transform: none;
     cursor: default;
 }
 input, textarea, select {
     width: 100%;
-    padding: 5px;
-    margin-top: 5px;
-    background: #000;
-    color: #eee;
-    border: 1px solid #555;
+    padding: 8px 10px;
+    margin-top: 6px;
+    background: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
     box-sizing: border-box;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: #388bfd;
+    box-shadow: 0 0 0 3px rgba(56,139,253,0.3);
 }
 textarea {
     min-height: 140px;
     resize: vertical;
-    font-family: monospace;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+input[type="text"],
+input[type="password"] {
+    width: 300px;
 }
 .hidden { display: none; }
-.ok   { color: #4ade80; }
-.bad  { color: #f87171; }
-.warn { color: #facc15; }
-.small { font-size: 11px; color: #aaa; }
-.hint  { font-size: 12px; color: #bbb; line-height: 1.45; }
+.ok   { color: #3fb950; }
+.bad  { color: #f85149; }
+.warn { color: #d29922; }
+.small { font-size: 12px; color: #8b949e; }
+.hint  { font-size: 12px; color: #8b949e; line-height: 1.5; margin-top: 8px; }
+.hint code {
+    background: #262c36;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+}
 .danger {
-    border-color: #8b1f1f;
-    background: #1a1010;
+    border-color: #f8514966;
+    background: #1a0f0f;
 }
 .tab {
     display: flex;
-    gap: 5px;
-    margin-bottom: 10px;
-    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #30363d;
+    padding-bottom: 0;
 }
 .tab button {
-    flex: 1 1 170px;
+    flex: 1 1 0;
+    width: auto;
     margin: 0;
-    background: #2d2d2d;
-    border-color: #3c3c3c;
+    background: transparent;
+    color: #8b949e;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 10px 8px;
+    font-size: 13px;
+    font-weight: 500;
     text-transform: uppercase;
+    letter-spacing: 0.3px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+.tab button:hover {
+    color: #e6edf3;
+    opacity: 1;
+    transform: none;
 }
 .active {
-    background: #0e639c !important;
-    border-color: #0e639c !important;
+    color: #f0f6fc !important;
+    border-bottom-color: #388bfd !important;
 }
 .checkbox-row {
     display: flex;
     align-items: center;
-    margin-top: 5px;
-    font-size: 11px;
-    color: #aaa;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #8b949e;
 }
 .checkbox-row input {
     width: auto;
     margin-right: 6px;
 }
-.row { display: flex; gap: 5px; flex-wrap: wrap; }
-.row button { flex: 1; }
-.primary-btn   { background: #68217a; border-color: #68217a; }
-.secondary-btn { background: #0e639c; border-color: #0e639c; }
-.warm-btn      { background: #e37933; border-color: #e37933; }
-.danger-btn    { background: #9e2a2b; border-color: #9e2a2b; }
-.mono { white-space: pre-wrap; word-break: break-word; }
-#bootDebug {
-    max-height: 200px;
-    overflow-y: auto;
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 6px 8px;
-    margin-top: 6px;
-    font-family: monospace;
-    font-size: 11px;
-    color: #8c8;
-    display: none;
-}
-#flashLog {
-    max-height: 200px;
-    overflow-y: auto;
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 6px 8px;
-    margin-top: 6px;
-    font-family: monospace;
-    font-size: 11px;
-    color: #8c8;
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.primary-btn   { background: #238636; border-color: rgba(240,246,252,0.1); }
+.primary-btn:hover { background: #2ea043; }
+.secondary-btn { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+.secondary-btn:hover { background: #30363d; }
+.warm-btn      { background: #c77623; border-color: rgba(240,246,252,0.1); }
+.warm-btn:hover { background: #d68a3a; }
+.danger-btn    { background: #9e2a2b; border-color: rgba(240,246,252,0.1); }
+.danger-btn:hover { background: #b33; }
+.mono {
     white-space: pre-wrap;
     word-break: break-word;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+.log-box {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #010409;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #7ee787;
     display: none;
+}
+#bootDebug { }
+#flashLog {
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 .doc-image {
     width: 100%;
     max-width: 720px;
     display: block;
-    margin: 10px auto 0;
-    border: 1px solid #444;
+    margin: 12px auto 0;
+    border: 1px solid #30363d;
+    border-radius: 6px;
 }
+.section-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0f6fc;
+    margin-bottom: 4px;
+}
+.kernel-separator {
+    border: none;
+    border-top: 1px solid #30363d;
+    margin: 6px 0;
+}
+.pw-field-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+}
+.pw-field-row input {
+    flex-shrink: 0;
+    margin-top: 0;
+}
+.pw-reqs {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.req-item {
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.req-fail { color: #f85149; }
+.req-pass { color: #3fb950; }
+.pw-match {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    min-width: 110px;
+    text-align: right;
+    flex-shrink: 0;
+}
+/* Scrollbar styling for log areas */
+.log-box::-webkit-scrollbar { width: 6px; }
+.log-box::-webkit-scrollbar-track { background: transparent; }
+.log-box::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.log-box::-webkit-scrollbar-thumb:hover { background: #484f58; }
 @media (max-width: 700px) {
-    .tab button { flex: 1 1 100%; }
+    .tab button { font-size: 11px; padding: 8px 4px; }
+    button { width: 100% !important; }
+    input[type="text"],
+    input[type="password"] { width: 100%; }
 }
 </style>
 </head>
@@ -148,13 +253,8 @@ textarea {
 
 <div class="box">
     <div id="status"></div>
-    <div id="statusSummary" class="small"></div>
+    <div id="statusSummary" class="small" style="margin-top:6px"></div>
     <div id="buildInfo" class="small"></div>
-</div>
-
-<div class="box">
-    <div class="hint">Network interfaces detected by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
-    <div id="interfaces" class="small"></div>
 </div>
 
 <div id="unlockTab">
@@ -163,12 +263,10 @@ textarea {
         <label class="checkbox-row">
             <input type="checkbox" id="showUnlock"> Show Password
         </label>
-        <div class="row">
-            <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
-        </div>
-        <div id="unlockResult" class="small"></div>
+        <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
+        <div id="unlockResult" class="small" style="margin-top:8px"></div>
         <div id="bootResult" class="small"></div>
-        <div id="bootDebug" class="mono small"></div>
+        <div id="bootDebug" class="log-box"></div>
         <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
         <div class="hint">
             After a successful unlock, the system will search for bootable kernels and present them for selection.
@@ -176,38 +274,42 @@ textarea {
             NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
         </div>
     </div>
+    <div id="kernelSelectionDialog" class="hidden">
+        <div class="box">
+            <div class="section-label">Select Kernel to Boot</div>
+            <div class="hint" style="margin-top:2px">Choose a kernel and confirm to boot the OS:</div>
+            <div id="kernelOptions" class="small" style="margin-top:8px"></div>
+            <div class="row" style="margin-top:10px">
+                <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot</button>
+                <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
     <div class="row">
         <button class="warm-btn" id="rebootBtn" onclick="reboot()">Reboot</button>
         <button class="secondary-btn" id="shutdownBtn" onclick="shutdown()">Shutdown</button>
     </div>
-    <div id="systemActionResult" class="small"></div>
-</div>
-
-<div id="kernelSelectionDialog" class="hidden">
-    <div class="box">
-        <div><b>Select Kernel to Boot</b></div>
-        <div class="hint">Choose a kernel and confirm to boot the OS:</div>
-        <div id="kernelOptions" class="small"></div>
-        <div class="row">
-            <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot Selected Kernel</button>
-            <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
-        </div>
-    </div>
+    <div id="systemActionResult" class="small" style="margin-top:6px"></div>
 </div>
 
 <div id="changeTab" class="hidden">
     <div class="box">
-        <div class="small">Target drives</div>
+        <div class="section-label">Target drives</div>
         <div id="changeTargets" class="small"></div>
         <input id="cur" type="password" placeholder="Current Password">
-        <input id="new" type="password" placeholder="New Password">
-        <input id="conf" type="password" placeholder="Confirm Password">
+        <div class="pw-field-row">
+            <input id="new" type="password" placeholder="New Password">
+            <div class="pw-reqs" id="pwReqs"></div>
+        </div>
+        <div class="pw-field-row">
+            <div id="pwMatch" class="pw-match"></div>
+            <input id="conf" type="password" placeholder="Confirm Password">
+        </div>
         <label class="checkbox-row">
             <input type="checkbox" id="showChange"> Show Passwords
         </label>
-        <div id="policy" class="small"></div>
         <button class="primary-btn" id="changeBtn" onclick="changePw()">Update Password</button>
-        <div id="changeResult" class="small"></div>
+        <div id="changeResult" class="small" style="margin-top:6px"></div>
         <div class="hint">This updates Admin1 and SID on the selected drive(s). If SID password changes fail, check firmware or TPM settings and disable Block SID for the next boot. You must unlock at least one drive first in this boot session before changing passwords.</div>
         <div class="hint">Example BIOS path: TPM or security settings with <b>Disable Block SID</b> set to <b>Disabled</b>, then accept the one-time change on the next boot.</div>
         <img class="doc-image" src="/block-sid-bios.png" alt="Example BIOS setting showing Disable Block SID set to Disabled">
@@ -216,20 +318,25 @@ textarea {
 
 <div id="diagTab" class="hidden">
     <div class="box">
+        <div class="section-label">Network Interfaces</div>
+        <div class="hint" style="margin-top:2px">Detected by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
+        <div id="interfaces" class="small" style="margin-top:6px"></div>
+    </div>
+    <div class="box">
         <div class="row">
             <button class="secondary-btn" onclick="loadDiagnostics()">Refresh Diagnostics</button>
         </div>
         <div class="hint">Diagnostics are pulled from <code>sedutil-cli --query</code> per drive.</div>
-        <div id="diagSummary" class="small"></div>
-        <div id="diagContent" class="mono small"></div>
+        <div id="diagSummary" class="small" style="margin-top:6px"></div>
+        <div id="diagContent" class="mono small" style="margin-top:6px"></div>
     </div>
 </div>
 
 <div id="expertTab" class="hidden">
     <div class="box danger">
-        <div class="warn"><b>Expert Mode</b>: these operations can permanently destroy data or ownership metadata.</div>
+        <div class="warn"><b>Expert Mode</b> &mdash; these operations can permanently destroy data or ownership metadata.</div>
         <div class="hint">Use this only when standard unlock paths cannot recover the drive.</div>
-        <div id="expertStatus" class="small">Expert actions are locked.</div>
+        <div id="expertStatus" class="small" style="margin-top:8px">Expert actions are locked.</div>
         <input id="expertPw" type="password" placeholder="Expert Password">
         <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
     </div>
@@ -264,7 +371,7 @@ textarea {
             <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
             <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
             <div id="flashStatus" class="small" style="margin-top: 8px; display: none;"></div>
-            <div id="flashLog"></div>
+            <div id="flashLog" class="log-box"></div>
         </div>
         <div class="box">
             <div class="small">Expert output</div>
@@ -418,12 +525,42 @@ function expertHeaders() {
 async function loadPolicy() {
     let r = await fetch("/password-policy")
     policy = await r.json()
-    $("policy").innerText =
-        "Min " + policy.minLength +
-        " | Upper:" + policy.requireUpper +
-        " Lower:" + policy.requireLower +
-        " Num:" + policy.requireNumber +
-        " Special:" + policy.requireSpecial
+    renderPolicyIndicators()
+}
+
+function renderPolicyIndicators() {
+    let html = `<span id="reqLen" class="req-item req-fail">Min ${policy.minLength || 1}</span>`
+    if (policy.requireUpper) html += ' <span id="reqUpper" class="req-item req-fail">A-Z</span>'
+    if (policy.requireLower) html += ' <span id="reqLower" class="req-item req-fail">a-z</span>'
+    if (policy.requireNumber) html += ' <span id="reqNum" class="req-item req-fail">0-9</span>'
+    if (policy.requireSpecial) html += ' <span id="reqSpecial" class="req-item req-fail">!@#</span>'
+    $("pwReqs").innerHTML = html
+}
+
+function setReq(id, ok) {
+    let el = $(id)
+    if (el) el.className = "req-item " + (ok ? "req-pass" : "req-fail")
+}
+
+function validateNewPassword() {
+    let pw = $("new").value
+    let cf = $("conf").value
+    setReq("reqLen", pw.length >= (policy.minLength || 1))
+    if (policy.requireUpper) setReq("reqUpper", /[A-Z]/.test(pw))
+    if (policy.requireLower) setReq("reqLower", /[a-z]/.test(pw))
+    if (policy.requireNumber) setReq("reqNum", /[0-9]/.test(pw))
+    if (policy.requireSpecial) setReq("reqSpecial", /[^A-Za-z0-9]/.test(pw))
+    let matchEl = $("pwMatch")
+    if (!cf) {
+        matchEl.textContent = ""
+        matchEl.className = "pw-match"
+    } else if (pw === cf) {
+        matchEl.textContent = "matches"
+        matchEl.className = "pw-match req-pass"
+    } else {
+        matchEl.textContent = "does not match"
+        matchEl.className = "pw-match req-fail"
+    }
 }
 
 async function refresh() {
@@ -931,8 +1068,11 @@ function showKernelSelection(kernels) {
         if (kernel.initrdName) details.push(kernel.initrdName)
         if (kernel.source) details.push(kernel.source)
         if (kernel.cmdline) details.push(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline)
-        let detailStr = details.length ? ` <span style="color:#888">(${details.join(" | ")})</span>` : ""
+        let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
         html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${idx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
+        if (idx === 0 && kernels.length > 1) {
+            html += '<hr class="kernel-separator">'
+        }
     })
     $("kernelOptions").innerHTML = html
     if (kernels.length > 0) {
@@ -1038,6 +1178,14 @@ $("showChange").onchange = e => {
             changePw()
         }
     })
+})
+$("new").addEventListener("input", validateNewPassword)
+$("conf").addEventListener("input", validateNewPassword)
+$("expertPw").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+        e.preventDefault()
+        expertLogin()
+    }
 })
 loadPolicy()
 refresh()
