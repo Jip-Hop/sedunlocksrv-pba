@@ -1349,6 +1349,24 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 	entries := make([]BootEntry, 0)
 	// Parse lines with continuation handling
 	lines := parseGrubLinesWithContinuation(string(data))
+
+	// Debug: count linux lines and dump first 40 chars of each
+	var linuxLineCount int
+	for _, line := range lines {
+		lt := strings.TrimSpace(line)
+		lower := strings.ToLower(lt)
+		if strings.HasPrefix(lower, "linux ") || strings.HasPrefix(lower, "linux\t") ||
+			strings.HasPrefix(lower, "linuxefi ") || strings.HasPrefix(lower, "linuxefi\t") {
+			linuxLineCount++
+			preview := lt
+			if len(preview) > 40 {
+				preview = preview[:40]
+			}
+			recordBootLaunchDebug(fmt.Sprintf("grubCatalog(%s): linux-like line: %q", filepath.Base(grubPath), preview))
+		}
+	}
+	recordBootLaunchDebug(fmt.Sprintf("grubCatalog(%s): total lines=%d, linux-like lines=%d", filepath.Base(grubPath), len(lines), linuxLineCount))
+
 	for i := 0; i < len(lines); i++ {
 		t := strings.TrimSpace(lines[i])
 		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {
@@ -1554,6 +1572,29 @@ func looksLikeRootFilesystem(mountPoint string) bool {
 		}
 	}
 	return true
+}
+
+// readOSRelease reads /etc/os-release from mount and returns (ID, PRETTY_NAME).
+func readOSRelease(mountPoint string) (string, string) {
+	data, err := os.ReadFile(filepath.Join(mountPoint, "etc", "os-release"))
+	if err != nil {
+		return "", ""
+	}
+	var id, prettyName string
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"`)
+		switch key {
+		case "ID":
+			id = value
+		case "PRETTY_NAME":
+			prettyName = value
+		}
+	}
+	return id, prettyName
 }
 
 func synthesizeRootCmdline(device, existing string) (string, bool) {
@@ -1912,6 +1953,11 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 			}
 		}
 		appendDebug("Mounted %s on %s", dev, mountPoint)
+
+		// Log detected OS if this is a root filesystem
+		if osID, osName := readOSRelease(mountPoint); osID != "" {
+			appendDebug("Detected OS on %s: %s (%s)", dev, osName, osID)
+		}
 
 		// Log what collectBootFiles found on this mount
 		loaderEntries, grubConfigs, rawKernels, rawInitrds := collectBootFiles(mountPoint)
@@ -2662,6 +2708,24 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	}
 	vars := parseGrubVars(grubPath)
 	lines := parseGrubLinesWithContinuation(string(data))
+
+	// Debug: count linux lines and dump first 40 chars of each
+	var linuxLineCount int
+	for _, line := range lines {
+		lt := strings.TrimSpace(line)
+		lower := strings.ToLower(lt)
+		if strings.HasPrefix(lower, "linux ") || strings.HasPrefix(lower, "linux\t") ||
+			strings.HasPrefix(lower, "linuxefi ") || strings.HasPrefix(lower, "linuxefi\t") {
+			linuxLineCount++
+			preview := lt
+			if len(preview) > 40 {
+				preview = preview[:40]
+			}
+			recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): linux-like line: %q", filepath.Base(grubPath), preview))
+		}
+	}
+	recordBootLaunchDebug(fmt.Sprintf("parseSingleGrubCfg(%s): total lines=%d, linux-like lines=%d, kernelBase=%q", filepath.Base(grubPath), len(lines), linuxLineCount, kernelBase))
+
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "linux ") && !strings.HasPrefix(t, "linuxefi ") {

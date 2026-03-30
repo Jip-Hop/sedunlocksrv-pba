@@ -175,6 +175,29 @@ func splitOnCRorLF(data []byte, atEOF bool) (advance int, token []byte, err erro
 	return 0, nil, nil
 }
 
+// parseProgressPct extracts the integer percentage from a sedutil-cli progress line.
+// Format: "61334 of 52428800 0% blk=61334" → 0, true
+func parseProgressPct(line string) (int, bool) {
+	idx := strings.Index(line, "% ")
+	if idx < 1 {
+		return 0, false
+	}
+	// Walk backwards from idx to find start of the number
+	start := idx - 1
+	for start >= 0 && line[start] >= '0' && line[start] <= '9' {
+		start--
+	}
+	start++
+	if start >= idx {
+		return 0, false
+	}
+	pct, err := strconv.Atoi(line[start:idx])
+	if err != nil {
+		return 0, false
+	}
+	return pct, true
+}
+
 func recordFlashLine(line string) {
 	flashMu.Lock()
 	defer flashMu.Unlock()
@@ -277,11 +300,22 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 		go func() {
 			scanner := bufio.NewScanner(stdoutPipe)
 			scanner.Split(splitOnCRorLF)
+			lastLoggedPct := -1
 			for scanner.Scan() {
 				line := strings.TrimSpace(scanner.Text())
-				if line != "" {
-					recordFlashLine(line)
+				if line == "" {
+					continue
 				}
+				// Filter progress lines: only log every ~4%
+				// Progress format: "61334 of 52428800 0% blk=61334"
+				if pct, ok := parseProgressPct(line); ok {
+					if pct == 100 || pct-lastLoggedPct >= 4 {
+						lastLoggedPct = pct
+						recordFlashLine(line)
+					}
+					continue
+				}
+				recordFlashLine(line)
 			}
 		}()
 
