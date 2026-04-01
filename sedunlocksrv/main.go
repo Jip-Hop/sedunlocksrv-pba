@@ -2189,7 +2189,10 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	return "", "", "", false
 }
 
-// discoverBootKernels scans all unlocked boot candidate drives, mounts each\n// partition/LV/MD device, and collects every available kernel+initrd+cmdline\n// combination. Returns the deduplicated list, debug log lines, and any error.\nfunc discoverBootKernels() ([]BootKernelInfo, []string, error) {
+// discoverBootKernels scans all unlocked boot candidate drives, mounts each
+// partition/LV/MD device, and collects every available kernel+initrd+cmdline
+// combination. Returns the deduplicated list, debug log lines, and any error.
+func discoverBootKernels() ([]BootKernelInfo, []string, error) {
 	debug := make([]string, 0, 64)
 	appendDebug := func(format string, args ...interface{}) {
 		// Discovery progress is considered level-1 logging and is hidden in quiet mode.
