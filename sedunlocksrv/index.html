@@ -351,7 +351,7 @@ a.build-link:hover {
             </label>
             <div id="kernelOptions" class="small" style="margin-top:8px"></div>
             <div class="row" style="margin-top:10px">
-                <button class="primary-btn" onclick="proceedWithSelectedKernel()">Boot</button>
+                <button class="primary-btn" onclick="confirmKernelAndBoot()">Boot</button>
                 <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
             </div>
         </div>
@@ -379,7 +379,7 @@ a.build-link:hover {
         <label class="checkbox-row">
             <input type="checkbox" id="showChange"> Show Passwords
         </label>
-        <button class="primary-btn" id="changeBtn" onclick="changePw()">Update Password</button>
+        <button class="primary-btn" id="changeBtn" onclick="changePassword()">Update Password</button>
         <div id="changeResult" class="small" style="margin-top:6px"></div>
         <div class="hint">This updates Admin1 and SID on the selected drive(s). If SID password changes fail, check firmware or TPM settings and disable Block SID for the next boot. You must unlock at least one drive first in this boot session before changing passwords.</div>
         <div class="hint">Example BIOS path: TPM or security settings with <b>Disable Block SID</b> set to <b>Disabled</b>, then accept the one-time change on the next boot.</div>
@@ -456,7 +456,8 @@ a.build-link:hover {
 <script>
 const $ = id => document.getElementById(id)
 
-function esc(s) {
+/** Escapes a string for safe insertion into HTML (prevents XSS). */
+function escapeHTML(s) {
     let d = document.createElement("div")
     d.appendChild(document.createTextNode(s))
     return d.innerHTML
@@ -470,10 +471,12 @@ let systemActionInFlight = false
 let bootStatusPoller = null
 const maxPBAUploadBytes = 128 * 1024 * 1024
 
+/** Returns an array of device paths selected on the Change Password tab. */
 function selectedChangeDevices() {
     return Array.from(document.querySelectorAll("input[name='changeDevice']:checked")).map(el => el.value)
 }
 
+/** Renders the target-drive checkboxes on the Change Password tab. */
 function renderChangeTargets(status) {
     let drives = Array.isArray(status.drives) ? status.drives : []
     let eligible = drives.filter(d => d.opal && !d.locked)
@@ -485,10 +488,11 @@ function renderChangeTargets(status) {
     }
     $("changeTargets").innerHTML = eligible.map(d => {
         let checked = defaultSelected.includes(d.device) ? "checked" : ""
-        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${esc(d.device)}" ${checked}> ${esc(d.device)}</label>`
+        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${escapeHTML(d.device)}" ${checked}> ${escapeHTML(d.device)}</label>`
     }).join("")
 }
 
+/** Populates the OPAL2 drive dropdown on the Expert re-flash panel. */
 function renderExpertFlashTargets(status) {
     let select = $("expDeviceFlash")
     if (!select) return
@@ -505,7 +509,7 @@ function renderExpertFlashTargets(status) {
     select.disabled = false
     select.innerHTML = '<option value="">Select OPAL2 drive...</option>' + opal.map(d => {
         let state = d.locked ? "locked" : "unlocked"
-        return `<option value="${esc(d.device)}">${esc(d.device)} (${state})</option>`
+        return `<option value="${escapeHTML(d.device)}">${escapeHTML(d.device)} (${state})</option>`
     }).join("")
 
     if (opal.some(d => d.device === prev)) {
@@ -515,6 +519,7 @@ function renderExpertFlashTargets(status) {
     }
 }
 
+/** Toggles UI controls into/out of the "boot in progress" state. */
 function setBootUiBusy(busy) {
     bootInFlight = busy
     $("unlockBtn").disabled = busy
@@ -523,6 +528,7 @@ function setBootUiBusy(busy) {
     $("bootTransition").classList.toggle("hidden", !busy)
 }
 
+/** Clears the periodic boot-status polling interval. */
 function stopBootStatusPolling() {
     if (bootStatusPoller) {
         clearInterval(bootStatusPoller)
@@ -530,6 +536,7 @@ function stopBootStatusPolling() {
     }
 }
 
+/** Shows or hides the boot debug log area with the given lines. */
 function showBootDebug(lines) {
     let el = $("bootDebug")
     if (Array.isArray(lines) && lines.length) {
@@ -542,6 +549,7 @@ function showBootDebug(lines) {
     }
 }
 
+/** Polls /boot-status and updates the UI with progress, success, or error. */
 async function checkBootStatus() {
     let r = await fetch("/boot-status")
     let j = await r.json()
@@ -569,6 +577,7 @@ async function checkBootStatus() {
     }
 }
 
+/** Toggles the reboot/shutdown buttons into a busy state for the given action. */
 function setSystemActionBusy(action) {
     systemActionInFlight = !!action
     $("rebootBtn").disabled = !!action
@@ -577,6 +586,7 @@ function setSystemActionBusy(action) {
     $("shutdownBtn").innerText = action === "shutdown" ? "Shutting down..." : "Shutdown"
 }
 
+/** Switches the visible tab (unlock, change, diag, expert). */
 function showTab(name) {
     const tabs = {
         unlock: ["unlockTab", "tabUnlock"],
@@ -593,20 +603,24 @@ function showTab(name) {
     if (name === "expert") syncExpertState()
 }
 
+/** Returns headers object with the session auth token, if present. */
 function authHeaders() {
     return authToken ? {"X-Auth-Token": authToken} : {}
 }
 
+/** Returns headers object with the expert auth token, if present. */
 function expertHeaders() {
     return expertToken ? {"X-Expert-Token": expertToken} : {}
 }
 
+/** Fetches the password policy from the server and renders requirement indicators. */
 async function loadPolicy() {
     let r = await fetch("/password-policy")
     policy = await r.json()
     renderPolicyIndicators()
 }
 
+/** Renders the password-requirement badges (min length, A-Z, 0-9, etc.). */
 function renderPolicyIndicators() {
     let html = `<span id="reqLen" class="req-item req-fail">Min ${policy.minLength || 1}</span>`
     if (policy.requireUpper) html += ' <span id="reqUpper" class="req-item req-fail">A-Z</span>'
@@ -616,19 +630,21 @@ function renderPolicyIndicators() {
     $("pwReqs").innerHTML = html
 }
 
-function setReq(id, ok) {
+/** Updates a single password-requirement badge to pass/fail state. */
+function setRequirementStatus(id, ok) {
     let el = $(id)
     if (el) el.className = "req-item " + (ok ? "req-pass" : "req-fail")
 }
 
+/** Live-validates the new password and confirm fields against the policy. */
 function validateNewPassword() {
     let pw = $("new").value
     let cf = $("conf").value
-    setReq("reqLen", pw.length >= (policy.minLength || 1))
-    if (policy.requireUpper) setReq("reqUpper", /[A-Z]/.test(pw))
-    if (policy.requireLower) setReq("reqLower", /[a-z]/.test(pw))
-    if (policy.requireNumber) setReq("reqNum", /[0-9]/.test(pw))
-    if (policy.requireSpecial) setReq("reqSpecial", /[^A-Za-z0-9]/.test(pw))
+    setRequirementStatus("reqLen", pw.length >= (policy.minLength || 1))
+    if (policy.requireUpper) setRequirementStatus("reqUpper", /[A-Z]/.test(pw))
+    if (policy.requireLower) setRequirementStatus("reqLower", /[a-z]/.test(pw))
+    if (policy.requireNumber) setRequirementStatus("reqNum", /[0-9]/.test(pw))
+    if (policy.requireSpecial) setRequirementStatus("reqSpecial", /[^A-Za-z0-9]/.test(pw))
     let matchEl = $("pwMatch")
     if (!cf) {
         matchEl.textContent = ""
@@ -642,25 +658,27 @@ function validateNewPassword() {
     }
 }
 
+/** Renders the build version as a plain tag or a link to the repo commit/release. */
 function buildVersionHTML(build, repoURL) {
     if (!build) return ""
     const label = `<span class="build-label">Build Version:</span>`
     const baseRepoURL = (repoURL || "").replace(/\/+$/, '')
     if (!baseRepoURL) {
-        return `${label}<span class="build-tag">${esc(build)}</span>`
+        return `${label}<span class="build-tag">${escapeHTML(build)}</span>`
     }
 
     // Non-tag local builds are formatted as YYYYMMDD-HHMM-<gitsha>; link those to the commit.
     const commitMatch = build.match(/^\d{8}-\d{4}-([0-9a-f]{7,40})$/i)
     if (commitMatch) {
         const commitURL = `${baseRepoURL}/commit/${commitMatch[1]}`
-        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${esc(build)}</a>`
+        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${escapeHTML(build)}</a>`
     }
 
     const releaseURL = `${baseRepoURL}/releases/tag/${encodeURIComponent(build)}`
-    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${esc(build)}</a>`
+    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${escapeHTML(build)}</a>`
 }
 
+/** Refreshes the full status display: drives, interfaces, counters, build info. */
 async function refresh() {
     if (bootInFlight) return
     let r = await fetch("/status")
@@ -676,23 +694,23 @@ async function refresh() {
         let cls = isOpal ? (isLocked ? "locked" : "unlocked") : "nonopal"
         let icon = isOpal ? (isLocked ? "&#x1F512;" : "&#x1F513;") : "&#x1F4BE;"
         let stateText = isOpal ? (isLocked ? "Locked" : "Unlocked") : "Non-OPAL"
-        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${esc(d.device)} &mdash; ${stateText}</div>`
+        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${escapeHTML(d.device)} &mdash; ${stateText}</div>`
     })
 
     interfaces.forEach(iface => {
         let link = iface.carrier ? "LINK" : "NO-LINK"
         let extra = []
-        if (iface.mac) extra.push(esc(iface.mac))
-        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.map(esc).join(", "))
+        if (iface.mac) extra.push(escapeHTML(iface.mac))
+        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.map(escapeHTML).join(", "))
         if (iface.loopback) extra.push("loopback")
-        ifaceHtml += `<div>${esc(iface.name)} - ${esc(iface.state)} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
+        ifaceHtml += `<div>${escapeHTML(iface.name)} - ${escapeHTML(iface.state)} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
     })
 
     let opalDrives = drives.filter(d => d.opal)
     let opalCount = opalDrives.length
     let lockedCount = opalDrives.filter(d => d.locked).length
     $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
-    let bootSummary = j.bootReady ? esc((j.bootDrives || []).join(", ") || "yes") : "none yet"
+    let bootSummary = j.bootReady ? escapeHTML((j.bootDrives || []).join(", ") || "yes") : "none yet"
     let failedUnlockAttempts = j.failedAttempts || 0
     let maxUnlockAttempts = j.maxAttempts || 0
     let remaining = j.attemptsRemaining || 0
@@ -711,6 +729,7 @@ async function refresh() {
     renderExpertFlashTargets(j)
 }
 
+/** POSTs JSON to the given URL and returns the parsed response. Throws on non-OK. */
 async function postJSON(url, payload, headers) {
     let r = await fetch(url, {
         method: "POST",
@@ -726,10 +745,13 @@ async function postJSON(url, payload, headers) {
     return j
 }
 
-async function postWithFeedback(url) {
+/** POSTs to a URL with the session auth token and no body. */
+async function postAuthenticated(url) {
     return postJSON(url, {}, authHeaders())
 }
 
+/** Sends the unlock password to the API, stores the session token on success,
+ *  then triggers kernel discovery. */
 async function unlock() {
     if ($("unlockBtn").disabled) return
     $("unlockBtn").disabled = true
@@ -771,7 +793,8 @@ async function unlock() {
     }
 }
 
-async function changePw() {
+/** Sends the current/new password and selected drives to the change-password API. */
+async function changePassword() {
     if ($("changeBtn").disabled) return
     let cur = $("cur").value
     let nw = $("new").value
@@ -810,6 +833,7 @@ async function changePw() {
     }
 }
 
+/** Fetches per-drive diagnostics from /diagnostics and renders the raw query output. */
 async function loadDiagnostics() {
     try {
         let r = await fetch("/diagnostics")
@@ -834,6 +858,7 @@ async function loadDiagnostics() {
     }
 }
 
+/** Authenticates with the expert password and unlocks the expert action panels. */
 async function expertLogin() {
     try {
         let j = await postJSON("/expert/auth", {password: $("expertPw").value})
@@ -850,6 +875,7 @@ async function expertLogin() {
     }
 }
 
+/** Checks the server-side expert session state and shows/hides panels accordingly. */
 async function syncExpertState() {
     try {
         let r = await fetch("/expert/status", {headers: expertHeaders()})
@@ -882,12 +908,14 @@ async function syncExpertState() {
     }
 }
 
+/** Appends text to the expert output textarea and scrolls to the bottom. */
 function appendExpertOutput(text) {
     let ta = $("expertOutput")
     ta.value = (ta.value ? ta.value + "\n\n" : "") + text
     ta.scrollTop = ta.scrollHeight
 }
 
+/** Sends a TPer revert command to the expert API for the specified drive. */
 async function expertRevertTper() {
     try {
         let j = await postJSON("/expert/revert-tper", {
@@ -902,6 +930,7 @@ async function expertRevertTper() {
     }
 }
 
+/** Sends a PSID revert (full erase) command to the expert API. */
 async function expertPsidRevert() {
     try {
         let j = await postJSON("/expert/psid-revert", {
@@ -918,6 +947,7 @@ async function expertPsidRevert() {
 
 let flashPoller = null
 
+/** Clears the periodic flash-status polling interval. */
 function stopFlashPolling() {
     if (flashPoller) {
         clearInterval(flashPoller)
@@ -925,6 +955,7 @@ function stopFlashPolling() {
     }
 }
 
+/** Shows or hides the flash progress log area with the given lines. */
 function showFlashLog(lines) {
     let el = $("flashLog")
     if (Array.isArray(lines) && lines.length) {
@@ -937,6 +968,7 @@ function showFlashLog(lines) {
     }
 }
 
+/** Polls /expert/flash-status and updates the flash log and status indicators. */
 async function pollFlashStatus() {
     try {
         let r = await fetch("/expert/flash-status", { method: "GET", headers: expertHeaders() })
@@ -965,6 +997,7 @@ async function pollFlashStatus() {
     }
 }
 
+/** Validates inputs, uploads the PBA image, and starts polling flash progress. */
 async function expertReflashPBA() {
     try {
         let device = $("expDeviceFlash").value.trim()
@@ -1067,6 +1100,7 @@ async function expertReflashPBA() {
     }
 }
 
+/** Called when a PBA image file is selected; checks available RAM sufficiency. */
 async function checkRAMForFile() {
     let imageInput = $("expPbaImage")
     let ramStatus = $("ramCheckStatus")
@@ -1115,6 +1149,7 @@ async function checkRAMForFile() {
 let selectedKernelIndex = -1
 let allKernels = []
 
+/** Starts an async kernel discovery via /boot-list and polls for results. */
 async function discoverKernels() {
     if (bootInFlight) return
     setBootUiBusy(true)
@@ -1146,6 +1181,7 @@ async function discoverKernels() {
     }
 }
 
+/** Polls /boot-status during discovery and renders the kernel selection UI on completion. */
 async function checkDiscoveryStatus() {
     let r = await fetch("/boot-status")
     let j = await r.json()
@@ -1170,23 +1206,25 @@ async function checkDiscoveryStatus() {
     $("bootResult").innerText = "No bootable kernels found."
 }
 
+/** Entry point for boot — initiates kernel discovery. */
 async function boot() {
     if (bootInFlight) return
     discoverKernels()
 }
 
+/** Renders the kernel radio-button list, optionally filtering out recovery entries. */
 function renderKernelList() {
     let hideRecovery = $("hideRecovery").checked
     let html = ""
     let visibleCount = 0
     allKernels.forEach((kernel, realIdx) => {
         if (hideRecovery && kernel.recovery) return
-        let label = kernel.kernelName ? esc(kernel.kernelName) : "Kernel"
+        let label = kernel.kernelName ? escapeHTML(kernel.kernelName) : "Kernel"
         if (kernel.recovery) label = "[Recovery] " + label
         let details = []
-        if (kernel.initrdName) details.push(esc(kernel.initrdName))
-        if (kernel.source) details.push(esc(kernel.source))
-        if (kernel.cmdline) details.push(esc(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline))
+        if (kernel.initrdName) details.push(escapeHTML(kernel.initrdName))
+        if (kernel.source) details.push(escapeHTML(kernel.source))
+        if (kernel.cmdline) details.push(escapeHTML(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline))
         let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
         if (visibleCount === 1) html += '<hr class="kernel-separator">'
         html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
@@ -1202,24 +1240,28 @@ function renderKernelList() {
     }
 }
 
+/** Populates and reveals the kernel selection dialog for the given kernel list. */
 function showKernelSelection(kernels) {
     allKernels = kernels
     renderKernelList()
     $("kernelSelectionDialog").classList.remove("hidden")
 }
 
+/** Hides the kernel selection dialog and clears the boot result text. */
 function cancelKernelSelection() {
     selectedKernelIndex = -1
     $("kernelSelectionDialog").classList.add("hidden")
     $("bootResult").innerText = ""
 }
 
-function proceedWithSelectedKernel() {
+/** Confirms the kernel radio selection and proceeds to boot. */
+function confirmKernelAndBoot() {
     $("kernelSelectionDialog").classList.add("hidden")
-    proceedWithBoot()
+    bootSelectedKernel()
 }
 
-async function proceedWithBoot() {
+/** Sends the selected kernel index to /boot and polls for boot completion. */
+async function bootSelectedKernel() {
     if (bootInFlight) return
     if (selectedKernelIndex < 0) {
         $("bootResult").innerText = "Please select a kernel to boot."
@@ -1258,24 +1300,26 @@ async function proceedWithBoot() {
         $("bootResult").innerText = err.message || "Boot failed"
     }
 }
+/** Requests a PBA system reboot via the API. */
 async function reboot() {
     if (systemActionInFlight || bootInFlight) return
     $("systemActionResult").innerText = "Requesting reboot..."
     setSystemActionBusy("reboot")
     try {
-        let j = await postWithFeedback("/reboot")
+        let j = await postAuthenticated("/reboot")
         $("systemActionResult").innerText = j.status ? `Reboot requested: ${j.status}.` : "Reboot requested."
     } catch (err) {
         $("systemActionResult").innerText = err.message || "Reboot request failed"
         setSystemActionBusy("")
     }
 }
+/** Requests a PBA system shutdown via the API. */
 async function shutdown() {
     if (systemActionInFlight || bootInFlight) return
     $("systemActionResult").innerText = "Requesting shutdown..."
     setSystemActionBusy("shutdown")
     try {
-        let j = await postWithFeedback("/poweroff")
+        let j = await postAuthenticated("/poweroff")
         $("systemActionResult").innerText = j.status ? `Shutdown requested: ${j.status}.` : "Shutdown requested."
     } catch (err) {
         $("systemActionResult").innerText = err.message || "Shutdown request failed"
@@ -1301,7 +1345,7 @@ $("showChange").onchange = e => {
     $(id).addEventListener("keydown", e => {
         if (e.key === "Enter") {
             e.preventDefault()
-            changePw()
+            changePassword()
         }
     })
 })

@@ -113,7 +113,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 3. Build image: `sudo ./build.sh --ssh` (with SSH UI) or `sudo ./build.sh` (web + console only)
    - If expert password not in build.conf/CLI, you will be prompted to enter it
    - Example with custom settings: `sudo ./build.sh --expert-password='PASS' --password-complexity=off`
-4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, see origianl fork for great details
+4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, see original fork for great details
 5. Boot target machine into PBA and unlock drives from:
    - Web UI: `https://<pba-ip>/`
    - SSH UI (optional): `ssh -p 2222 tc@<pba-ip>`
@@ -180,7 +180,7 @@ Notes:
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
 - **Recovery Kernels in Web UI**: Kernel discovery may include normal and recovery boot entries. Recovery kernels are hidden by default in the web flow (`Hide Recovery Kernels` checked). Users can uncheck the option to show them, and recovery entries are labeled with a `[Recovery]` prefix.
-- **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If a new EXpert Mode password is needed, the build must be redone with a new password.
+- **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If a new Expert Mode password is needed, the build must be redone with a new password.
 - **Expert Re-flash PBA**: In the Expert tab you can upload a replacement `.img` file and re-flash PBA on a target drive. You must provide the current drive password, target `/dev/...` path, and type `FLASH` to confirm. The web UI performs preflight checks and rejects files above 128 MiB, matching the project's OPAL2 PBA size guideline. The server also validates that the uploaded image matches the build's expected disk layout: DOS MBR, one bootable `0xEF` partition from the `sfdisk` recipe, and a readable FAT32 boot partition created by `mkfs.fat -F32`. The Expert output panel shows the validation summary so you can see exactly what passed before the flash runs. Use with care: selecting the wrong target can break boot access for that device.
 - **Expert Revert TPer**: This operation attempts to revert the TPer (Trusted Peripheral) to factory state using the current drive password. This is a destructive operation that can invalidate existing unlock configuration and ownership metadata. Use this only when standard unlock paths fail or when you need to completely reset the drive's security configuration. You must provide the target device path, current drive password, and type `REVERT` to confirm. The Expert output panel shows the sedutil output for diagnostic purposes.
 - **Expert PSID Revert**: This is a last-resort factory reset using the Physical Security ID (PSID) printed on the drive's label. This operation **completely erases access to all existing encrypted data** and resets the drive to its original factory state. Only use this when no other recovery method is available and you accept data loss. You must provide the target device path, the PSID value from the drive's label, and type `ERASE` to confirm. The Expert output panel shows the sedutil output.
@@ -322,6 +322,59 @@ The PBA automatically discovers your installed operating system's kernel and ini
 
 Boot discovery uses:
 1. **Filename pattern matching** — for standard kernel names (`vmlinuz*`, `initrd*`, `bzImage`, etc.). The source code contains notes for adding a pattern if you use a non-standard or custom name.
+
+---
+
+## 📂 Source Code Structure
+
+The Go backend (`sedunlocksrv/`) is organized into focused modules:
+
+| File | Purpose |
+|------|------|
+| `main.go` | HTTP server setup, all endpoint handlers, boot logic (kernel discovery, kexec), unlock/password flows, console TUI, session management, PBA image validation |
+| `types.go` | All shared data structures (`StatusResponse`, `DriveStatus`, `BootResult`, `BootKernelInfo`, `PasswordPolicy`, etc.) — doubles as API contract documentation |
+| `drive.go` | OPAL drive detection (`scanDrives`), diagnostics (`collectDriveDiagnostics`), partition enumeration, block device rescanning |
+| `network.go` | Network interface discovery — addresses, carrier state, interface names |
+| `ssh.go` | Dropbear SSH service detection and startup on port 2222 |
+| `util.go` | HTTP helpers (`jsonResponse`, `requireMethod`), `sedutil-cli` wrappers (`runSedutil`, `queryDrive`, `queryField`), file lookup, expert command execution |
+| `cmd/hash-password/main.go` | Standalone CLI tool — hashes a password with bcrypt for `build.conf` or `--expert-password` use |
+
+Supporting files:
+
+| File | Purpose |
+|------|------|
+| `build.sh` | Automated PBA image builder — downloads TinyCore, compiles Go binary, assembles BIOS+UEFI bootable disk image |
+| `ssh/ssh_sed_unlock.sh` | SSH forced-command menu — unlock drives, change passwords, reboot/boot/poweroff from an SSH session |
+| `index.html` | Single-page web UI — Unlock, Password Change, Diagnostics, and Expert tabs with token-gated operations |
+| `tc/tc-config` | TinyCore boot init — network setup (DHCP, static, LACP bond), kernel module loading, service startup |
+| `make-cert.sh` | Generates self-signed TLS certificate and key for the HTTPS server |
+
+## 🌐 API Endpoints
+
+The Go backend exposes the following HTTP endpoints on ports 80 (redirect) and 443 (HTTPS):
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/` | GET | — | Serves the web UI (`index.html`) |
+| `/status` | GET | — | Drive lock status and network info (JSON) |
+| `/diagnostics` | GET | — | Detailed TCG query data for all drives (JSON) |
+| `/password-policy` | GET | — | Current password complexity requirements (JSON) |
+| `/unlock` | POST | — | Submit unlock password for startup-locked drives |
+| `/change-password` | POST | Token | Change Admin1/SID password on selected drives |
+| `/boot-list` | GET | Token | List discovered kernel/initrd boot candidates (JSON) |
+| `/boot` | POST | Token | Load and execute a selected kernel via kexec |
+| `/boot-status` | GET | — | Current boot launch state (JSON) |
+| `/reboot` | POST | — | Immediate hardware reboot (`reboot -nf`) |
+| `/poweroff` | POST | — | Immediate power off (`poweroff -nf`) |
+| `/expert/auth` | POST | — | Authenticate with expert password, receive expert token |
+| `/expert/status` | GET | Expert | Flash operation progress (JSON) |
+| `/expert/revert-tper` | POST | Expert | Factory-reset drive TPer with current password |
+| `/expert/psid-revert` | POST | Expert | PSID factory reset (erases all data) |
+| `/expert/check-ram` | POST | Expert | Verify sufficient RAM for PBA flash upload |
+| `/expert/reflash-pba` | POST | Expert | Upload and flash a replacement PBA image |
+| `/expert/flash-status` | GET | Expert | Detailed flash validation and progress (JSON) |
+
+**Auth legend:** "—" = unauthenticated, "Token" = session token from successful unlock, "Expert" = expert token from `/expert/auth`.
 
 ---
 

@@ -20,12 +20,15 @@ import (
 // HTTP HELPERS
 // ============================================================
 
+// jsonResponse writes a JSON-encoded value with the given HTTP status code.
 func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// requireMethod rejects the request if r.Method does not match method.
+// Returns true (and writes an error response) when the request should be rejected.
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	if r.Method != method {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -38,6 +41,7 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 // 64 KB is generous for any JSON payload this server accepts.
 const maxJSONBodyBytes int64 = 64 * 1024
 
+// limitBody caps the request body to maxJSONBodyBytes to prevent oversized payloads.
 func limitBody(r *http.Request) {
 	r.Body = http.MaxBytesReader(nil, r.Body, maxJSONBodyBytes)
 }
@@ -45,6 +49,8 @@ func limitBody(r *http.Request) {
 // validDevicePath is a strict allowlist for /dev/ device paths.
 var validDevicePath = regexp.MustCompile(`^/dev/[a-zA-Z0-9_-]+$`)
 
+// validateDevicePath returns true if device is a clean /dev/ path matching the
+// strict allowlist (alphanumerics, hyphens, and underscores only).
 func validateDevicePath(device string) bool {
 	cleaned := filepath.Clean(device)
 	return cleaned == device && validDevicePath.MatchString(cleaned)
@@ -80,6 +86,7 @@ func checkOrigin(w http.ResponseWriter, r *http.Request) bool {
 // SEDUTIL HELPERS
 // ============================================================
 
+// runSedutil executes sedutil-cli with the given arguments and a timeout.
 func runSedutil(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -96,6 +103,7 @@ func runSedutil(timeout time.Duration, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// runCommandTimeout runs an arbitrary command with a timeout, returning any error.
 func runCommandTimeout(timeout time.Duration, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -113,6 +121,7 @@ func runCommandTimeout(timeout time.Duration, name string, args ...string) error
 	return nil
 }
 
+// queryDrive runs sedutil-cli --query against a device and returns the raw output.
 func queryDrive(dev string) (string, error) {
 	qctx, qcancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer qcancel()
@@ -120,6 +129,7 @@ func queryDrive(dev string) (string, error) {
 	return string(query), err
 }
 
+// queryField extracts a named field value from sedutil-cli --query output.
 func queryField(query, field string) string {
 	prefix := field + " = "
 	for _, line := range strings.Split(query, "\n") {
@@ -135,6 +145,8 @@ func queryField(query, field string) string {
 // FILE SYSTEM HELPERS
 // ============================================================
 
+// firstExistingPath returns the first path in the list that exists on disk,
+// or an empty string if none exist.
 func firstExistingPath(paths ...string) string {
 	for _, p := range paths {
 		if p == "" {
@@ -147,11 +159,13 @@ func firstExistingPath(paths ...string) string {
 	return ""
 }
 
+// haveRuntimeCommand returns true if cmd is found on the system PATH.
 func haveRuntimeCommand(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
 }
 
+// availableRAMBytes returns the MemAvailable value from /proc/meminfo in bytes.
 func availableRAMBytes() (int64, error) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -175,14 +189,18 @@ func availableRAMBytes() (int64, error) {
 // BOOT DEBUG HELPERS
 // ============================================================
 
+// appendBootDebug adds a normal-level debug line to the in-memory boot log.
 func appendBootDebug(debug *[]string, format string, args ...interface{}) {
 	appendBootDebugAtLevel(debug, debugNormal, format, args...)
 }
 
+// appendBootDebugVerbose adds a verbose-level debug line to the in-memory boot log.
 func appendBootDebugVerbose(debug *[]string, format string, args ...interface{}) {
 	appendBootDebugAtLevel(debug, debugVerbose, format, args...)
 }
 
+// appendBootDebugAtLevel adds a debug line at the specified verbosity level,
+// keeping the in-memory slice and the live boot-status stream in sync.
 func appendBootDebugAtLevel(debug *[]string, level int, format string, args ...interface{}) {
 	// This helper keeps the in-memory debug slice and boot-status stream in sync
 	// while honoring the global build-time debug level.
@@ -192,16 +210,17 @@ func appendBootDebugAtLevel(debug *[]string, level int, format string, args ...i
 	line := fmt.Sprintf(format, args...)
 	*debug = append(*debug, line)
 	if level == debugVerbose {
-		recordBootLaunchDebugVerbose(line)
+		recordBootDebugVerbose(line)
 		return
 	}
-	recordBootLaunchDebug(line)
+	recordBootDebug(line)
 }
 
 // ============================================================
 // COMMAND EXECUTION
 // ============================================================
 
+// runExpertCommand executes a sedutil-cli command and writes the result as JSON.
 func runExpertCommand(w http.ResponseWriter, args ...string) {
 	out, err := runSedutil(45*time.Second, args...)
 	resp := map[string]string{
@@ -259,6 +278,7 @@ func parseProgressPct(line string) (int, bool) {
 	return pct, true
 }
 
+// recordFlashLine appends a progress line to the in-flight PBA flash status.
 func recordFlashLine(line string) {
 	flashMu.Lock()
 	defer flashMu.Unlock()
@@ -267,6 +287,9 @@ func recordFlashLine(line string) {
 	}
 }
 
+// runExpertPBAFlashBytes writes the PBA image to a temp file, then invokes
+// sedutil-cli --loadpbaimage in the background, streaming progress into
+// the flash status log.
 func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []byte, device string, validation []string) {
 	// Write image data to temporary file for sedutil to read
 	tmp, err := os.CreateTemp("", "sedunlocksrv-pba-*.img")
@@ -405,7 +428,10 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 	}()
 }
 
-func makeSystemActionHandler(label string, args ...string) http.HandlerFunc {
+// newSystemActionHandler returns an HTTP handler that responds with a status
+// message and then executes a system command (e.g. reboot, poweroff) after
+// a brief delay so the response can be flushed.
+func newSystemActionHandler(label string, args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			return

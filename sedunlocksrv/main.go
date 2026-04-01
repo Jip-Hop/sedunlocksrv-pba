@@ -48,10 +48,11 @@ import (
 // ============================================================
 // GLOBALS
 // ============================================================
-// kexecReady is closed by BootSystem after kexec -l succeeds, signalling
-// main() to shut down the HTTP server and execute kexec -e.
-// kexecFailed receives the error if kexec -e returns (i.e. fails), so
-// BootSystem can propagate it and main() can restart the HTTP server.
+// kexecReady is closed by bootFirstAvailableKernel/bootWithSelectedKernel
+// after kexec -l succeeds, signalling main() to shut down the HTTP server
+// and execute kexec -e.
+// kexecFailed receives the error if kexec -e returns (i.e. fails), so the
+// boot function can propagate it and main() can restart the HTTP server.
 var (
 	kexecReady  = make(chan struct{})
 	kexecFailed = make(chan error, 1)
@@ -107,6 +108,8 @@ const (
 var settleFactor = parseSettleFactor()
 var debugLevel = parseDebugLevel()
 
+// parseSettleFactor reads the compile-time settleFactorStr and returns the
+// multiplier applied to all hardware settle delays. Falls back to 1.0.
 func parseSettleFactor() float64 {
 	if settleFactorStr != "" {
 		if f, err := strconv.ParseFloat(settleFactorStr, 64); err == nil && f >= 0 {
@@ -121,6 +124,8 @@ func settleDelay(base time.Duration) time.Duration {
 	return time.Duration(math.Round(float64(base) * settleFactor))
 }
 
+// parseDebugLevel reads the compile-time debugLevelStr and returns the
+// verbosity threshold (0=verbose, 1=normal, 2=quiet). Falls back to normal.
 func parseDebugLevel() int {
 	if debugLevelStr != "" {
 		if n, err := strconv.Atoi(debugLevelStr); err == nil && n >= debugVerbose && n <= debugQuiet {
@@ -130,11 +135,14 @@ func parseDebugLevel() int {
 	return debugNormal
 }
 
+// shouldEmitDebug returns true if the given verbosity level should produce output
+// based on the global debugLevel setting.
 func shouldEmitDebug(level int) bool {
 	// Smaller number means more verbosity: 0 logs everything, 2 logs almost nothing.
 	return debugLevel <= level
 }
 
+// dbgPrintf is a level-gated Printf; output is suppressed when level < debugLevel.
 func dbgPrintf(level int, format string, args ...interface{}) {
 	if !shouldEmitDebug(level) {
 		return
@@ -142,6 +150,7 @@ func dbgPrintf(level int, format string, args ...interface{}) {
 	log.Printf(format, args...)
 }
 
+// dbgPrintln is a level-gated Println; output is suppressed when level < debugLevel.
 func dbgPrintln(level int, args ...interface{}) {
 	if !shouldEmitDebug(level) {
 		return
@@ -149,8 +158,12 @@ func dbgPrintln(level int, args ...interface{}) {
 	log.Println(args...)
 }
 
+// filteredHTTPLogWriter suppresses benign TLS/connection errors from the
+// standard HTTP server error log to keep terminal output clean.
 type filteredHTTPLogWriter struct{}
 
+// Write filters out noisy HTTP server errors (TLS handshake failures,
+// broken pipes, etc.) and forwards the rest to the debug logger.
 func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
 	msg := strings.TrimSpace(string(p))
 	if msg == "" {
@@ -176,6 +189,9 @@ func (filteredHTTPLogWriter) Write(p []byte) (int, error) {
 // PASSWORD POLICY
 // ============================================================
 
+// loadPolicy reads password complexity rules from environment variables
+// (PASSWORD_COMPLEXITY_ON, MIN_PASSWORD_LENGTH, REQUIRE_UPPER, etc.).
+// Returns a PasswordPolicy with defaults when variables are unset.
 func loadPolicy() PasswordPolicy {
 	getBool := func(k string, def bool) bool {
 		v := os.Getenv(k)
@@ -215,6 +231,8 @@ func loadPolicy() PasswordPolicy {
 	}
 }
 
+// loadExpertPasswordHash reads the bcrypt hash for expert-mode authentication
+// from the EXPERT_PASSWORD_HASH environment variable.
 func loadExpertPasswordHash() string {
 	return strings.TrimSpace(os.Getenv("EXPERT_PASSWORD_HASH"))
 }
@@ -253,7 +271,10 @@ func validatePassword(password string) error {
 	return nil
 }
 
-func initializeBootState() {
+// recordStartupLockedDrives snapshots which OPAL drives are locked at PBA
+// startup. This snapshot is used later to identify boot candidates — only
+// drives that were locked at startup and have since been unlocked are eligible.
+func recordStartupLockedDrives() {
 	drives := scanDrives()
 	locked := make(map[string]struct{})
 	for _, d := range drives {
@@ -266,7 +287,9 @@ func initializeBootState() {
 	bootStateMu.Unlock()
 }
 
-func currentBootLaunchStatus() BootLaunchStatus {
+// getBootLaunchStatus returns a deep-copy snapshot of the current boot launch
+// state, safe for concurrent reads by HTTP handlers polling /boot-status.
+func getBootLaunchStatus() BootLaunchStatus {
 	bootStateMu.RLock()
 	defer bootStateMu.RUnlock()
 	status := bootLaunchState
@@ -289,29 +312,37 @@ func currentBootLaunchStatus() BootLaunchStatus {
 	return status
 }
 
-func resetBootLaunchStateLocked() {
+// resetBootStateLocked zeroes the global boot launch state.
+// Must be called with bootStateMu held.
+func resetBootStateLocked() {
 	bootLaunchState = BootLaunchStatus{}
 }
 
-func beginBootLaunch() error {
+// acquireBootLock marks a boot or discovery operation as in-progress.
+// Returns an error if one is already running (auto-resets after 2 minutes).
+// Must be called before launching any async boot/discovery goroutine.
+func acquireBootLock() error {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	if bootLaunchState.InProgress {
 		// Auto-reset if the previous boot has been stuck for over 2 minutes
 		if time.Since(bootLaunchState.StartedAt) > 2*time.Minute {
 			dbgPrintf(debugNormal, "Auto-resetting stale boot-in-progress state (started %s ago)", time.Since(bootLaunchState.StartedAt).Round(time.Second))
-			resetBootLaunchStateLocked()
+			resetBootStateLocked()
 		} else {
 			return fmt.Errorf("boot is already in progress")
 		}
 	}
-	resetBootLaunchStateLocked()
+	resetBootStateLocked()
 	bootLaunchState.InProgress = true
 	bootLaunchState.StartedAt = time.Now()
 	return nil
 }
 
-func finishBootLaunch(result *BootResult, err error) {
+// completeBootLaunch records the outcome of a boot attempt into the global
+// boot state. On success, stores a deep copy of the result; on failure,
+// captures the error message and any debug lines for the UI to display.
+func completeBootLaunch(result *BootResult, err error) {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	bootLaunchState.InProgress = false
@@ -342,18 +373,23 @@ func finishBootLaunch(result *BootResult, err error) {
 	}
 }
 
-func startDiscoveryLaunch() error {
-	if err := beginBootLaunch(); err != nil {
+// startKernelDiscovery kicks off an async scan of unlocked drives to enumerate
+// all available kernels. Results are stored in bootLaunchState and retrieved
+// via getCachedKernels. The UI polls /boot-status for progress.
+func startKernelDiscovery() error {
+	if err := acquireBootLock(); err != nil {
 		return err
 	}
 	go func() {
-		kernels, debug, err := listAvailableBootKernelsWithDebug()
-		finishDiscovery(kernels, debug, err)
+		kernels, debug, err := discoverBootKernels()
+		completeKernelDiscovery(kernels, debug, err)
 	}()
 	return nil
 }
 
-func finishDiscovery(kernels []BootKernelInfo, debug []string, err error) {
+// completeKernelDiscovery finalizes an async kernel discovery operation,
+// storing the discovered kernels or the error into the global boot state.
+func completeKernelDiscovery(kernels []BootKernelInfo, debug []string, err error) {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	bootLaunchState.InProgress = false
@@ -368,7 +404,9 @@ func finishDiscovery(kernels []BootKernelInfo, debug []string, err error) {
 	bootLaunchState.Kernels = kernels
 }
 
-func getDiscoveredKernels() []BootKernelInfo {
+// getCachedKernels returns the kernel list from a previously completed
+// discovery. Returns nil if discovery hasn't run or found nothing.
+func getCachedKernels() []BootKernelInfo {
 	bootStateMu.RLock()
 	defer bootStateMu.RUnlock()
 	if !bootLaunchState.DiscoveryDone || len(bootLaunchState.Kernels) == 0 {
@@ -379,47 +417,56 @@ func getDiscoveredKernels() []BootKernelInfo {
 	return out
 }
 
-func startBootLaunchWithKernel(kernelIndex int) error {
+// startBootWithKernel begins an async boot using the kernel at kernelIndex.
+// If a prior discovery cached kernels, it reuses them; otherwise it runs
+// a full discovery-then-boot sequence.
+func startBootWithKernel(kernelIndex int) error {
 	// Use previously discovered kernels if available
-	cached := getDiscoveredKernels()
+	cached := getCachedKernels()
 	if cached != nil {
-		if err := beginBootLaunch(); err != nil {
+		if err := acquireBootLock(); err != nil {
 			return err
 		}
 		go func() {
 			result, err := bootWithSelectedKernel(cached, kernelIndex)
-			finishBootLaunch(result, err)
+			completeBootLaunch(result, err)
 		}()
 		return nil
 	}
 	// Fallback: no cached discovery, run full discovery + boot
-	if err := beginBootLaunch(); err != nil {
+	if err := acquireBootLock(); err != nil {
 		return err
 	}
 	go func() {
-		result, err := BootSystemWithKernel(kernelIndex)
-		finishBootLaunch(result, err)
+		result, err := discoverAndBootKernel(kernelIndex)
+		completeBootLaunch(result, err)
 	}()
 	return nil
 }
 
-func recordBootLaunchDebug(line string) {
+// recordBootDebug appends a normal-level debug line to the live boot-status
+// stream if debug output is enabled at the normal level.
+func recordBootDebug(line string) {
 	// Level 1: user-facing progress and actionable diagnostics.
 	if !shouldEmitDebug(debugNormal) {
 		return
 	}
-	recordBootLaunchDebugStamped(line)
+	recordBootDebugStamped(line)
 }
 
-func recordBootLaunchDebugVerbose(line string) {
+// recordBootDebugVerbose appends a verbose-level debug line to the live
+// boot-status stream. Only emitted when debugLevel is 0 (full trace).
+func recordBootDebugVerbose(line string) {
 	// Level 0: deep internals useful when tracing parser/device behavior.
 	if !shouldEmitDebug(debugVerbose) {
 		return
 	}
-	recordBootLaunchDebugStamped(line)
+	recordBootDebugStamped(line)
 }
 
-func recordBootLaunchDebugStamped(line string) {
+// recordBootDebugStamped writes a timestamped line into the bootLaunchState
+// debug log. No-op if no boot/discovery operation is in progress.
+func recordBootDebugStamped(line string) {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	if !bootLaunchState.InProgress {
@@ -429,7 +476,9 @@ func recordBootLaunchDebugStamped(line string) {
 	bootLaunchState.Debug = append(bootLaunchState.Debug, stamped)
 }
 
-func startupLockedSet() map[string]struct{} {
+// getStartupLockedDevices returns a copy of the set of OPAL devices that
+// were locked when the PBA started. Used to determine boot eligibility.
+func getStartupLockedDevices() map[string]struct{} {
 	bootStateMu.RLock()
 	defer bootStateMu.RUnlock()
 	out := make(map[string]struct{}, len(startupLockedOpal))
@@ -439,8 +488,10 @@ func startupLockedSet() map[string]struct{} {
 	return out
 }
 
-func bootCandidateDrives(drives []DriveStatus) []string {
-	startupLocked := startupLockedSet()
+// getBootCandidates returns the sorted list of OPAL drives that were locked
+// at startup and are now unlocked — i.e., drives eligible for kernel boot.
+func getBootCandidates(drives []DriveStatus) []string {
+	startupLocked := getStartupLockedDevices()
 	candidates := make([]string, 0)
 	for _, d := range drives {
 		if !d.Opal || d.Locked {
@@ -454,14 +505,16 @@ func bootCandidateDrives(drives []DriveStatus) []string {
 	return candidates
 }
 
-func currentStatus() StatusResponse {
+// buildStatusResponse assembles the full system status (drives, network,
+// unlock attempts, boot readiness) for the /status API endpoint.
+func buildStatusResponse() StatusResponse {
 	drives := scanDrives()
-	failed, max, remaining := unlockAttemptStatus()
+	failed, max, remaining := getUnlockAttemptCounts()
 	return StatusResponse{
 		Drives:            drives,
 		Interfaces:        scanNetworkInterfaces(),
-		BootReady:         len(bootCandidateDrives(drives)) > 0,
-		BootDrives:        bootCandidateDrives(drives),
+		BootReady:         len(getBootCandidates(drives)) > 0,
+		BootDrives:        getBootCandidates(drives),
 		FailedAttempts:    failed,
 		MaxAttempts:       max,
 		AttemptsRemaining: remaining,
@@ -470,7 +523,9 @@ func currentStatus() StatusResponse {
 	}
 }
 
-func unlockAttemptStatus() (failed, max, remaining int) {
+// getUnlockAttemptCounts returns the current failed attempt count, the
+// configured maximum, and how many attempts remain before lockout.
+func getUnlockAttemptCounts() (failed, max, remaining int) {
 	mu.Lock()
 	defer mu.Unlock()
 	remaining = maxAttempts - failedAttempts
@@ -484,6 +539,8 @@ func unlockAttemptStatus() (failed, max, remaining int) {
 // SESSION TOKEN
 // ============================================================
 
+// mintSessionToken generates a new cryptographically random session token
+// and stores it as the active API session token. Returns the hex-encoded token.
 func mintSessionToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -496,6 +553,8 @@ func mintSessionToken() (string, error) {
 	return token, nil
 }
 
+// mintExpertToken generates a new cryptographically random token for
+// expert-mode operations and stores it as the active expert session token.
 func mintExpertToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -508,6 +567,8 @@ func mintExpertToken() (string, error) {
 	return token, nil
 }
 
+// validSessionToken returns true if the given token matches the current
+// active API session token (issued after a successful unlock).
 func validSessionToken(token string) bool {
 	if token == "" {
 		return false
@@ -517,6 +578,8 @@ func validSessionToken(token string) bool {
 	return apiSessionToken != "" && token == apiSessionToken
 }
 
+// requireSessionToken is an HTTP middleware guard. Returns true (and writes
+// a 403 response) if the request lacks a valid X-Auth-Token header.
 func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 	if !validSessionToken(r.Header.Get("X-Auth-Token")) {
 		jsonResponse(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
@@ -525,18 +588,25 @@ func requireSessionToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func anyUnlockedDrive() bool {
-	return len(bootCandidateDrives(scanDrives())) > 0
+// hasUnlockedBootDrive returns true if at least one OPAL drive that was
+// locked at startup is now unlocked and eligible for booting.
+func hasUnlockedBootDrive() bool {
+	return len(getBootCandidates(scanDrives())) > 0
 }
 
+// requireSessionTokenOrUnlockedDrive is an HTTP middleware guard. Returns
+// true (and writes a 403) if the request has neither a valid session token
+// nor an unlocked boot drive (the latter allows SSH-based boot requests).
 func requireSessionTokenOrUnlockedDrive(w http.ResponseWriter, r *http.Request) bool {
-	if validSessionToken(r.Header.Get("X-Auth-Token")) || anyUnlockedDrive() {
+	if validSessionToken(r.Header.Get("X-Auth-Token")) || hasUnlockedBootDrive() {
 		return false
 	}
 	jsonResponse(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
 	return true
 }
 
+// validExpertToken returns true if the given token matches the current
+// active expert session token (issued after expert password authentication).
 func validExpertToken(token string) bool {
 	if token == "" {
 		return false
@@ -546,6 +616,8 @@ func validExpertToken(token string) bool {
 	return expertSessionTok != "" && token == expertSessionTok
 }
 
+// requireExpertToken is an HTTP middleware guard. Returns true (and writes
+// a 403 response) if the request lacks a valid X-Expert-Token header.
 func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
 	if !validExpertToken(r.Header.Get("X-Expert-Token")) {
 		jsonResponse(w, http.StatusForbidden, map[string]string{"error": "expert authentication required"})
@@ -554,6 +626,8 @@ func requireExpertToken(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// isOpal2Drive checks whether a device path corresponds to a detected
+// OPAL-capable drive by scanning the current drive list.
 func isOpal2Drive(device string) bool {
 	for _, d := range scanDrives() {
 		if d.Device == device {
@@ -563,7 +637,9 @@ func isOpal2Drive(device string) bool {
 	return false
 }
 
-func anySuccessfulUnlock(results []UnlockResult) bool {
+// hasSuccessfulUnlock returns true if at least one drive in the results
+// was successfully unlocked.
+func hasSuccessfulUnlock(results []UnlockResult) bool {
 	for _, r := range results {
 		if r.Success {
 			return true
@@ -576,6 +652,8 @@ func anySuccessfulUnlock(results []UnlockResult) bool {
 // CONSOLE HELPERS
 // ============================================================
 
+// printConsoleStatus renders drive statuses, unlock attempt counters, and
+// network interface details to stdout for the physical console TUI.
 func printConsoleStatus(status StatusResponse) {
 	if len(status.Drives) == 0 {
 		fmt.Println("No OPAL drives detected.")
@@ -621,7 +699,11 @@ func printConsoleStatus(status StatusResponse) {
 // UNLOCK
 // ============================================================
 
-func attemptUnlock(password string) ([]UnlockResult, error) {
+// unlockDrivesWithPassword iterates all locked OPAL drives and attempts to
+// unlock each using the provided password via sedutil-cli. On success, it
+// re-reads partition tables and resets the attempt counter. On all-failed,
+// it increments the counter and powers off the machine at max attempts.
+func unlockDrivesWithPassword(password string) ([]UnlockResult, error) {
 	if strings.TrimSpace(password) == "" {
 		return nil, fmt.Errorf("password cannot be blank")
 	}
@@ -684,6 +766,8 @@ func attemptUnlock(password string) ([]UnlockResult, error) {
 // PASSWORD CHANGE
 // ============================================================
 
+// passwordPolicySummary returns a human-readable summary of the active
+// password complexity policy, e.g. "min 12 chars, uppercase, lowercase".
 func passwordPolicySummary() string {
 	// If all complexity requirements are disabled, return a simple message
 	if passwordPolicy.MinLength == 0 &&
@@ -717,8 +801,11 @@ func passwordPolicySummary() string {
 	return strings.Join(parts, ", ")
 }
 
+// eligiblePasswordChangeTargets returns the OPAL drives whose password can
+// be changed. Prefers drives that were locked at startup (boot drives);
+// falls back to any unlocked OPAL drive if none match.
 func eligiblePasswordChangeTargets(drives []DriveStatus) []DriveStatus {
-	startupLocked := startupLockedSet()
+	startupLocked := getStartupLockedDevices()
 	targets := make([]DriveStatus, 0)
 	for _, d := range drives {
 		if !d.Opal || d.Locked {
@@ -739,6 +826,8 @@ func eligiblePasswordChangeTargets(drives []DriveStatus) []DriveStatus {
 	return targets
 }
 
+// selectPasswordChangeTargets validates the user-selected device list against
+// eligible targets and returns the matching DriveStatus entries.
 func selectPasswordChangeTargets(selected []string) ([]DriveStatus, error) {
 	eligible := eligiblePasswordChangeTargets(scanDrives())
 	if len(eligible) == 0 {
@@ -777,6 +866,8 @@ func selectPasswordChangeTargets(selected []string) ([]DriveStatus, error) {
 	return targets, nil
 }
 
+// trimSedutilOutput cleans sedutil-cli output for inclusion in error messages:
+// trims whitespace, collapses internal runs, and truncates at 220 chars.
 func trimSedutilOutput(out string) string {
 	out = strings.TrimSpace(out)
 	if out == "" {
@@ -789,6 +880,9 @@ func trimSedutilOutput(out string) string {
 	return out
 }
 
+// changePassword updates the Admin1 and SID passwords on the selected OPAL
+// drives using sedutil-cli. Returns per-device results indicating which
+// password components succeeded or failed.
 func changePassword(current, newPw string, selected []string) ([]PasswordChangeResult, error) {
 	current = strings.TrimSpace(current)
 	newPw = strings.TrimSpace(newPw)
@@ -853,6 +947,8 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 // BOOT
 // ============================================================
 
+// availableRescanTools returns the names of partition-table rescan tools
+// present in the PBA environment (always includes ioctl BLKRRPART).
 func availableRescanTools() []string {
 	tools := []string{"ioctl(BLKRRPART)"}
 	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
@@ -863,6 +959,8 @@ func availableRescanTools() []string {
 	return tools
 }
 
+// availableLVMTools returns the names of LVM-related commands present
+// in the PBA environment (blkid, pvscan, vgscan, vgchange).
 func availableLVMTools() []string {
 	tools := make([]string, 0, 4)
 	for _, name := range []string{"blkid", "pvscan", "vgscan", "vgchange"} {
@@ -873,6 +971,8 @@ func availableLVMTools() []string {
 	return tools
 }
 
+// trimForDebug trims whitespace and truncates a string to max characters
+// for inclusion in compact debug log lines.
 func trimForDebug(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -884,6 +984,8 @@ func trimForDebug(s string, max int) string {
 	return s
 }
 
+// runCommandWithOutputTimeout executes a command with a timeout and returns
+// its combined stdout/stderr output and any error.
 func runCommandWithOutputTimeout(timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -905,18 +1007,22 @@ func runCommandWithOutputTimeout(timeout time.Duration, name string, args ...str
 	return extra, nil
 }
 
+// runLVMStep executes a single LVM command (e.g. pvscan, vgscan) and logs
+// verbose debug output. Failures are logged but do not halt the boot flow.
 func runLVMStep(timeout time.Duration, name string, args ...string) {
-	recordBootLaunchDebugVerbose(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
+	recordBootDebugVerbose(fmt.Sprintf("Running %s %s...", name, strings.Join(args, " ")))
 	out, err := runCommandWithOutputTimeout(timeout, name, args...)
 	if err != nil {
-		recordBootLaunchDebugVerbose(fmt.Sprintf("%s %s failed: %v", name, strings.Join(args, " "), err))
+		recordBootDebugVerbose(fmt.Sprintf("%s %s failed: %v", name, strings.Join(args, " "), err))
 		return
 	}
 	if trimmed := trimForDebug(out, 600); trimmed != "" {
-		recordBootLaunchDebugVerbose(fmt.Sprintf("%s %s output: %s", name, strings.Join(args, " "), trimmed))
+		recordBootDebugVerbose(fmt.Sprintf("%s %s output: %s", name, strings.Join(args, " "), trimmed))
 	}
 }
 
+// activateLVM runs the LVM scan/activate sequence (pvscan, vgscan, vgchange)
+// to make logical volumes visible under /dev/mapper/ after unlocking drives.
 func activateLVM() {
 	if haveRuntimeCommand("pvscan") {
 		runLVMStep(10*time.Second, "pvscan", "--cache")
@@ -937,6 +1043,8 @@ func activateLVM() {
 	}
 }
 
+// listLogicalVolumes returns all device-mapper paths under /dev/mapper/
+// except the "control" node. Used to find LVM volumes after activation.
 func listLogicalVolumes() []string {
 	matches, _ := filepath.Glob("/dev/mapper/*")
 	lvs := make([]string, 0, len(matches))
@@ -950,6 +1058,9 @@ func listLogicalVolumes() []string {
 	return lvs
 }
 
+// listAllBlockPartitions enumerates every partition visible in
+// /sys/class/block/ (those with a "partition" sysfs file) and returns
+// their /dev/ paths.
 func listAllBlockPartitions() ([]string, error) {
 	entries, err := os.ReadDir("/sys/class/block")
 	if err != nil {
@@ -968,6 +1079,8 @@ func listAllBlockPartitions() ([]string, error) {
 	return partitions, nil
 }
 
+// listMDDevices returns /dev/mdN paths for any Linux software RAID arrays
+// visible in /sys/class/block/.
 func listMDDevices() ([]string, error) {
 	entries, err := os.ReadDir("/sys/class/block")
 	if err != nil {
@@ -989,6 +1102,8 @@ func listMDDevices() ([]string, error) {
 	return devices, nil
 }
 
+// likelyLVMPhysicalVolume reads the first 4 KB of a block device and
+// returns true if it contains LVM2 signature bytes ("LABELONE" + "LVM2").
 func likelyLVMPhysicalVolume(device string) bool {
 	f, err := os.Open(device)
 	if err != nil {
@@ -1005,6 +1120,8 @@ func likelyLVMPhysicalVolume(device string) bool {
 	return bytes.Contains(buf, []byte("LABELONE")) && bytes.Contains(buf, []byte("LVM2"))
 }
 
+// probeBlockType determines the filesystem or volume type of a block device.
+// Uses blkid if available; falls back to raw LVM signature detection.
 func probeBlockType(device string) string {
 	if haveRuntimeCommand("blkid") {
 		if out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", device).Output(); err == nil {
@@ -1019,7 +1136,10 @@ func probeBlockType(device string) string {
 	return "unknown"
 }
 
-func buildBootSearchDevices(bootDrives []string) ([]string, error) {
+// collectBootSearchDevices builds the ordered list of block devices to
+// try mounting when searching for kernels. Includes partitions on boot
+// drives, LVM logical volumes, MD RAID devices, and all remaining partitions.
+func collectBootSearchDevices(bootDrives []string) ([]string, error) {
 	devices := make([]string, 0)
 	seen := make(map[string]struct{})
 	add := func(path string) {
@@ -1177,6 +1297,8 @@ func collectBootFiles(mountPoint string) ([]string, []string, []string, []string
 	return loaderEntries, grubConfigs, kernels, initrds
 }
 
+// trimMountPrefix strips the mount point from an absolute path to produce
+// a relative path for display in debug logs.
 func trimMountPrefix(mountPoint, path string) string {
 	if rel, err := filepath.Rel(mountPoint, path); err == nil && rel != "." {
 		return filepath.ToSlash(rel)
@@ -1184,6 +1306,8 @@ func trimMountPrefix(mountPoint, path string) string {
 	return filepath.Base(path)
 }
 
+// snapshotMountFiles returns up to limit file/directory paths visible
+// under a mount point, used for debug logging when no boot artifacts are found.
 func snapshotMountFiles(mountPoint string, limit int) []string {
 	files := make([]string, 0, limit)
 	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
@@ -1203,6 +1327,9 @@ func snapshotMountFiles(mountPoint string, limit int) []string {
 	return files
 }
 
+// resolveBootPath converts a boot config reference (e.g. "/boot/vmlinuz-6.8")
+// into an absolute filesystem path under mountPoint. Returns "" if the file
+// doesn't exist. Strips GRUB device prefixes like "(hd0,1)".
 func resolveBootPath(mountPoint, ref string) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -1227,6 +1354,7 @@ func resolveBootPath(mountPoint, ref string) string {
 	return ""
 }
 
+// splitKernelLine parses a GRUB "linux" directive into (path, cmdline, ok).
 func splitKernelLine(line string) (string, string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) < 2 {
@@ -1238,6 +1366,7 @@ func splitKernelLine(line string) (string, string, bool) {
 	return fields[1], strings.Join(fields[2:], " "), true
 }
 
+// splitInitrdLine parses a GRUB "initrd" directive into a list of initrd paths.
 func splitInitrdLine(line string) []string {
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) < 2 {
@@ -1246,6 +1375,8 @@ func splitInitrdLine(line string) []string {
 	return fields[1:]
 }
 
+// kernelVersionSuffix extracts the version suffix from a kernel filename
+// (e.g. "vmlinuz-6.8.12-9-pve" → "6.8.12-9-pve").
 func kernelVersionSuffix(base string) string {
 	switch {
 	case strings.HasPrefix(base, "vmlinuz-"):
@@ -1257,11 +1388,15 @@ func kernelVersionSuffix(base string) string {
 	}
 }
 
+// isMemtestKernelBase returns true if the filename looks like a memtest binary,
+// which should be excluded from boot kernel candidates.
 func isMemtestKernelBase(base string) bool {
 	base = strings.ToLower(strings.TrimSpace(base))
 	return strings.Contains(base, "memtest")
 }
 
+// initrdVersionSuffix extracts the version suffix from an initrd filename
+// (e.g. "initrd.img-6.8.12-9-pve" → "6.8.12-9-pve").
 func initrdVersionSuffix(base string) string {
 	switch {
 	case strings.HasPrefix(base, "initrd.img-"):
@@ -1277,6 +1412,8 @@ func initrdVersionSuffix(base string) string {
 	}
 }
 
+// makeBootEntry constructs a BootEntry with pre-parsed base names and
+// version suffixes for efficient matching against discovered files.
 func makeBootEntry(kernelRef string, initrdRefs []string, cmdline, source string) BootEntry {
 	kernelRef = strings.TrimSpace(kernelRef)
 	kernelBase := filepath.Base(kernelRef)
@@ -1296,6 +1433,8 @@ func makeBootEntry(kernelRef string, initrdRefs []string, cmdline, source string
 	return entry
 }
 
+// parseLoaderEntryCatalog parses systemd-boot style loader entry .conf files
+// into BootEntry structs, extracting kernel, initrd, and options directives.
 func parseLoaderEntryCatalog(files []string) []BootEntry {
 	entries := make([]BootEntry, 0)
 	sort.Strings(files)
@@ -1335,6 +1474,7 @@ func parseLoaderEntryCatalog(files []string) []BootEntry {
 	return entries
 }
 
+// trimGrubValue strips surrounding whitespace and quotes from a GRUB config value.
 func trimGrubValue(raw string) string {
 	raw = strings.TrimSpace(raw)
 	raw = strings.Trim(raw, `"'`)
@@ -1351,6 +1491,8 @@ func hasGrubPrefix(line, keyword string) bool {
 	return len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t')
 }
 
+// expandGrubVars performs up to 4 rounds of GRUB variable substitution
+// (both ${var} and $var forms) on a string.
 func expandGrubVars(s string, vars map[string]string) string {
 	out := s
 	for i := 0; i < 4; i++ {
@@ -1367,6 +1509,8 @@ func expandGrubVars(s string, vars map[string]string) string {
 	return out
 }
 
+// resolveGrubConfigRef resolves a GRUB "configfile" reference (with variable
+// expansion) to an absolute path under mountPoint. Returns "" if not found.
 func resolveGrubConfigRef(mountPoint, ref string, vars map[string]string) string {
 	ref = expandGrubVars(trimGrubValue(ref), vars)
 	if ref == "" {
@@ -1390,6 +1534,9 @@ func resolveGrubConfigRef(mountPoint, ref string, vars map[string]string) string
 	return ""
 }
 
+// grubConfigChain follows the GRUB "configfile" chain starting from grubPath,
+// resolving each target within mountPoint. Returns all reachable config files
+// in traversal order (cycle-safe via visited set).
 func grubConfigChain(grubPath, mountPoint string) []string {
 	visited := make(map[string]struct{})
 	var out []string
@@ -1441,6 +1588,8 @@ func grubConfigChain(grubPath, mountPoint string) []string {
 	return out
 }
 
+// parseGrubConfigCatalog parses a grub.cfg (and any chained configs) into
+// BootEntry structs representing all linux/initrd menuentry pairs.
 func parseGrubConfigCatalog(grubPath, mountPoint string) []BootEntry {
 	var entries []BootEntry
 	for _, path := range grubConfigChain(grubPath, mountPoint) {
@@ -1449,6 +1598,8 @@ func parseGrubConfigCatalog(grubPath, mountPoint string) []BootEntry {
 	return entries
 }
 
+// parseSingleGrubConfigCatalog parses one grub.cfg file into BootEntry structs.
+// Handles line continuations, GRUB variable expansion, and memtest filtering.
 func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
@@ -1493,6 +1644,8 @@ func parseSingleGrubConfigCatalog(grubPath string) []BootEntry {
 	return entries
 }
 
+// collectBootCatalog gathers all BootEntry structs from loader entry files
+// and GRUB configs found under the given mount point.
 func collectBootCatalog(mountPoint string) []BootEntry {
 	loaderEntries, grubConfigs, _, _ := collectBootFiles(mountPoint)
 	entries := parseLoaderEntryCatalog(loaderEntries)
@@ -1502,6 +1655,9 @@ func collectBootCatalog(mountPoint string) []BootEntry {
 	return entries
 }
 
+// matchBootEntryCmdline searches boot catalog entries for one whose kernel
+// and initrd match the given files, and returns its cmdline. Tries exact
+// basename match first, then kernel-only, then version-suffix matches.
 func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, string, bool) {
 	kernelBase := filepath.Base(kernel)
 	initrdBase := filepath.Base(initrd)
@@ -1558,6 +1714,9 @@ func matchBootEntryCmdline(entries []BootEntry, kernel, initrd string) (string, 
 	return "", "", false
 }
 
+// looksWeakCmdline returns true if the kernel command line lacks meaningful
+// boot parameters (such as root=, resume=, or cryptdevice=). Weak cmdlines
+// are kept as fallbacks while the search continues for a stronger candidate.
 func looksWeakCmdline(cmdline string) bool {
 	fields := strings.Fields(strings.TrimSpace(cmdline))
 	if len(fields) == 0 {
@@ -1660,6 +1819,8 @@ func isValidCmdlineForDevice(cmdline, device string) bool {
 	return true
 }
 
+// summarizeBootEntry formats a BootEntry as a compact one-line string
+// for debug log output.
 func summarizeBootEntry(entry BootEntry) string {
 	initrds := strings.Join(entry.InitrdBases, "|")
 	if initrds == "" {
@@ -1672,6 +1833,8 @@ func summarizeBootEntry(entry BootEntry) string {
 	return fmt.Sprintf("kernel=%s initrd=%s source=%s cmdline=%s", entry.KernelBase, initrds, trimMountPrefix("/mnt/proxmox", entry.Source), cmdline)
 }
 
+// looksLikeRootFilesystem returns true if the mount point contains /etc,
+// /usr, and /var directories, suggesting it is a root filesystem.
 func looksLikeRootFilesystem(mountPoint string) bool {
 	required := []string{"etc", "usr", "var"}
 	for _, name := range required {
@@ -1706,6 +1869,9 @@ func readOSRelease(mountPoint string) (string, string) {
 	return id, prettyName
 }
 
+// synthesizeRootCmdline constructs a kernel cmdline by prepending root=device
+// and ro to any existing flags. Used as a last resort when no boot config
+// provides a real cmdline but the mount device is a root filesystem.
 func synthesizeRootCmdline(device, existing string) (string, bool) {
 	device = strings.TrimSpace(device)
 	if device == "" {
@@ -1724,6 +1890,9 @@ func synthesizeRootCmdline(device, existing string) (string, bool) {
 	return strings.Join(out, " "), true
 }
 
+// findBootFromLoaderEntryFiles searches systemd-boot loader entry files
+// (newest first) for a kernel+initrd pair that exists on the filesystem.
+// Returns the resolved kernel path, initrd path, cmdline, and whether found.
 func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, string, string, bool) {
 	if len(files) == 0 {
 		return "", "", "", false
@@ -1765,6 +1934,8 @@ func findBootFromLoaderEntryFiles(mountPoint string, files []string) (string, st
 	return "", "", "", false
 }
 
+// findBootFromGrubConfig walks the GRUB configfile chain starting at grubPath
+// and returns the first kernel+initrd+cmdline found on the filesystem.
 func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	for _, path := range grubConfigChain(grubPath, mountPoint) {
 		if kernel, initrd, cmdline, ok := findBootFromSingleGrubConfig(path, mountPoint); ok {
@@ -1774,6 +1945,8 @@ func findBootFromGrubConfig(grubPath, mountPoint string) (string, string, string
 	return "", "", "", false
 }
 
+// parseGrubLinesWithContinuation splits GRUB config content into logical
+// lines, joining lines that end with a backslash continuation character.
 func parseGrubLinesWithContinuation(data string) []string {
 	rawLines := strings.Split(data, "\n")
 	var lines []string
@@ -1801,6 +1974,8 @@ func parseGrubLinesWithContinuation(data string) []string {
 	return lines
 }
 
+// parseGrubVars reads "set" directives from a grub.cfg file and returns
+// a map of variable names to expanded values (e.g. prefix, root).
 func parseGrubVars(grubPath string) map[string]string {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
@@ -1831,6 +2006,8 @@ func parseGrubVars(grubPath string) map[string]string {
 	return vars
 }
 
+// findBootFromSingleGrubConfig parses one grub.cfg for the first linux+initrd
+// pair whose files exist on the filesystem, with GRUB variable expansion.
 func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, string, bool) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
@@ -1856,12 +2033,12 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 		rawCmdline := cmdline
 		cmdline = expandGrubVars(cmdline, vars)
 		if rawCmdline != cmdline {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: expanded cmdline %q -> %q", filepath.Base(grubPath), rawCmdline, cmdline))
+			recordBootDebugVerbose(fmt.Sprintf("grub-config %s: expanded cmdline %q -> %q", filepath.Base(grubPath), rawCmdline, cmdline))
 		}
 
 		kernelPath := resolveBootPath(mountPoint, kernelRef)
 		if kernelPath == "" {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: kernel ref %q did not resolve on filesystem", filepath.Base(grubPath), kernelRef))
+			recordBootDebugVerbose(fmt.Sprintf("grub-config %s: kernel ref %q did not resolve on filesystem", filepath.Base(grubPath), kernelRef))
 			continue
 		}
 
@@ -1873,7 +2050,7 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 			if hasGrubPrefix(next, "initrd") || hasGrubPrefix(next, "initrdefi") {
 				for _, initrdRef := range splitInitrdLine(next) {
 					if initrdPath := resolveBootPath(mountPoint, initrdRef); initrdPath != "" {
-						recordBootLaunchDebugVerbose(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
+						recordBootDebugVerbose(fmt.Sprintf("grub-config %s: returning kernel=%s initrd=%s cmdline=%q", filepath.Base(grubPath), filepath.Base(kernelPath), filepath.Base(initrdPath), cmdline))
 						return kernelPath, initrdPath, cmdline, true
 					}
 				}
@@ -1884,6 +2061,8 @@ func findBootFromSingleGrubConfig(grubPath, mountPoint string) (string, string, 
 	return "", "", "", false
 }
 
+// matchKernelInitrdPair finds the best (newest) kernel/initrd pair by matching
+// version suffixes. Returns the first match scanning newest-to-oldest.
 func matchKernelInitrdPair(kernels, initrds []string) (string, string, bool) {
 	initrdBySuffix := make(map[string]string, len(initrds))
 	for _, initrd := range initrds {
@@ -1960,34 +2139,37 @@ func matchAllKernelInitrdPairs(kernels, initrds []string) [][2]string {
 	return pairs
 }
 
+// findBootArtifacts is the primary boot artifact search for a single mount.
+// Tries loader entries, then GRUB configs, then raw kernel/initrd filename
+// matching. Augments weak cmdlines via the findBootCmdline fallback chain.
 func findBootArtifacts(mountPoint, device string) (string, string, string, bool) {
 	loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
 
 	if kernel, initrd, cmdline, ok := findBootFromLoaderEntryFiles(mountPoint, loaderEntries); ok {
-		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: found via loader entries: kernel=%s cmdline=%q", filepath.Base(kernel), cmdline))
+		recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: found via loader entries: kernel=%s cmdline=%q", filepath.Base(kernel), cmdline))
 		// If cmdline looks weak, try to augment it via the full fallback chain
 		if looksWeakCmdline(cmdline) {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: loader entry cmdline is weak, trying findBootCmdline fallback"))
+			recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: loader entry cmdline is weak, trying findBootCmdline fallback"))
 			if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
-				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
+				recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 				cmdline = betterCmdline
 			} else {
-				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
+				recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 			}
 		}
 		return kernel, initrd, cmdline, true
 	}
 	for _, grubPath := range grubConfigs {
 		if kernel, initrd, cmdline, ok := findBootFromGrubConfig(grubPath, mountPoint); ok {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: found via grub config %s: kernel=%s cmdline=%q", trimMountPrefix(mountPoint, grubPath), filepath.Base(kernel), cmdline))
+			recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: found via grub config %s: kernel=%s cmdline=%q", trimMountPrefix(mountPoint, grubPath), filepath.Base(kernel), cmdline))
 			// If cmdline looks weak, try to augment it via the full fallback chain
 			if looksWeakCmdline(cmdline) {
-				recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: grub config cmdline is weak, trying findBootCmdline fallback"))
+				recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: grub config cmdline is weak, trying findBootCmdline fallback"))
 				if betterCmdline, err := findBootCmdline(mountPoint, kernel, device); err == nil {
-					recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
+					recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline returned: %q", betterCmdline))
 					cmdline = betterCmdline
 				} else {
-					recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
+					recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed: %v", err))
 				}
 			}
 			return kernel, initrd, cmdline, true
@@ -1995,19 +2177,19 @@ func findBootArtifacts(mountPoint, device string) (string, string, string, bool)
 	}
 
 	if kernel, initrd, ok := matchKernelInitrdPair(kernels, initrds); ok {
-		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: matched kernel/initrd pair: kernel=%s initrd=%s, searching for cmdline...", filepath.Base(kernel), filepath.Base(initrd)))
+		recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: matched kernel/initrd pair: kernel=%s initrd=%s, searching for cmdline...", filepath.Base(kernel), filepath.Base(initrd)))
 		cmdline, err := findBootCmdline(mountPoint, kernel, device)
 		if err == nil {
 			return kernel, initrd, cmdline, true
 		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed for matched pair: %v", err))
+		recordBootDebugVerbose(fmt.Sprintf("findBootArtifacts: findBootCmdline failed for matched pair: %v", err))
 		return kernel, initrd, "", true
 	}
-	recordBootLaunchDebugVerbose("findBootArtifacts: no boot artifacts found")
+	recordBootDebugVerbose("findBootArtifacts: no boot artifacts found")
 	return "", "", "", false
 }
 
-func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
+// discoverBootKernels scans all unlocked boot candidate drives, mounts each\n// partition/LV/MD device, and collects every available kernel+initrd+cmdline\n// combination. Returns the deduplicated list, debug log lines, and any error.\nfunc discoverBootKernels() ([]BootKernelInfo, []string, error) {
 	debug := make([]string, 0, 64)
 	appendDebug := func(format string, args ...interface{}) {
 		// Discovery progress is considered level-1 logging and is hidden in quiet mode.
@@ -2016,7 +2198,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		}
 		line := fmt.Sprintf(format, args...)
 		debug = append(debug, line)
-		recordBootLaunchDebug(line)
+		recordBootDebug(line)
 	}
 	appendDebugVerbose := func(format string, args ...interface{}) {
 		if !shouldEmitDebug(debugVerbose) {
@@ -2024,7 +2206,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 		}
 		line := fmt.Sprintf(format, args...)
 		debug = append(debug, line)
-		recordBootLaunchDebugVerbose(line)
+		recordBootDebugVerbose(line)
 	}
 
 	// Brief pause to let drive firmware and udev settle after a recent
@@ -2036,7 +2218,7 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	time.Sleep(delay)
 
 	drives := scanDrives()
-	bootCandidates := bootCandidateDrives(drives)
+	bootCandidates := getBootCandidates(drives)
 	appendDebug("Boot candidates: %s", strings.Join(bootCandidates, ", "))
 
 	if len(bootCandidates) == 0 {
@@ -2051,9 +2233,9 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	activateLVM()
 	appendDebug("LVM activation complete.")
 
-	searchDevices, err := buildBootSearchDevices(bootCandidates)
+	searchDevices, err := collectBootSearchDevices(bootCandidates)
 	if err != nil {
-		appendDebug("buildBootSearchDevices failed: %v", err)
+		appendDebug("collectBootSearchDevices failed: %v", err)
 		return nil, debug, err
 	}
 	appendDebugVerbose("Search devices: %s", strings.Join(searchDevices, ", "))
@@ -2200,10 +2382,10 @@ func listAvailableBootKernelsWithDebug() ([]BootKernelInfo, []string, error) {
 	return kernels, debug, nil
 }
 
-// BootSystemWithKernel boots with a specific kernel selected by index.
+// discoverAndBootKernel boots with a specific kernel selected by index.
 // If kernelIndex < 0, uses the first available kernel.
-func BootSystemWithKernel(kernelIndex int) (*BootResult, error) {
-	kernels, _, err := listAvailableBootKernelsWithDebug()
+func discoverAndBootKernel(kernelIndex int) (*BootResult, error) {
+	kernels, _, err := discoverBootKernels()
 	if err != nil {
 		return nil, BootAttemptError{
 			Message: err.Error(),
@@ -2232,7 +2414,7 @@ func bootWithSelectedKernel(kernels []BootKernelInfo, kernelIndex int) (*BootRes
 
 	// Get boot drives setup
 	drives := scanDrives()
-	bootCandidates := bootCandidateDrives(drives)
+	bootCandidates := getBootCandidates(drives)
 	var locked []string
 	for _, d := range drives {
 		if !d.Opal {
@@ -2399,12 +2581,12 @@ func bootWithSelectedKernel(kernels []BootKernelInfo, kernelIndex int) (*BootRes
 	return result, nil
 }
 
-// BootSystem mounts the first unlocked drive's bootable partition, loads the
+// bootFirstAvailableKernel mounts the first unlocked drive's bootable partition, loads the
 // Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
-func BootSystem() (*BootResult, error) {
+func bootFirstAvailableKernel() (*BootResult, error) {
 	drives := scanDrives()
 	debug := make([]string, 0, 32)
-	bootCandidates := bootCandidateDrives(drives)
+	bootCandidates := getBootCandidates(drives)
 	var locked []string
 	for _, d := range drives {
 		if !d.Opal {
@@ -2463,7 +2645,7 @@ func BootSystem() (*BootResult, error) {
 		appendBootDebug(&debug, "Logical volumes detected after activation: %s", strings.Join(lvs, ", "))
 	}
 
-	searchDevices, err := buildBootSearchDevices(bootCandidates)
+	searchDevices, err := collectBootSearchDevices(bootCandidates)
 	if err != nil {
 		return nil, err
 	}
@@ -2553,7 +2735,7 @@ func BootSystem() (*BootResult, error) {
 				FullyUnlocked: fullyUnlocked,
 				Debug:         debug,
 			}
-			finishBootLaunch(result, nil) // Signal success to UI
+			completeBootLaunch(result, nil) // Signal success to UI
 			// Give the web UI time to poll and display the final boot log
 			// before the HTTP server shuts down for kexec.
 			time.Sleep(3 * time.Second)
@@ -2599,6 +2781,8 @@ func extractLinuxCmdline(line string) (string, bool) {
 	return strings.Join(fields[2:], " "), true
 }
 
+// parseQuotedShellValue strips shell quoting (double or single quotes)
+// from a value read from a GRUB defaults file.
 func parseQuotedShellValue(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -2613,6 +2797,8 @@ func parseQuotedShellValue(raw string) string {
 	return raw
 }
 
+// parseDefaultGrubCmdline reads /etc/default/grub from the mounted filesystem
+// and extracts the GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT values.
 func parseDefaultGrubCmdline(mountPoint string) (string, bool, error) {
 	data, err := os.ReadFile(filepath.Join(mountPoint, "etc", "default", "grub"))
 	if err != nil {
@@ -2649,6 +2835,8 @@ func parseDefaultGrubCmdline(mountPoint string) (string, bool, error) {
 	return strings.Join(parts, " "), true, nil
 }
 
+// parseKernelCmdlineFile reads /etc/kernel/cmdline from the mounted filesystem
+// as a fallback source for the target kernel command line.
 func parseKernelCmdlineFile(mountPoint string) (string, bool, error) {
 	data, err := os.ReadFile(filepath.Join(mountPoint, "etc", "kernel", "cmdline"))
 	if err != nil {
@@ -2790,21 +2978,21 @@ func findBootCmdline(mountPoint, kernel, device string) (string, error) {
 	for _, c := range candidates {
 		cmdline, found, err := c.fn()
 		if err != nil || !found || cmdline == "" {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: no result (err=%v)", c.name, err))
+			recordBootDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: no result (err=%v)", c.name, err))
 			continue
 		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: found %q", c.name, cmdline))
+		recordBootDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: found %q", c.name, cmdline))
 		// Skip cmdlines that point to a different device (e.g., sda when we're on nvme0)
 		if !isValidCmdlineForDevice(cmdline, device) {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: rejected by isValidCmdlineForDevice (device=%s)", c.name, device))
+			recordBootDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: rejected by isValidCmdlineForDevice (device=%s)", c.name, device))
 			continue
 		}
 		// If this is strong (has meaningful content), return immediately
 		if !looksWeakCmdline(cmdline) {
-			recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: accepted (strong)", c.name))
+			recordBootDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: accepted (strong)", c.name))
 			return cmdline, nil
 		}
-		recordBootLaunchDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: weak, saving as fallback", c.name))
+		recordBootDebugVerbose(fmt.Sprintf("findBootCmdline[%s]: weak, saving as fallback", c.name))
 		// Otherwise, save it and keep trying for a better one
 		if bestCmdline == "" {
 			bestCmdline = cmdline
@@ -2830,6 +3018,8 @@ func parseGrubCfg(grubPath, mountPoint, kernelBase string) (string, bool, error)
 	return "", false, fmt.Errorf("kernel command line not found in %s", grubPath)
 }
 
+// parseSingleGrubCfg extracts the kernel command line from a single grub.cfg
+// file by scanning for linux/linuxefi directives that match the target kernel.
 func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 	data, err := os.ReadFile(grubPath)
 	if err != nil {
@@ -2849,7 +3039,7 @@ func parseSingleGrubCfg(grubPath, kernelBase string) (string, bool, error) {
 		if cmdline, ok := extractLinuxCmdline(t); ok {
 			rawCmdline := cmdline
 			cmdline = expandGrubVars(cmdline, vars)
-			recordBootLaunchDebugVerbose(fmt.Sprintf("parseSingleGrubCfg(%s): linux line matched, raw=%q expanded=%q", filepath.Base(grubPath), rawCmdline, cmdline))
+			recordBootDebugVerbose(fmt.Sprintf("parseSingleGrubCfg(%s): linux line matched, raw=%q expanded=%q", filepath.Base(grubPath), rawCmdline, cmdline))
 			return cmdline, true, nil
 		}
 	}
@@ -2870,12 +3060,15 @@ const (
 	colorDim    = "\033[38;5;245m"
 )
 
-func consoleInterface() {
+// runConsoleUI is the main loop for the physical console TUI. It displays
+// the standby screen, waits for a keypress, then enters the active menu.
+// Runs in its own goroutine for the duration of the PBA lifecycle.
+func runConsoleUI() {
 	fd := int(os.Stdin.Fd())
 	for {
 		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔒 PBA STANDBY" + colorReset)
-		printConsoleStatus(currentStatus())
+		printConsoleStatus(buildStatusResponse())
 		fmt.Println("\n" + colorDim + "Press any key..." + colorReset)
 
 		old, err := term.MakeRaw(fd)
@@ -2887,15 +3080,18 @@ func consoleInterface() {
 		buf := make([]byte, 1)
 		os.Stdin.Read(buf)
 		term.Restore(fd, old)
-		activeMenu(fd)
+		runActiveConsoleMenu(fd)
 	}
 }
 
-func activeMenu(fd int) {
+// runActiveConsoleMenu presents an interactive menu on the physical console
+// for unlock, boot, password change, reboot, and shutdown operations.
+// Times out back to the standby screen after privacyTimeout.
+func runActiveConsoleMenu(fd int) {
 	for {
 		fmt.Print("\033[H\033[2J")
 		fmt.Println(colorBlue + "🔑 ACTIVE MODE" + colorReset)
-		printConsoleStatus(currentStatus())
+		printConsoleStatus(buildStatusResponse())
 
 		fmt.Printf(
 			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sP%s] %sChange PW%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s\n",
@@ -2940,13 +3136,13 @@ func activeMenu(fd int) {
 		case "\r":
 			fmt.Print("Password: ")
 			pw, _ := term.ReadPassword(fd)
-			if _, err := attemptUnlock(string(pw)); err != nil {
+			if _, err := unlockDrivesWithPassword(string(pw)); err != nil {
 				fmt.Println("\n❌", err)
 				time.Sleep(2 * time.Second)
 			}
 
 		case "B":
-			res, err := BootSystem()
+			res, err := bootFirstAvailableKernel()
 			if err != nil {
 				fmt.Println(err)
 			} else if res.Warning != "" {
@@ -3030,6 +3226,10 @@ func activeMenu(fd int) {
 	}
 }
 
+// validateUploadedPBAImageBytes checks that a user-uploaded PBA image has a
+// valid MBR signature, a bootable EFI partition (type 0xEF), and a FAT32
+// filesystem. Returns a slice of human-readable validation steps alongside
+// any error encountered.
 func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
 	validation := make([]string, 0, 12)
 	if len(imageData) <= 0 {
@@ -3138,6 +3338,8 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 // MAIN — HTTP SERVER
 // ============================================================
 
+// main initialises the PBA server: records startup-locked drives, launches the
+// console TUI and SSH service, then starts the HTTPS API server on port 443.
 func main() {
 	dbgPrintf(debugNormal, "Settle factor: %.2f (inter-cmd=%s, partition=%s, discovery=%s)",
 		settleFactor,
@@ -3146,8 +3348,8 @@ func main() {
 		settleDelay(baseDiscoverySettle))
 	dbgPrintf(debugNormal, "Debug level: %d (0=verbose, 1=normal, 2=quiet)", debugLevel)
 
-	initializeBootState()
-	go consoleInterface()
+	recordStartupLockedDrives()
+	go runConsoleUI()
 	startSSHService()
 
 	httpErrorLog := log.New(filteredHTTPLogWriter{}, "", 0)
@@ -3173,7 +3375,7 @@ func main() {
 		if requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		jsonResponse(w, http.StatusOK, currentStatus())
+		jsonResponse(w, http.StatusOK, buildStatusResponse())
 	})
 
 	mux.HandleFunc("/diagnostics", func(w http.ResponseWriter, r *http.Request) {
@@ -3208,13 +3410,13 @@ func main() {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		results, err := attemptUnlock(req.Password)
+		results, err := unlockDrivesWithPassword(req.Password)
 		if err != nil {
 			jsonResponse(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
 		token := ""
-		if anySuccessfulUnlock(results) {
+		if hasSuccessfulUnlock(results) {
 			var mintErr error
 			token, mintErr = mintSessionToken()
 			if mintErr != nil {
@@ -3520,7 +3722,7 @@ func main() {
 		if requireSessionTokenOrUnlockedDrive(w, r) {
 			return
 		}
-		if err := startDiscoveryLaunch(); err != nil {
+		if err := startKernelDiscovery(); err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
@@ -3547,7 +3749,7 @@ func main() {
 			return
 		}
 
-		if err := startBootLaunchWithKernel(req.KernelIndex); err != nil {
+		if err := startBootWithKernel(req.KernelIndex); err != nil {
 			jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
@@ -3558,11 +3760,11 @@ func main() {
 		if requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		jsonResponse(w, http.StatusOK, currentBootLaunchStatus())
+		jsonResponse(w, http.StatusOK, getBootLaunchStatus())
 	})
 
-	mux.HandleFunc("/reboot", makeSystemActionHandler("rebooting", "reboot", "-nf"))
-	mux.HandleFunc("/poweroff", makeSystemActionHandler("powering off", "poweroff", "-nf"))
+	mux.HandleFunc("/reboot", newSystemActionHandler("rebooting", "reboot", "-nf"))
+	mux.HandleFunc("/poweroff", newSystemActionHandler("powering off", "poweroff", "-nf"))
 
 	httpsSrv := &http.Server{
 		Addr:     ":443",
@@ -3576,10 +3778,10 @@ func main() {
 			log.Fatalf("HTTPS server error: %v", err)
 		}
 	}()
-	// Wait for BootSystem to signal that kexec -l succeeded and it is ready
-	// for us to fire kexec -e. This only triggers on web-initiated boots;
-	// console and SSH boots call BootSystem() synchronously and never close
-	// this channel, so they are unaffected.
+	// Wait for a boot function to signal that kexec -l succeeded and it is
+	// ready for us to fire kexec -e. This only triggers on web-initiated boots;
+	// console and SSH boots call bootFirstAvailableKernel() synchronously and
+	// never close this channel, so they are unaffected.
 	<-kexecReady
 	// Shut the HTTP server down before calling kexec -e. A live server with
 	// active goroutines making syscalls will cause kexec -e to fail silently.
@@ -3590,8 +3792,8 @@ func main() {
 	// Brief pause to let TLS write buffers drain to the client.
 	time.Sleep(200 * time.Millisecond)
 	if err := exec.Command("kexec", "-e").Run(); err != nil {
-		// kexec -e returned — it failed. Send the error back to BootSystem
-		// so it can populate bootLaunchState with a useful message.
+		// kexec -e returned — it failed. Send the error back to the boot
+		// function so it can populate bootLaunchState with a useful message.
 		kexecFailed <- err
 		// Restart the HTTPS server so the web UI can reconnect and display
 		// the error via /boot-status rather than getting a dead connection.

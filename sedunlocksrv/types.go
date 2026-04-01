@@ -99,6 +99,7 @@ type BootAttemptError struct {
 	Debug   []string
 }
 
+// Error implements the error interface for BootAttemptError.
 func (e BootAttemptError) Error() string {
 	return e.Message
 }

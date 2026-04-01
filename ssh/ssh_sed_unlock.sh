@@ -29,14 +29,19 @@ CLR_PURPLE="$(printf '\033[38;5;91m')"
 CLR_ORANGE="$(printf '\033[38;5;208m')"
 CLR_DIM="$(printf '\033[38;5;245m')"
 
+# have_command CMD — returns 0 if CMD is on the PATH.
 have_command() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# status_fallback_json — prints a minimal empty-status JSON object.
+# Used when curl or jq is missing or the API is unreachable.
 status_fallback_json() {
     printf '%s\n' '{"drives":[],"interfaces":[]}'
 }
 
+# fetch_status_json — queries the local HTTPS API for the current system
+# status. Sets STATUS_NOTICE on failure and falls back to empty JSON.
 fetch_status_json() {
     STATUS_NOTICE=""
 
@@ -64,6 +69,8 @@ fetch_status_json() {
     return 0
 }
 
+# print_drives JSON — renders the drive list from a /status JSON response
+# as indented lines with lock state and OPAL capability.
 print_drives() {
     local count
     count=$(echo "$1" | jq -r '.drives | length' 2>/dev/null || echo 0)
@@ -82,6 +89,8 @@ print_drives() {
     '
 }
 
+# print_interfaces JSON — renders the network interface list from a /status
+# JSON response with link state, MAC, and IP addresses.
 print_interfaces() {
     local count
     count=$(echo "$1" | jq -r '.interfaces | length' 2>/dev/null || echo 0)
@@ -101,18 +110,23 @@ print_interfaces() {
     '
 }
 
+# has_error JSON — returns 0 if the JSON object contains an "error" key.
 has_error() {
     echo "$1" | jq -e '.error' > /dev/null 2>&1
 }
 
+# get_error JSON — extracts and prints the "error" value from a JSON object.
 get_error() {
     echo "$1" | jq -r '.error // empty'
 }
 
+# has_results JSON — returns 0 if the JSON contains a non-empty "results" array.
 has_results() {
     echo "$1" | jq -e '(.results // []) | length > 0' > /dev/null 2>&1
 }
 
+# post_with_auth URL — POSTs to the API, including the session auth token
+# header when one has been obtained from a successful unlock.
 post_with_auth() {
     if [ -n "$AUTH_TOKEN" ]; then
         $CURL -X POST -H "X-Auth-Token: $AUTH_TOKEN" "$1"
@@ -121,6 +135,10 @@ post_with_auth() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Main loop — interactive menu for unlock, boot, reboot, shutdown, and quit.
+# Refreshes drive/network status on every iteration; auto-loops on 10s timeout.
+# ---------------------------------------------------------------------------
 while true; do
     clear
     echo "${CLR_BLUE}SED UNLOCK (SSH)${CLR_RESET}"
