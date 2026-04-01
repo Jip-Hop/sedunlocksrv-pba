@@ -1,216 +1,989 @@
 #!/usr/bin/env bash
-
+#
+# sedunlocksrv-pba — build a TinyCore-based Pre-Boot Authentication disk image.
+#
+# High-level flow:
+#   1. --config / build.conf → CLI overrides → 2. Host tools → 3. Compile Go
+#   4. Cache ISO & sedutil → 5. Unpack kernel/initrd → 6. Merge app + kexec + TCZs
+#   7. Repack initrd → 8. Partition loop image → GRUB → output .img + symlink
+#
 set -euox pipefail
 
-function cleanup() {
-    umount "${TMPDIR}/img" || true
-    losetup -d "${LOOP_DEVICE_HDD}" || true
-    rm -rf "${TMPDIR}"
-}
+export PATH="${PATH}:/usr/local/go/bin"
 
-SSHBUILD=FALSE
-if [ "${1-default}" == "SSH" ]; then
-    SSHBUILD=TRUE
-    # check SSH build dependencies
-    if [ ! -f ./ssh/authorized_keys ]; then
-        echo "You have to create authorized_keys file in ssh folder"
-        exit
-    fi
-    if ! which dropbear; then
-        echo "Please install dropbear: apt install dropbear"
-        exit
-    fi
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${BUILD_CONFIG:-${SCRIPT_DIR}/build.conf}"
 
-trap cleanup EXIT
-
-# Default config for 64-bit Linux and Sedutil
-GRUBSIZE=15 # Reserve this amount of MiB on the image for GRUB (increase this number if needed)
+# -----------------------------------------------------------------------------
+# Defaults (override via build.conf, then via CLI — CLI wins)
+# -----------------------------------------------------------------------------
 CACHEDIR="cache"
-TCURL="http://distro.ibiblio.org/tinycorelinux/16.x/x86_64"
+# Renamed from TMPDIR to avoid shadowing the standard POSIX $TMPDIR variable
+# used by mktemp, sort, and other host tools invoked during the build. (Fix #8)
+BUILD_TMPDIR="img.tmp"
+
+BUILD_DATE=$(date +%Y%m%d-%H%M)
+OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
+LATEST_LINK="sedunlocksrv-pba-latest.img"
+
+# Extra MB reserved for bootloader/EFI partition content.
+# Final image size is filesystem size + GRUBSIZE + 2MB safety margin.
+# OPAL 2 PBA size limit is typically 128MB, so keep this conservative.
+GRUBSIZE=32
+KEXEC_VER="2.0.28"
+
+TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
-OUTPUTIMG="sedunlocksrv-pba.img"
-BOOTARGS="quiet libata.allow_tpm=1"
+BOOTARGS="libata.allow_tpm=1"
+
 SEDUTILBINFILENAME="sedutil-cli"
-EXTENSIONS="bash.tcz"
-if [ $SSHBUILD == "TRUE" ]; then
-    EXTENSIONS="$EXTENSIONS dropbear.tcz"
-fi
-if [ ! -z "${KEYMAP+x}" ]; then
-    EXTENSIONS="$EXTENSIONS kmaps.tcz"
-fi
-case "$(echo ${SEDUTIL_FORK-} | tr '[:upper:]' '[:lower:]')" in
-    "chubbyant")
-        SEDUTIL_FORK="ChubbyAnt"
-        SEDUTILURL="https://github.com/ChubbyAnt/sedutil/releases/download/1.15-5ad84d8/sedutil-cli-1.15-5ad84d8.zip"
-    ;;
-    *)
-        SEDUTIL_FORK="Drive-Trust-Alliance"
-        SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
-        SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
-    ;;
-esac
+EXTENSIONS="jq.tcz lvm2.tcz coreutils.tcz"
 
-# Build sedunlocksrv binary with Go
-(cd ./sedunlocksrv && env GOOS=linux GOARCH=amd64 go build -trimpath && chmod +x sedunlocksrv)
+SETTLE_FACTOR=""
+DEBUG_LEVEL="1"
 
-# Generate cert if not existing
-if [[ ! -f sedunlocksrv/server.crt || ! -f sedunlocksrv/server.key ]]; then
-    ./make-cert.sh
-fi
+CLEAN_MODE=false
+SSHBUILD=false
+KEYMAP=""
+EXCLUDE_NETDEV=""
+NET_MODE="single"
+NET_IFACES=""
+NET_DHCP="true"
+IP_ADDR=""
+NETMASK=""
+GATEWAY=""
+DNS=""
+BOND_MODE="4"
+BOND_MIIMON="100"
+BOND_LACP_RATE="1"
+BOND_XMIT_HASH_POLICY="1"
+TLS_CERT_PATH=""
+TLS_KEY_PATH=""
+SSH_CURL_INSECURE="auto"
+REPO_URL=""
+EXPERT_PASSWORD=""
+EXPERT_PASSWORD_HASH=""
 
-# Create our working folders
-TMPDIR="$(mktemp -d --tmpdir="$(pwd)" 'img.XXXXXX')"
-mkdir -p "${TMPDIR}"/{fs/boot,core,img}
-mkdir -p "${CACHEDIR}"/{iso,tcz,dep}
-mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
+PASSWORD_COMPLEXITY_ON="true"
+MIN_PASSWORD_LENGTH="12"
+REQUIRE_UPPER="true"
+REQUIRE_LOWER="true"
+REQUIRE_NUMBER="true"
+REQUIRE_SPECIAL="true"
 
-# Downloads a Tiny Core Linux asset, only if not already cached
-function cachetcfile() {
-    [ -f "${CACHEDIR}/${2}/${1}" ] || curl -f "${TCURL}/${3}/${1}" -o "${CACHEDIR}/${2}/${1}" ||
-        [[ ${2} == dep ]] && touch "${CACHEDIR}/${2}/${1}"
+SEDUTIL_FORK=""
+SEDUTILURL=""
+SEDUTILPATHINTAR=""
+
+TC_KERNEL_VERSION=""
+LOOP_DEVICE_HDD=""
+
+REMAINING_ARGS=()
+
+# have_command CMD — returns 0 if CMD is available on the host PATH.
+have_command() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-if [ ! -d "${CACHEDIR}/iso-extracted" ]; then
-    # Download the ISO
-    cachetcfile "${INPUTISO}" iso release
-    rm -rf "${CACHEDIR}/iso-extracting" && mkdir -p "${CACHEDIR}/iso-extracting"
-    # Extract the contents of the ISO
-    xorriso -osirrox on -indev "${CACHEDIR}/iso/${INPUTISO}" -extract / "${CACHEDIR}/iso-extracting"
-    mv "${CACHEDIR}/iso-extracting" "${CACHEDIR}/iso-extracted"
-fi
-
-if [ ! -f "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" ]; then
-    case "${SEDUTIL_FORK}" in
-        "ChubbyAnt")
-            # Download and Unpack Sedutil
-            # Use bsdtar to auto-detect de-compression algorithm
-            wget -O - ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
-            chmod +x "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}"
-        ;;
-        *)
-            SLASHESONLY="${SEDUTILPATHINTAR//[^\/]/}"
-            LEVELSDEEP="${#SLASHESONLY}"
-            # Download and Unpack Sedutil
-            # Use bsdtar to auto-detect de-compression algorithm
-            curl -s ${SEDUTILURL} | bsdtar -xf- -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" --strip-components="${LEVELSDEEP}" ${SEDUTILPATHINTAR}
-        ;;
+# detect_repo_url_from_origin — derives an HTTPS repository URL from the git
+# remote origin (supports http(s), git@, and ssh:// styles). Prints the URL to
+# stdout; returns 1 if the origin cannot be parsed.
+detect_repo_url_from_origin() {
+    local remote host path
+    remote="$(git -C .. config --get remote.origin.url 2>/dev/null || true)"
+    if [ -z "${remote}" ]; then
+        return 1
+    fi
+    case "${remote}" in
+        http://*|https://*)
+            echo "${remote%.git}"
+            return 0
+            ;;
+        git@*:* )
+            host="${remote#git@}"
+            host="${host%%:*}"
+            path="${remote#*:}"
+            path="${path%.git}"
+            [ -n "${host}" ] && [ -n "${path}" ] || return 1
+            echo "https://${host}/${path}"
+            return 0
+            ;;
+        ssh://git@*/*)
+            host="${remote#ssh://git@}"
+            host="${host%%/*}"
+            path="${remote#ssh://git@${host}/}"
+            path="${path%.git}"
+            [ -n "${host}" ] && [ -n "${path}" ] || return 1
+            echo "https://${host}/${path}"
+            return 0
+            ;;
     esac
-fi
 
-# Copy the kernel
-cp "${CACHEDIR}/iso-extracted/boot/vmlinuz64" "${TMPDIR}/fs/boot/vmlinuz64"
+    return 1
+}
 
-# Remaster the initrd
-(cd "${TMPDIR}/core" && zcat "../../${CACHEDIR}/iso-extracted/boot/corepure64.gz" | cpio -i -H newc -d)
+# require_file PATH DESCRIPTION — exits with an error if PATH does not exist.
+require_file() {
+    local path="$1" description="$2"
+    if [ ! -f "${path}" ]; then
+        echo "❌ ERROR: ${description} not found: ${path}" >&2
+        exit 1
+    fi
+}
 
-# We can only detect the kernel version after the intird is extracted.
-# We need the kernel version to install the right scsi driver 
-TC_KERNEL_VERSION=$(ls "${TMPDIR}/core/lib/modules")
-EXTENSIONS="$EXTENSIONS  scsi-${TC_KERNEL_VERSION}.tcz"
+# require_numeric NAME VALUE — exits with an error if VALUE is not a non-negative integer.
+# Replaces four identical case blocks in validate_network_settings. (Size reduction)
+require_numeric() {
+    local name="$1" value="$2"
+    case "${value}" in
+        ''|*[!0-9]*)
+            echo "${name} must be numeric (current: ${value})" >&2
+            exit 1
+            ;;
+    esac
+}
 
-mkdir -p "${TMPDIR}/core/usr/local/sbin/"
+# -----------------------------------------------------------------------------
+# sedutil upstream (env SEDUTIL_FORK=ChubbyAnt or chubbyant)
+# -----------------------------------------------------------------------------
+# configure_sedutil_source — sets SEDUTILURL and archive metadata based on
+# the SEDUTIL_FORK variable (ChubbyAnt or Drive-Trust-Alliance).
+configure_sedutil_source() {
+    case "$(echo "${SEDUTIL_FORK-}" | tr '[:upper:]' '[:lower:]')" in
+        chubbyant)
+            SEDUTIL_FORK="ChubbyAnt"
+            SEDUTILURL="https://github.com/ChubbyAnt/sedutil/releases/download/1.15-5ad84d8/sedutil-cli-1.15-5ad84d8.zip"
+            SEDUTIL_ARCHIVE_NAME="$(basename "${SEDUTILURL}")"
+            ;;
+        *)
+            SEDUTIL_FORK="Drive-Trust-Alliance"
+            SEDUTILURL="https://raw.githubusercontent.com/Drive-Trust-Alliance/exec/master/sedutil_LINUX.tgz"
+            SEDUTILPATHINTAR="sedutil/Release_x86_64/${SEDUTILBINFILENAME}"
+            SEDUTIL_ARCHIVE_NAME="$(basename "${SEDUTILURL}")"
+            ;;
+    esac
+}
 
-cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${TMPDIR}/core/usr/local/sbin/"
-rsync -avr --exclude='sedunlocksrv/main.go' --exclude='sedunlocksrv/go.mod' 'sedunlocksrv' "${TMPDIR}/core/usr/local/sbin/"
-cp ./tc/tc-config "${TMPDIR}/core/etc/init.d/tc-config"
-sed -i "s/::exclude_devices::/${EXCLUDE_NETDEV-}/" "${TMPDIR}/core/etc/init.d/tc-config"
-# cp ./tc/bootsync.sh "${TMPDIR}/core/opt/bootsync.sh"
-
-# Install extensions and dependencies
-while [ -n "${EXTENSIONS}" ]; do
-    DEPS=""
-    for EXTENSION in ${EXTENSIONS}; do
-        MOUNTDIREXT="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
-        cachetcfile "${EXTENSION}" tcz tcz
-        cachetcfile "${EXTENSION}.dep" dep tcz
-        mount -o loop "${CACHEDIR}/tcz/${EXTENSION}" "${MOUNTDIREXT}"
-        cp -r "${MOUNTDIREXT}/"* "${TMPDIR}/core/"
-        umount "${MOUNTDIREXT}"
-        rm -rfv "${MOUNTDIREXT}"
-        DEPS=$(echo "${DEPS}" | cat - "${CACHEDIR}/dep/${EXTENSION}.dep" | sort -u)
+# -----------------------------------------------------------------------------
+# Config file (optional) then CLI (CLI overrides file)
+# -----------------------------------------------------------------------------
+# extract_config_path_from_args — pulls --config=FILE from the argument list
+# and stores the remaining arguments in REMAINING_ARGS for later parsing.
+extract_config_path_from_args() {
+    REMAINING_ARGS=()
+    for arg in "$@"; do
+        case "$arg" in
+            --config=*) CONFIG_FILE="${arg#*=}" ;;
+            *)          REMAINING_ARGS+=("$arg") ;;
+        esac
     done
-    EXTENSIONS="${DEPS}"
-done
+}
 
-if [ ! -z "${KEYMAP+x}" ]; then
-  mkdir -p "${TMPDIR}/core/home/tc"
-  echo -en "${KEYMAP}" > "${TMPDIR}/core/home/tc/keymap"
-fi
+# load_config_file — sources the build.conf file if it exists.
+load_config_file() {
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        return 0
+    fi
+    echo "--- Loading build config: ${CONFIG_FILE} ---"
+    # shellcheck disable=SC1090
+    source "${CONFIG_FILE}"
+}
 
-if [ $SSHBUILD == "TRUE" ]; then
-    # Generate dropbear hostkeys if not existing
-    if [[ ! -f ./ssh/dropbear_ecdsa_host_key || ! -f ./ssh/dropbear_rsa_host_key ]]; then
-        dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
-        dropbearkey -t rsa -s 4096 -f ./ssh/dropbear_rsa_host_key
+# require_root — aborts if the script is not running as root.
+require_root() {
+    if [ "${EUID}" -ne 0 ]; then
+        echo "❌ ERROR: build.sh must be run as root." >&2
+        echo "Run it with sudo, for example: sudo ./build.sh" >&2
+        exit 1
+    fi
+}
+
+# print_usage — prints the CLI help text to stderr.
+print_usage() {
+    echo "Usage: $0 [--config=FILE] [--clean] [--ssh] [--keymap=NAME]" >&2
+    echo "          [--bootargs=KERNEL_CMDLINE]" >&2
+    echo "          [--exclude-netdev=DEVS] [--net-mode=bond|single] [--net-ifaces=DEVS]" >&2
+    echo "          [--net-addressing=dhcp|static] [--ip-addr=ADDR] [--netmask=MASK]" >&2
+    echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
+    echo "          [--bond-xmit-hash-policy=VAL]" >&2
+    echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
+    echo "          [--settle=FACTOR]  # scale firmware settling delays (default: 1.0; e.g. 0.5 = half)" >&2
+    echo "          [--debug-level=0|1|2]  # 0=verbose, 1=normal (default), 2=quiet" >&2
+    echo "          [--expert-password=VALUE]  # if omitted, you will be prompted to enter one" >&2
+    echo "          [--password-complexity=on|off] [--min-password-length=N]" >&2
+    echo "          [--require-upper=true|false] [--require-lower=true|false]" >&2
+    echo "          [--require-number=true|false] [--require-special=true|false]" >&2
+    echo "          [--repo-url=URL]" >&2
+    echo "          [--gateway=ADDR] [--dns=ADDRS] [--sedutil-fork=ChubbyAnt]" >&2
+}
+
+# parse_args — processes all CLI flags and populates the corresponding global
+# variables. Unknown flags trigger an error and usage message.
+parse_args() {
+    for arg in "$@"; do
+        case "$arg" in
+            --help|-h)               print_usage; exit 0 ;;
+            --clean)                 CLEAN_MODE=true ;;
+            --ssh)                   SSHBUILD=true ;;
+            --keymap=*)              KEYMAP="${arg#*=}" ;;
+            --bootargs=*)            BOOTARGS="${arg#*=}" ;;
+            --exclude-netdev=*)      EXCLUDE_NETDEV="${arg#*=}" ;;
+            --net-mode=*)            NET_MODE="${arg#*=}" ;;
+            --net-ifaces=*)          NET_IFACES="${arg#*=}" ;;
+            --net-addressing=*)
+                case "${arg#*=}" in
+                    dhcp)   NET_DHCP="true" ;;
+                    static) NET_DHCP="false" ;;
+                    *)
+                        echo "Unknown network addressing mode: ${arg#*=}" >&2
+                        print_usage; exit 1
+                        ;;
+                esac
+                ;;
+            --ip-addr=*)             IP_ADDR="${arg#*=}" ;;
+            --netmask=*)             NETMASK="${arg#*=}" ;;
+            --gateway=*)             GATEWAY="${arg#*=}" ;;
+            --dns=*)                 DNS="${arg#*=}" ;;
+            --tls-cert=*)            TLS_CERT_PATH="${arg#*=}" ;;
+            --tls-key=*)             TLS_KEY_PATH="${arg#*=}" ;;
+            --ssh-curl-insecure=*)   SSH_CURL_INSECURE="${arg#*=}" ;;
+            --repo-url=*)            REPO_URL="${arg#*=}" ;;
+            --expert-password=*)     EXPERT_PASSWORD="${arg#*=}" ;;
+            --password-complexity=*)  PASSWORD_COMPLEXITY_ON="${arg#*=}" ;;
+            --min-password-length=*)  MIN_PASSWORD_LENGTH="${arg#*=}" ;;
+            --require-upper=*)        REQUIRE_UPPER="${arg#*=}" ;;
+            --require-lower=*)        REQUIRE_LOWER="${arg#*=}" ;;
+            --require-number=*)       REQUIRE_NUMBER="${arg#*=}" ;;
+            --require-special=*)      REQUIRE_SPECIAL="${arg#*=}" ;;
+            --bond-mode=*)           BOND_MODE="${arg#*=}" ;;
+            --bond-miimon=*)         BOND_MIIMON="${arg#*=}" ;;
+            --bond-lacp-rate=*)      BOND_LACP_RATE="${arg#*=}" ;;
+            --bond-xmit-hash-policy=*) BOND_XMIT_HASH_POLICY="${arg#*=}" ;;
+            --settle=*)              SETTLE_FACTOR="${arg#*=}" ;;
+            --debug-level=*)         DEBUG_LEVEL="${arg#*=}" ;;
+            --sedutil-fork=*)        SEDUTIL_FORK="${arg#*=}" ;;
+            *)
+                echo "Unknown option: $arg" >&2
+                print_usage; exit 1
+                ;;
+        esac
+    done
+}
+
+# validate_network_settings — sanity-checks network, bonding, password-policy,
+# TLS, SSH, and debug-level variables. Exits on invalid values.
+validate_network_settings() {
+    case "${NET_MODE}" in
+        bond|single) ;;
+        *) echo "Unknown network mode: ${NET_MODE}" >&2; print_usage; exit 1 ;;
+    esac
+
+    case "${NET_DHCP}" in
+        true|false) ;;
+        *) echo "NET_DHCP must be true or false (current: ${NET_DHCP})" >&2; exit 1 ;;
+    esac
+
+    if [ "${NET_DHCP}" = "false" ] && [ -z "${IP_ADDR}" -o -z "${NETMASK}" ]; then
+        echo "Static networking requires IP_ADDR and NETMASK." >&2; exit 1
     fi
 
-    # Copy dropbear files to the image
-    mkdir -p "${TMPDIR}/core/usr/local/etc/dropbear/"
-    cp ./ssh/dropbear* "${TMPDIR}/core/usr/local/etc/dropbear/"
-    cp ./ssh/banner "${TMPDIR}/core/usr/local/etc/dropbear/"
+    # Four identical numeric-validation blocks replaced by require_numeric. (Size reduction)
+    require_numeric "BOND_MODE"             "${BOND_MODE}"
+    require_numeric "BOND_MIIMON"           "${BOND_MIIMON}"
+    require_numeric "BOND_LACP_RATE"        "${BOND_LACP_RATE}"
+    require_numeric "BOND_XMIT_HASH_POLICY" "${BOND_XMIT_HASH_POLICY}"
 
-    # Copy tc user files to the image
-    mkdir -p "${TMPDIR}/core/home/tc/.ssh"
-    cp ./ssh/authorized_keys "${TMPDIR}/core/home/tc/.ssh/"
-    cp ./ssh/ssh_sed_unlock.sh "${TMPDIR}/core/home/tc/"
-    chown -R 1001 "${TMPDIR}/core/home/tc/"
-    chmod 700 "${TMPDIR}/core/home/tc/.ssh"
-    chmod 600 "${TMPDIR}/core/home/tc/.ssh/authorized_keys"
-fi
+    # Password complexity validation
+    case "${PASSWORD_COMPLEXITY_ON}" in
+        on|off|true|false) ;;
+        *) echo "PASSWORD_COMPLEXITY_ON must be on/off or true/false (current: ${PASSWORD_COMPLEXITY_ON})" >&2; exit 1 ;;
+    esac
 
-# Since we installed the scsi extension by extracting it rather than using tce-load, we need to fix modules.dep
-chroot "${TMPDIR}/core" /sbin/depmod "$TC_KERNEL_VERSION"
+    require_numeric "MIN_PASSWORD_LENGTH" "${MIN_PASSWORD_LENGTH}"
 
-# Repackage the initrd
-(cd "${TMPDIR}/core" && find | cpio -o -H newc | gzip -9 >"${TMPDIR}/fs/boot/corepure64.gz")
+    for policy_var in REQUIRE_UPPER REQUIRE_LOWER REQUIRE_NUMBER REQUIRE_SPECIAL; do
+        policy_val="$(eval echo \$${policy_var})"
+        case "${policy_val}" in
+            true|false) ;;
+            *) echo "${policy_var} must be true or false (current: ${policy_val})" >&2; exit 1 ;;
+        esac
+    done
 
-FSSIZE="$(du -m --summarize --total "${TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')"
+    if { [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_KEY_PATH}" ]; } || \
+       { [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; }; then
+        echo "TLS_CERT_PATH and TLS_KEY_PATH must be set together." >&2; exit 1
+    fi
 
-# Make the image
-# Add 1 MiB extra to account for FSSIZE rounding errors
-dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count=$((FSSIZE + GRUBSIZE +1))
+    [ -n "${TLS_CERT_PATH}" ] && require_file "${TLS_CERT_PATH}" "TLS cert file"
+    [ -n "${TLS_KEY_PATH}"  ] && require_file "${TLS_KEY_PATH}"  "TLS key file"
 
-# Attaching hard disk image file to loop device.
-LOOP_DEVICE_HDD=$(losetup --find --show --partscan ${OUTPUTIMG})
+    case "${SSH_CURL_INSECURE}" in
+        auto|true|false) ;;
+        *) echo "SSH_CURL_INSECURE must be auto, true, or false (current: ${SSH_CURL_INSECURE})" >&2; exit 1 ;;
+    esac
 
-(
-    echo o   # clear the in memory partition table
-    echo n   # new partition
-    echo p   # primary partition
-    echo 1   # partition number 1
-    echo     # default - start at beginning of disk
-    echo     # default, extend partition to end of disk
-    echo t   # change partition type
-    echo ef  # set partition type to EFI (FAT-12/16/32)
-    echo a   # make a partition bootable
-    echo w   # write the partition table
-    echo q   # and we're done
-) | fdisk "${LOOP_DEVICE_HDD}" || true
+    case "${DEBUG_LEVEL}" in
+        0|1|2) ;;
+        *) echo "DEBUG_LEVEL must be 0, 1, or 2 (current: ${DEBUG_LEVEL})" >&2; exit 1 ;;
+    esac
 
-# Using mknod to create partition node files
-# https://github.com/moby/moby/issues/27886#issuecomment-417074845
-# drop the first line, as this is our LOOP_DEVICE_HDD itself, but we only want the child partitions
-PARTITIONS=$(lsblk --raw --output "MAJ:MIN" --noheadings ${LOOP_DEVICE_HDD} | tail -n +2)
-COUNTER=1
-for i in $PARTITIONS; do
-    MAJ=$(echo $i | cut -d: -f1)
-    MIN=$(echo $i | cut -d: -f2)
-    if [ ! -e "${LOOP_DEVICE_HDD}p${COUNTER}" ]; then mknod ${LOOP_DEVICE_HDD}p${COUNTER} b $MAJ $MIN; fi
-    COUNTER=$((COUNTER + 1))
+}
+
+# apply_extension_flags — appends optional TinyCore extensions to the
+# EXTENSIONS list based on --ssh and --keymap flags.
+apply_extension_flags() {
+    if [ "$SSHBUILD" = true ]; then
+        EXTENSIONS="${EXTENSIONS} dropbear.tcz curl.tcz"
+    fi
+    if [ -n "${KEYMAP:-}" ]; then
+        EXTENSIONS="${EXTENSIONS} kmaps.tcz"
+    fi
+}
+
+# clean_workspace_artifacts — removes all generated build outputs, caches,
+# temporary directories, and the TLS cert/key pair.
+clean_workspace_artifacts() {
+    rm -rf "${CACHEDIR}" "${BUILD_TMPDIR}"
+
+    # Build outputs and links
+    rm -f sedunlocksrv-pba-*.img "${LATEST_LINK}"
+
+    # Generated TLS and app binary
+    rm -f sedunlocksrv/server.crt sedunlocksrv/server.key sedunlocksrv/sedunlocksrv
+}
+
+# maybe_clean_workspace — if --clean was passed, wipe build artifacts and exit.
+maybe_clean_workspace() {
+    if [ "$CLEAN_MODE" != true ]; then
+        return 0
+    fi
+    echo "🧹 Cleaning workspace artifacts to repo-like state..."
+    clean_workspace_artifacts
+    echo "✅ Clean complete."
+    exit 0
+}
+
+# -----------------------------------------------------------------------------
+# Cleanup on exit (trap).
+# -----------------------------------------------------------------------------
+# cleanup — trap handler: unmounts the image, detaches the loop device,
+# and removes the temporary build directory.
+cleanup() {
+    echo "Cleaning up..."
+    umount "${BUILD_TMPDIR-}/img" 2>/dev/null || true
+    if [ -n "${LOOP_DEVICE_HDD-}" ]; then
+        losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
+    fi
+    rm -rf "${BUILD_TMPDIR-}"
+}
+
+# -----------------------------------------------------------------------------
+# Host dependency check
+# -----------------------------------------------------------------------------
+# check_host_dependencies — verifies all required build tools are on the host
+# PATH. Exits with an apt install hint on Debian/Ubuntu if anything is missing.
+check_host_dependencies() {
+    echo "--- Checking build dependencies ---"
+    local REQUIRED_TOOLS="
+        gcc make curl tar xorriso bsdtar go cpio xz sfdisk
+        sed awk cut tr date chown chmod
+        basename mktemp find realpath zcat rsync nproc sort cat head tail
+        od
+        touch mkdir cp rm mv mount umount chroot
+        du dd losetup lsblk mknod mkfs.fat
+        grub-install sync sleep ln env openssl
+    "
+    local missing="" tool
+    for tool in ${REQUIRED_TOOLS}; do
+        if ! have_command "$tool"; then
+            missing="${missing} ${tool}"
+        fi
+    done
+    if [ -n "${missing}" ]; then
+        echo "❌ ERROR: Missing required build tools:${missing}"
+        echo "On Debian/Ubuntu:"
+        echo "  sudo apt update && sudo apt install -y \\"
+        echo "    build-essential coreutils findutils curl xorriso bsdtar cpio xz-utils fdisk \\"
+        echo "    golang-go gzip rsync util-linux dosfstools openssl \\"
+        echo "    grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin"
+        exit 1
+    fi
+    if [ "$SSHBUILD" = true ] && ! have_command dropbearkey; then
+        echo "❌ ERROR: dropbearkey required for --ssh (e.g. apt install dropbear-bin)"
+        exit 1
+    fi
+    echo "✅ All required tools present."
+}
+
+# -----------------------------------------------------------------------------
+# Work directories
+# -----------------------------------------------------------------------------
+# setup_workdirs — creates the temporary filesystem tree and cache directories.
+setup_workdirs() {
+    mkdir -p "${BUILD_TMPDIR}/fs/boot" "${BUILD_TMPDIR}/core" "${BUILD_TMPDIR}/img"
+    mkdir -p "${CACHEDIR}/iso" "${CACHEDIR}/tcz" "${CACHEDIR}/dep" "${CACHEDIR}/iso-extracted"
+    mkdir -p "${CACHEDIR}/sedutil/${SEDUTIL_FORK}"
+}
+
+# -----------------------------------------------------------------------------
+# Go: vet + linux/amd64 release binary
+# -----------------------------------------------------------------------------
+# build_sedunlocksrv_go — runs go vet + test compile, then cross-compiles the
+# sedunlocksrv binary for linux/amd64 with version/debug ldflags.
+build_sedunlocksrv_go() {
+    (
+        cd ./sedunlocksrv
+        echo "--- Verifying Go toolchain and code ---"
+        local go_version maj min git_rev build_id
+        go_version=$(go version | awk '{print $3}' | sed 's/go//')
+        maj=$(echo "${go_version}" | cut -d. -f1)
+        min=$(echo "${go_version}" | cut -d. -f2)
+        git_rev=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo "nogit")
+        local git_tag
+        git_tag=$(git -C .. describe --tags --exact-match HEAD 2>/dev/null || echo "")
+        if [ -z "${REPO_URL}" ]; then
+            local detected_repo_url
+            detected_repo_url="$(detect_repo_url_from_origin || true)"
+            if [ -n "${detected_repo_url}" ]; then
+                REPO_URL="${detected_repo_url}"
+                echo "--- Auto-detected REPO_URL from origin: ${REPO_URL} ---"
+            fi
+        fi
+        if [ -n "${git_tag}" ]; then
+            build_id="${git_tag}"
+        else
+            build_id="${BUILD_DATE}-${git_rev}"
+        fi
+        if [ "${maj}" -lt 1 ] || [ "${min}" -lt 21 ]; then
+            echo "❌ Go 1.21+ required (found: ${go_version})"
+            exit 1
+        fi
+        [ -f go.mod ] || go mod init sedunlocksrv
+        go get golang.org/x/term
+        go mod tidy
+        if ! go vet ./...; then
+            echo "❌ go vet failed"; exit 1
+        fi
+        if ! go build -o /dev/null .; then
+            echo "❌ go build (test compile) failed"; exit 1
+        fi
+        echo "--- Building sedunlocksrv (linux/amd64) ---"
+        local ldflags="-s -w -X main.buildVersion=${build_id} -X main.debugLevelStr=${DEBUG_LEVEL}"
+        [ -n "${SETTLE_FACTOR}" ] && ldflags="${ldflags} -X main.settleFactorStr=${SETTLE_FACTOR}"
+        if [ -n "${REPO_URL}" ]; then
+            ldflags="${ldflags} -X main.repoURL=${REPO_URL}"
+        fi
+        if env GOOS=linux GOARCH=amd64 go build -ldflags="${ldflags}" -trimpath -o sedunlocksrv; then
+            chown 1001:50 sedunlocksrv
+            chmod +x sedunlocksrv
+        else
+            exit 1
+        fi
+    )
+}
+
+# ensure_tls_certs — copies user-supplied TLS cert/key into the build tree,
+# or generates a self-signed pair via make-cert.sh if none are provided.
+ensure_tls_certs() {
+    if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
+        require_file "${TLS_CERT_PATH}" "TLS cert file"
+        require_file "${TLS_KEY_PATH}"  "TLS key file"
+        cp -f "${TLS_CERT_PATH}" sedunlocksrv/server.crt
+        cp -f "${TLS_KEY_PATH}"  sedunlocksrv/server.key
+        chmod 600 sedunlocksrv/server.key
+        return 0
+    fi
+    if [[ -f sedunlocksrv/server.crt && -f sedunlocksrv/server.key ]]; then
+        return 0
+    fi
+    ./make-cert.sh
+}
+
+# -----------------------------------------------------------------------------
+# fetch_cached_url URL DEST_PATH
+# Downloads URL to DEST_PATH only if DEST_PATH does not already exist.
+# Replaces duplicated "check cache → curl if missing" logic throughout the
+# script. (Size reduction)
+# -----------------------------------------------------------------------------
+fetch_cached_url() {
+    local url="$1" dest="$2"
+    if [ -s "${dest}" ]; then
+        echo "📦 Using cached: $(basename "${dest}")"
+        return 0
+    fi
+    echo "Fetching: $(basename "${dest}")..."
+    curl -fL "${url}" -o "${dest}"
+}
+
+# -----------------------------------------------------------------------------
+# Tiny Core extension cache helper (.tcz and .dep)
+# -----------------------------------------------------------------------------
+# fetch_tinycore_file FILENAME LOCAL_DIR REMOTE_TYPE — downloads a file from
+# the TinyCore mirror into CACHEDIR/LOCAL_DIR/ if not already cached.
+fetch_tinycore_file() {
+    local filename="$1" local_dir="$2" remote_type="$3"
+    local local_path="${CACHEDIR}/${local_dir}/${filename}"
+    if [ -s "${local_path}" ]; then
+        echo "📦 Using cached: ${filename}"
+        return 0
+    fi
+    echo "Fetching: ${filename}..."
+    curl -fL "${TCURL}/${remote_type}/${filename}" -o "${local_path}" || {
+        [[ "${local_dir}" == "dep" ]] && touch "${local_path}"
+    }
+}
+
+# expand_tcz_name NAME — replaces the literal string "KERNEL" in a .tcz
+# filename with the actual TinyCore kernel version.
+expand_tcz_name() {
+    local name="$1"
+    if [ -n "${TC_KERNEL_VERSION}" ]; then
+        name="${name//KERNEL/${TC_KERNEL_VERSION}}"
+    fi
+    printf '%s\n' "${name}"
+}
+
+# normalize_dep_list — deduplicates and sorts a list of .tcz dependency
+# names, expanding KERNEL placeholders in each entry.
+normalize_dep_list() {
+    local ext normalized=""
+    for ext in "$@"; do
+        [ -n "${ext}" ] || continue
+        normalized="$(printf '%s\n%s\n' "${normalized}" "$(expand_tcz_name "${ext}")")"
+    done
+    printf '%s\n' "${normalized}" | sed '/^$/d' | sort -u
+}
+
+# cleanup_mount_dir DIR — unmounts and removes a temporary mount directory.
+cleanup_mount_dir() {
+    local mount_dir="$1"
+    umount "${mount_dir}" 2>/dev/null || true
+    rm -rf "${mount_dir}"
+}
+
+# -----------------------------------------------------------------------------
+# ISO: download if needed, extract once into CACHEDIR/iso-extracted
+# -----------------------------------------------------------------------------
+# prepare_tinycore_iso — downloads the TinyCore ISO if needed and extracts
+# its contents into CACHEDIR/iso-extracted/.
+prepare_tinycore_iso() {
+    fetch_tinycore_file "${INPUTISO}" iso release
+    rm -rf "${CACHEDIR}/iso-extracting"
+    mkdir -p "${CACHEDIR}/iso-extracting"
+    xorriso -osirrox on \
+        -indev "${CACHEDIR}/iso/${INPUTISO}" \
+        -extract / "${CACHEDIR}/iso-extracting"
+    rm -rf "${CACHEDIR}/iso-extracted"
+    mv "${CACHEDIR}/iso-extracting" "${CACHEDIR}/iso-extracted"
+}
+
+# -----------------------------------------------------------------------------
+# sedutil-cli binary → cache, then copied into initrd later
+# -----------------------------------------------------------------------------
+# fetch_sedutil_cli — downloads the sedutil-cli binary from the configured
+# upstream (Drive-Trust-Alliance or ChubbyAnt) into the cache.
+fetch_sedutil_cli() {
+    case "${SEDUTIL_FORK}" in
+        ChubbyAnt)
+            local dest zip extract_dir bin
+            dest="${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}"
+            zip="${CACHEDIR}/sedutil/${SEDUTIL_FORK}/$(basename "${SEDUTILURL}")"
+            if [ -s "${dest}" ]; then
+                echo "📦 Using cached: ${SEDUTILBINFILENAME} (ChubbyAnt)"
+                return 0
+            fi
+            fetch_cached_url "${SEDUTILURL}" "${zip}"
+            extract_dir="$(mktemp -d "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/extract.XXXXXX")"
+            bsdtar -xf "${zip}" -C "${extract_dir}"
+            bin="$(find "${extract_dir}" -type f -name "${SEDUTILBINFILENAME}" | head -n1)"
+            if [ -z "${bin}" ] || [ ! -f "${bin}" ]; then
+                echo "❌ ${SEDUTILBINFILENAME} not found in ChubbyAnt archive"
+                rm -rf "${extract_dir}"
+                exit 1
+            fi
+            cp -f "${bin}" "${dest}"
+            chmod +x "${dest}"
+            rm -rf "${extract_dir}"
+            ;;
+        *)
+            local slashes depth archive_path
+            slashes="${SEDUTILPATHINTAR//[^\/]/}"
+            depth="${#slashes}"
+            archive_path="${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTIL_ARCHIVE_NAME}"
+            fetch_cached_url "${SEDUTILURL}" "${archive_path}"
+            bsdtar -xf "${archive_path}" -C "${CACHEDIR}/sedutil/${SEDUTIL_FORK}" \
+                --strip-components="${depth}" "${SEDUTILPATHINTAR}"
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# Kernel + initrd from ISO
+# -----------------------------------------------------------------------------
+# stage_kernel_and_initrd — copies the TinyCore kernel into the boot tree
+# and extracts the initrd cpio archive into BUILD_TMPDIR/core/.
+stage_kernel_and_initrd() {
+    local kernel_path core_path core_path_abs
+    kernel_path=$(find "${CACHEDIR}/iso-extracted" -type f -name "vmlinuz64" | head -n1 || true)
+    if [ -z "${kernel_path}" ] || [ ! -f "${kernel_path}" ]; then
+        echo "❌ vmlinuz64 not found in ISO extract"; exit 1
+    fi
+    echo "✅ Kernel: ${kernel_path}"
+    cp "${kernel_path}" "${BUILD_TMPDIR}/fs/boot/vmlinuz64"
+
+    core_path=$(find "${CACHEDIR}/iso-extracted" -type f -name "corepure64.gz" | head -n1 || true)
+    if [ -z "${core_path}" ] || [ ! -f "${core_path}" ]; then
+        echo "❌ corepure64.gz not found in ISO extract"; exit 1
+    fi
+    core_path_abs="$(cd "$(dirname "${core_path}")" && pwd)/$(basename "${core_path}")"
+    echo "✅ Initrd: ${core_path}"
+    if ! (cd "${BUILD_TMPDIR}/core" && zcat "${core_path_abs}" | cpio -id -H newc); then
+        echo "❌ Failed to extract initrd from: ${core_path}" >&2
+        exit 1
+    fi
+
+    TC_KERNEL_VERSION=$(ls "${BUILD_TMPDIR}/core/lib/modules")
+    EXTENSIONS="${EXTENSIONS} scsi-${TC_KERNEL_VERSION}.tcz"
+}
+
+# -----------------------------------------------------------------------------
+# App payload
+# -----------------------------------------------------------------------------
+# quote_sh_value VALUE — single-quotes a value for safe inclusion in a
+# generated shell config file, escaping embedded single quotes.
+quote_sh_value() {
+    printf "'%s'" "$(printf "%s" "${1-}" | sed "s/'/'\\\\''/g")"
+}
+
+# write_runtime_network_config — generates /etc/sedunlocksrv.conf inside the
+# initrd with all network, bonding, SSH, and password-policy settings.
+write_runtime_network_config() {
+    local effective_ssh_curl_insecure
+    case "${SSH_CURL_INSECURE}" in
+        auto)
+            if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
+                effective_ssh_curl_insecure="false"
+            else
+                effective_ssh_curl_insecure="true"
+            fi
+            ;;
+        *) effective_ssh_curl_insecure="${SSH_CURL_INSECURE}" ;;
+    esac
+
+    cat > "${BUILD_TMPDIR}/core/etc/sedunlocksrv.conf" <<EOF
+NET_MODE=$(quote_sh_value "${NET_MODE}")
+NET_IFACES=$(quote_sh_value "${NET_IFACES}")
+NET_EXCLUDE=$(quote_sh_value "${EXCLUDE_NETDEV}")
+NET_DHCP=$(quote_sh_value "${NET_DHCP}")
+IP_ADDR=$(quote_sh_value "${IP_ADDR}")
+NETMASK=$(quote_sh_value "${NETMASK}")
+GATEWAY=$(quote_sh_value "${GATEWAY}")
+DNS=$(quote_sh_value "${DNS}")
+BOND_MODE=$(quote_sh_value "${BOND_MODE}")
+BOND_MIIMON=$(quote_sh_value "${BOND_MIIMON}")
+BOND_LACP_RATE=$(quote_sh_value "${BOND_LACP_RATE}")
+BOND_XMIT_HASH_POLICY=$(quote_sh_value "${BOND_XMIT_HASH_POLICY}")
+SSH_CURL_INSECURE=$(quote_sh_value "${effective_ssh_curl_insecure}")
+EXPERT_PASSWORD_HASH=$(quote_sh_value "${EXPERT_PASSWORD_HASH}")
+PASSWORD_COMPLEXITY_ON=$(quote_sh_value "${PASSWORD_COMPLEXITY_ON}")
+MIN_PASSWORD_LENGTH=$(quote_sh_value "${MIN_PASSWORD_LENGTH}")
+REQUIRE_UPPER=$(quote_sh_value "${REQUIRE_UPPER}")
+REQUIRE_LOWER=$(quote_sh_value "${REQUIRE_LOWER}")
+REQUIRE_NUMBER=$(quote_sh_value "${REQUIRE_NUMBER}")
+REQUIRE_SPECIAL=$(quote_sh_value "${REQUIRE_SPECIAL}")
+EOF
+}
+
+# prepare_expert_password_hash — prompts for the expert mode password if not
+# provided via --expert-password, then hashes it with bcrypt.
+prepare_expert_password_hash() {
+    local had_xtrace=false
+    case "$-" in
+        *x*) had_xtrace=true; set +x ;;
+    esac
+
+    if [ -z "${EXPERT_PASSWORD}" ]; then
+        echo "\n=== Expert Mode Password ==="
+        echo "Enter a password for expert mode access (no requirements, any characters allowed)."
+        read -p "Expert password: " -r EXPERT_PASSWORD
+        if [ -z "${EXPERT_PASSWORD}" ]; then
+            echo "❌ Error: Expert password cannot be empty." >&2
+            exit 1
+        fi
+        read -p "Confirm password: " -r EXPERT_PASSWORD_CONFIRM
+        if [ "${EXPERT_PASSWORD}" != "${EXPERT_PASSWORD_CONFIRM}" ]; then
+            echo "❌ Error: Passwords do not match." >&2
+            exit 1
+        fi
+        echo "✅ Expert password set."
+    fi
+
+    EXPERT_PASSWORD_HASH="$(
+        cd ./sedunlocksrv
+        EXPERT_PASSWORD_INPUT="${EXPERT_PASSWORD}" go run ./cmd/hash-password
+    )"
+    if [ -z "${EXPERT_PASSWORD_HASH}" ]; then
+        echo "Failed to generate EXPERT_PASSWORD_HASH." >&2
+        exit 1
+    fi
+
+    if [ "${had_xtrace}" = true ]; then
+        set -x
+    fi
+}
+
+# populate_initrd_application_tree — copies the sedunlocksrv binary, TLS
+# certs, static assets, sedutil-cli, and tc-config into the initrd tree.
+populate_initrd_application_tree() {
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
+    cp ./sedunlocksrv/sedunlocksrv "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp ./sedunlocksrv/server.crt "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp ./sedunlocksrv/server.key "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
+    cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
+    cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
+    mkdir -p "${BUILD_TMPDIR}/core/sbin"
+
+    # IMPORTANT: /sbin/modprobe in TinyCore is usually a symlink to BusyBox.
+    # If we redirect into that symlink path, the shell follows the link and
+    # overwrites /bin/busybox itself, which then breaks chroot commands
+    # (including /sbin/depmod) with "Too many levels of symbolic links".
+    # Always remove the existing path first so we create a real wrapper file.
+    rm -f "${BUILD_TMPDIR}/core/sbin/modprobe"
+
+    cat >"${BUILD_TMPDIR}/core/sbin/modprobe" <<'EOF'
+#!/bin/sh
+# BusyBox modprobe wrapper for PBA runtime.
+# BusyBox modprobe does not support kmod's full install/alias semantics.
+# Intercept dm-thin-pool requests so LVM does not spend time trying to load
+# unsupported targets in this minimal pre-boot environment.
+
+for arg in "$@"; do
+    case "$arg" in
+        dm_thin_pool|dm-thin-pool)
+            echo "pba modprobe wrapper: suppressing $arg" >&2
+            exit 1
+            ;;
+    esac
 done
 
-mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
+exec /bin/busybox modprobe "$@"
+EOF
+    chmod +x "${BUILD_TMPDIR}/core/sbin/modprobe"
+    write_runtime_network_config
+}
 
-mount "${LOOP_DEVICE_HDD}p1" "${TMPDIR}/img"
+# install_bonding_module_if_needed — extracts the ipv6-netfilter .tcz
+# (which carries the bonding kernel module) when --net-mode=bond.
+install_bonding_module_if_needed() {
+    local tcz_name mount_dir
+    [ "${NET_MODE}" = "bond" ] || return 0
 
-# Install GRUB
+    tcz_name="ipv6-netfilter-${TC_KERNEL_VERSION}.tcz"
+    fetch_tinycore_file "${tcz_name}" tcz tcz
 
-grub-install --no-floppy --boot-directory="${TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
-grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=x86_64-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
-grub-install --removable --boot-directory="${TMPDIR}/img/boot" --target=i386-efi --efi-directory="${TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+    mount_dir="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
+    mount -o loop "${CACHEDIR}/tcz/${tcz_name}" "${mount_dir}"
+    if [ ! -d "${mount_dir}/lib" ] && [ ! -d "${mount_dir}/usr" ] && [ ! -d "${mount_dir}/etc" ]; then
+        cleanup_mount_dir "${mount_dir}"
+        echo "❌ ${tcz_name} did not contain a usable filesystem payload" >&2
+        exit 1
+    fi
+    cp -r "${mount_dir}/"* "${BUILD_TMPDIR}/core/"
+    cleanup_mount_dir "${mount_dir}"
+}
 
-cat >"${TMPDIR}/img/boot/grub/grub.cfg" <<EOF
+# -----------------------------------------------------------------------------
+# kexec static binary — cached in CACHEDIR so it is only compiled once.
+# The binary is copied into BUILD_TMPDIR on every build, but the expensive
+# configure+make step is skipped when the cached binary is present. (Fix #11)
+# -----------------------------------------------------------------------------
+build_kexec_tools() {
+    local kexec_cache="${CACHEDIR}/src/kexec-tools-${KEXEC_VER}/build/sbin/kexec"
+
+    if [ -x "${kexec_cache}" ]; then
+        echo "📦 Using cached kexec ${KEXEC_VER}"
+    else
+        echo "--- Building kexec-tools ${KEXEC_VER} ---"
+        (
+            mkdir -p "${CACHEDIR}/src"
+            cd "${CACHEDIR}/src"
+            fetch_cached_url \
+                "https://www.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_VER}.tar.xz" \
+                "kexec-tools-${KEXEC_VER}.tar.xz"
+            tar -xf "kexec-tools-${KEXEC_VER}.tar.xz"
+            cd "kexec-tools-${KEXEC_VER}"
+            ./configure --prefix=/usr/local
+            make -j"$(nproc)"
+        )
+    fi
+
+    cp "${kexec_cache}" "${BUILD_TMPDIR}/core/usr/local/sbin/kexec"
+    chmod +x "${BUILD_TMPDIR}/core/usr/local/sbin/kexec"
+}
+
+# -----------------------------------------------------------------------------
+# Merge .tcz trees + recursive .dep
+# install_tcz_extensions now tracks visited extensions to guard against
+# circular dependencies and prevent an infinite loop. (Fix #10)
+# -----------------------------------------------------------------------------
+install_tcz_extensions() {
+    local ext mount_dir deps visited=""
+    local max_rounds=50 round=0
+
+    while [ -n "${EXTENSIONS}" ]; do
+        if [ "${round}" -ge "${max_rounds}" ]; then
+            echo "❌ install_tcz_extensions: exceeded ${max_rounds} rounds — possible circular dependency in: ${EXTENSIONS}" >&2
+            exit 1
+        fi
+        round=$((round + 1))
+
+        deps=""
+        for ext in ${EXTENSIONS}; do
+            ext="$(expand_tcz_name "${ext}")"
+            # Skip extensions already installed.
+            case " ${visited} " in
+                *" ${ext} "*) continue ;;
+            esac
+            visited="${visited} ${ext}"
+
+            mount_dir="$(mktemp -d --tmpdir="$(pwd)" 'mnt.XXXXXX')"
+            fetch_tinycore_file "${ext}" tcz tcz
+            fetch_tinycore_file "${ext}.dep" dep tcz
+            mount -o loop "${CACHEDIR}/tcz/${ext}" "${mount_dir}"
+            cp -r "${mount_dir}/"* "${BUILD_TMPDIR}/core/"
+            cleanup_mount_dir "${mount_dir}"
+            deps="$(normalize_dep_list ${deps} $(cat "${CACHEDIR}/dep/${ext}.dep"))"
+        done
+        EXTENSIONS="${deps}"
+    done
+}
+
+# apply_keymap_file — writes the selected keymap name into the initrd so
+# TinyCore loads the correct keyboard layout on boot.
+apply_keymap_file() {
+    [ -n "${KEYMAP:-}" ] || return 0
+    mkdir -p "${BUILD_TMPDIR}/core/home/tc"
+    printf '%s\n' "${KEYMAP}" > "${BUILD_TMPDIR}/core/home/tc/keymap"
+}
+
+# apply_ssh_bundle — generates Dropbear host keys if missing, then copies
+# keys, authorized_keys, banner, and the SSH unlock script into the initrd.
+apply_ssh_bundle() {
+    [ "$SSHBUILD" = true ] || return 0
+
+    if [[ ! -f ./ssh/dropbear_ed25519_host_key ]]; then
+        dropbearkey -t ed25519 -f ./ssh/dropbear_ed25519_host_key
+    fi
+    if [[ ! -f ./ssh/dropbear_ecdsa_host_key ]]; then
+        dropbearkey -t ecdsa -s 521 -f ./ssh/dropbear_ecdsa_host_key
+    fi
+    if [[ ! -f ./ssh/dropbear_rsa_host_key ]]; then
+        dropbearkey -t rsa   -s 4096 -f ./ssh/dropbear_rsa_host_key
+    fi
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/dropbear* "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    cp ./ssh/banner    "${BUILD_TMPDIR}/core/usr/local/etc/dropbear/"
+    mkdir -p "${BUILD_TMPDIR}/core/home/tc/.ssh"
+    cp ./ssh/authorized_keys     "${BUILD_TMPDIR}/core/home/tc/.ssh/"
+    cp ./ssh/ssh_sed_unlock.sh   "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    chmod +x "${BUILD_TMPDIR}/core/usr/local/sbin/ssh_sed_unlock.sh"
+    chown -R 1001 "${BUILD_TMPDIR}/core/home/tc/"
+    chmod 700 "${BUILD_TMPDIR}/core/home/tc/.ssh"
+    chmod 600 "${BUILD_TMPDIR}/core/home/tc/.ssh/authorized_keys"
+}
+
+# slim_initrd_filesystem — removes man pages, docs, locale files, headers,
+# and pkg-config data to shrink the initrd payload.
+slim_initrd_filesystem() {
+    find "${BUILD_TMPDIR}/core/usr/share/man"    -type f -delete 2>/dev/null || true
+    find "${BUILD_TMPDIR}/core/usr/share/doc"    -type f -delete 2>/dev/null || true
+    find "${BUILD_TMPDIR}/core/usr/share/locale" -type f -delete 2>/dev/null || true
+    rm -rf "${BUILD_TMPDIR}/core/usr/include" "${BUILD_TMPDIR}/core/usr/lib/pkgconfig"
+}
+
+# repack_initrd_to_boot — runs depmod inside the initrd chroot, then
+# repacks it as an xz-compressed cpio archive into fs/boot/.
+repack_initrd_to_boot() {
+    local initrd_out_abs
+    initrd_out_abs="$(cd "${BUILD_TMPDIR}/fs/boot" && pwd)/corepure64.gz"
+
+    # Sanity check before depmod: if BusyBox was corrupted by a previous build
+    # artifact (for example from writing through a symlinked /sbin/modprobe),
+    # fail with a clear remediation path.
+    if ! chroot "${BUILD_TMPDIR}/core" /bin/busybox true >/dev/null 2>&1; then
+        echo "❌ BusyBox sanity check failed inside ${BUILD_TMPDIR}/core." >&2
+        echo "   This usually indicates a stale/corrupted build tree (e.g. symlink-follow overwrite)." >&2
+        echo "   Run: ./build.sh --clean   then rebuild." >&2
+        exit 1
+    fi
+
+    chroot "${BUILD_TMPDIR}/core" /sbin/depmod "${TC_KERNEL_VERSION}"
+    (
+        cd "${BUILD_TMPDIR}/core"
+        find . | cpio -o -H newc | xz -9 --check=crc32 >"${initrd_out_abs}"
+    )
+}
+
+# -----------------------------------------------------------------------------
+# Raw disk image
+# -----------------------------------------------------------------------------
+# build_partitioned_disk_image — creates a raw .img with a DOS partition
+# table, one bootable FAT32 EFI partition, GRUB (BIOS + EFI), and the
+# kernel + initrd. The result is ready to be written to the OPAL shadow MBR.
+build_partitioned_disk_image() {
+    local fssize projected_size_mb maj min part line counter
+    fssize=$(du -m --summarize --total "${BUILD_TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
+    projected_size_mb=$((fssize + GRUBSIZE + 2))
+
+    if [ "${projected_size_mb}" -gt 128 ]; then
+        echo "⚠ WARNING: projected PBA image size is ${projected_size_mb}MB (>128MB OPAL2 guideline)." >&2
+        echo "  Consider reducing initrd size or lowering GRUBSIZE to stay under 128MB." >&2
+    fi
+
+    dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count="${projected_size_mb}"
+
+    LOOP_DEVICE_HDD=$(losetup --find --show --partscan "${OUTPUTIMG}")
+
+    # Keep this disk layout and filesystem choice in sync with
+    # sedunlocksrv/main.go validateUploadedPBAImage(). The web Expert re-flash
+    # path validates uploaded images against this exact recipe: DOS MBR, one
+    # bootable 0xEF partition, and a FAT32 filesystem created by mkfs.fat -F32.
+    # If you change the sfdisk layout, partition type/count, boot flag, or
+    # filesystem format here, update the server-side validator at the same time.
+    sfdisk "${LOOP_DEVICE_HDD}" <<'EOF'
+label: dos
+,+,0xEF,*
+EOF
+
+    # Create explicit partition device nodes when udev is absent (e.g. Docker).
+    # The node is only created when it does not already exist. (Fix #10 — mknod
+    # now also checks the return code and warns on failure rather than silently
+    # continuing.) (Fix for fragile mknod in Docker context)
+    counter=1
+    while read -r line; do
+        [ -n "${line}" ] || continue
+        maj=$(echo "${line}" | cut -d: -f1)
+        min=$(echo "${line}" | cut -d: -f2)
+        if [ ! -e "${LOOP_DEVICE_HDD}p${counter}" ]; then
+            mknod "${LOOP_DEVICE_HDD}p${counter}" b "${maj}" "${min}" || \
+                echo "⚠ mknod ${LOOP_DEVICE_HDD}p${counter} failed (may already exist)" >&2
+        fi
+        counter=$((counter + 1))
+    done < <(lsblk --raw --output MAJ:MIN --noheadings "${LOOP_DEVICE_HDD}" | tail -n +2)
+
+    mkfs.fat -F32 "${LOOP_DEVICE_HDD}p1"
+    mount "${LOOP_DEVICE_HDD}p1" "${BUILD_TMPDIR}/img"
+
+    grub-install --no-floppy --boot-directory="${BUILD_TMPDIR}/img/boot" --target=i386-pc "${LOOP_DEVICE_HDD}"
+    grub-install --removable --boot-directory="${BUILD_TMPDIR}/img/boot" --target=x86_64-efi \
+        --efi-directory="${BUILD_TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+    grub-install --removable --boot-directory="${BUILD_TMPDIR}/img/boot" --target=i386-efi \
+        --efi-directory="${BUILD_TMPDIR}/img/" "${LOOP_DEVICE_HDD}"
+
+    cat >"${BUILD_TMPDIR}/img/boot/grub/grub.cfg" <<EOF
 set timeout_style=hidden
 set timeout=0
 set default=0
@@ -221,19 +994,62 @@ menuentry "tc" {
 }
 EOF
 
-# Copy the boot directory (initrd and kernel)
-cp -r "${TMPDIR}/fs/boot" "${TMPDIR}/img/"
+    cp -r "${BUILD_TMPDIR}/fs/boot" "${BUILD_TMPDIR}/img/"
+    sync
+    umount "${BUILD_TMPDIR}/img"
+    sync
+    sleep 1
+    losetup -d "${LOOP_DEVICE_HDD}"
+    LOOP_DEVICE_HDD=""
+}
 
-# Unmounting image file
-sync
-umount "${TMPDIR}/img"
-sync
-sleep 1
+# finalize_output_artifact — makes the image world-readable and creates
+# the “latest” symlink.
+finalize_output_artifact() {
+    chmod ugo+r "${OUTPUTIMG}"
+    ln -sf "${OUTPUTIMG}" "${LATEST_LINK}"
+    echo "✅ Build complete: ${OUTPUTIMG}"
+}
 
-# Free loop device
-losetup -d "${LOOP_DEVICE_HDD}"
+# -----------------------------------------------------------------------------
+# Entry
+# -----------------------------------------------------------------------------
+# main — orchestrates the full PBA image build from config loading through
+# Go compilation, ISO extraction, initrd assembly, and disk image creation.
+main() {
+    extract_config_path_from_args "$@"
+    load_config_file
+    require_root
+    parse_args "${REMAINING_ARGS[@]}"
+    configure_sedutil_source
+    validate_network_settings
+    apply_extension_flags
+    maybe_clean_workspace
 
-# Make sure the image is readable
-chmod ugo+r "${OUTPUTIMG}"
+    trap cleanup EXIT
 
-echo "DONE"
+    check_host_dependencies
+    setup_workdirs
+
+    build_sedunlocksrv_go
+    prepare_expert_password_hash
+    ensure_tls_certs
+
+    prepare_tinycore_iso
+    fetch_sedutil_cli
+    stage_kernel_and_initrd
+    populate_initrd_application_tree
+    build_kexec_tools
+    install_tcz_extensions
+    install_bonding_module_if_needed
+    apply_keymap_file
+    apply_ssh_bundle
+
+    slim_initrd_filesystem
+    repack_initrd_to_boot
+
+    build_partitioned_disk_image
+    finalize_output_artifact
+}
+
+main "$@"

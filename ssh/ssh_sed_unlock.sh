@@ -1,70 +1,260 @@
-#!/usr/bin/env bash
+#!/bin/busybox ash
+#
+# SSH interface for the SED Unlock Service.
+#
+# This script is used as the forced command for SSH logins, so users land in
+# this menu instead of a shell. It talks to the local sedunlocksrv HTTPS API.
 
-export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin"$PATH"
+export TMOUT=300
 
-trap '' 2
+SSH_CURL_INSECURE="true"
+[ -f /etc/sedunlocksrv.conf ] && . /etc/sedunlocksrv.conf
 
-reboot_function () {
-    # reboot
-    echo; echo
-    echo "Rebooting..."
-    reboot -nf
+API="https://localhost:443"
+case "${SSH_CURL_INSECURE}" in
+    true)
+        CURL="curl -s -k"
+        ;;
+    *)
+        CURL="curl -s"
+        ;;
+esac
+
+AUTH_TOKEN=""
+STATUS_NOTICE=""
+
+CLR_RESET="$(printf '\033[0m')"
+CLR_BLUE="$(printf '\033[38;5;32m')"
+CLR_PURPLE="$(printf '\033[38;5;91m')"
+CLR_ORANGE="$(printf '\033[38;5;208m')"
+CLR_DIM="$(printf '\033[38;5;245m')"
+
+# have_command CMD — returns 0 if CMD is on the PATH.
+have_command() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-shutdown_function () {
-    # shutdwn
-    echo; echo
-    echo "Shutting down..."
-    poweroff -nf
+# status_fallback_json — prints a minimal empty-status JSON object.
+# Used when curl or jq is missing or the API is unreachable.
+status_fallback_json() {
+    printf '%s\n' '{"drives":[],"interfaces":[]}'
 }
 
-echo "Press ESC anytime to reboot."
-echo "Press CTRL-D anytime to shutdown."
-echo
+# fetch_status_json — queries the local HTTPS API for the current system
+# status. Sets STATUS_NOTICE on failure and falls back to empty JSON.
+fetch_status_json() {
+    STATUS_NOTICE=""
 
-if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TCG Opal 2-compliant disks"
-    then
-        echo "Could not detect TCG Opal 2-compliant disks. Probably nothing to do here."
-        echo
-fi
+    if ! have_command curl; then
+        STATUS_NOTICE="Status unavailable: curl is not installed in this build."
+        status_fallback_json
+        return 1
+    fi
 
-while [ true ] ; do
+    if ! have_command jq; then
+        STATUS_NOTICE="Status unavailable: jq is not installed in this build."
+        status_fallback_json
+        return 1
+    fi
 
-    echo -n "🔑🔑🔑 Enter SED password: "
+    local response
+    response=$($CURL "$API/status" 2>/dev/null) || response=""
+    if [ -z "${response}" ] || ! echo "${response}" | jq -e . >/dev/null 2>&1; then
+        STATUS_NOTICE="Status unavailable: unable to reach the local unlock service."
+        status_fallback_json
+        return 1
+    fi
 
-    unset password;
-    while IFS= read -r -n1 -s char; do
-        case "$char" in
-        $'\004') # if input == CTRL-D key
-            shutdown_function
-            ;;
-        $'\e') # if input == ESC key
-            reboot_function
-            ;;
-        $'\0') # if input == ENTER key
-            break
-            ;;
-        $'\177') # if input == BACKSPACE key
-            if [ ${#password} -gt 0 ]; then
-                echo -ne "\b \b"
-                password=${password::-1}
-            fi
-            ;;
-        *)
-            echo -n '*'
-            password+="$char"
-            ;;
-        esac
-    done
+    printf '%s\n' "${response}"
+    return 0
+}
+
+# print_drives JSON — renders the drive list from a /status JSON response
+# as indented lines with lock state and OPAL capability.
+print_drives() {
+    local count
+    count=$(echo "$1" | jq -r '.drives | length' 2>/dev/null || echo 0)
+    if [ "${count}" -eq 0 ]; then
+        echo "  No OPAL drives detected."
+        return 0
+    fi
+
+    echo "$1" | jq -r '
+        .drives[] |
+        "  " +
+        (if .locked then "[locked] " else "[open]   " end) +
+        .device + "  " +
+        (if .locked then "LOCKED  " else "UNLOCKED" end) + "  " +
+        (if .opal then "OPAL" else "NON-OPAL" end)
+    '
+}
+
+# print_interfaces JSON — renders the network interface list from a /status
+# JSON response with link state, MAC, and IP addresses.
+print_interfaces() {
+    local count
+    count=$(echo "$1" | jq -r '.interfaces | length' 2>/dev/null || echo 0)
+    if [ "${count}" -eq 0 ]; then
+        echo "  No network interfaces reported."
+        return 0
+    fi
+
+    echo "$1" | jq -r '
+        .interfaces[] |
+        "  " + .name +
+        "  " + .state +
+        (if .carrier then "  link" else "  no-link" end) +
+        (if .mac != "" then "  " + .mac else "" end) +
+        (if (.addresses | length) > 0 then "  " + (.addresses | join(", ")) else "" end) +
+        (if .loopback then "  loopback" else "" end)
+    '
+}
+
+# has_error JSON — returns 0 if the JSON object contains an "error" key.
+has_error() {
+    echo "$1" | jq -e '.error' > /dev/null 2>&1
+}
+
+# get_error JSON — extracts and prints the "error" value from a JSON object.
+get_error() {
+    echo "$1" | jq -r '.error // empty'
+}
+
+# has_results JSON — returns 0 if the JSON contains a non-empty "results" array.
+has_results() {
+    echo "$1" | jq -e '(.results // []) | length > 0' > /dev/null 2>&1
+}
+
+# post_with_auth URL — POSTs to the API, including the session auth token
+# header when one has been obtained from a successful unlock.
+post_with_auth() {
+    if [ -n "$AUTH_TOKEN" ]; then
+        $CURL -X POST -H "X-Auth-Token: $AUTH_TOKEN" "$1"
+    else
+        $CURL -X POST "$1"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Main loop — interactive menu for unlock, boot, reboot, shutdown, and quit.
+# Refreshes drive/network status on every iteration; auto-loops on 10s timeout.
+# ---------------------------------------------------------------------------
+while true; do
+    clear
+    echo "${CLR_BLUE}SED UNLOCK (SSH)${CLR_RESET}"
+    echo "${CLR_DIM}Auto logout: 5m | Refresh: 10s${CLR_RESET}"
     echo
 
-    # do not accept empty passwords
-    if [ -z "$password" ]
-    then
-        :
-    else
-        # attempt to unlock SED drive(s)
-        /usr/local/sbin/sedunlocksrv/opal-functions.sh "$password"
+    STATUS_JSON=$(fetch_status_json)
+    if [ -n "${STATUS_NOTICE}" ]; then
+        echo "${CLR_DIM}${STATUS_NOTICE}${CLR_RESET}"
         echo
     fi
+
+    print_drives "${STATUS_JSON}"
+    echo
+    echo "${CLR_DIM}Network Interfaces (use these names for NET_IFACES / EXCLUDE_NETDEV):${CLR_RESET}"
+    print_interfaces "${STATUS_JSON}"
+    echo
+
+    echo "[U] ${CLR_PURPLE}Unlock${CLR_RESET}  [B] ${CLR_BLUE}Boot${CLR_RESET}  [R] ${CLR_ORANGE}Reboot${CLR_RESET}  [S] ${CLR_BLUE}Shutdown${CLR_RESET}  [Q] Quit"
+    echo -n "Choice: "
+
+    if ! read -t 10 choice; then
+        continue
+    fi
+
+    case $(echo "$choice" | tr '[:lower:]' '[:upper:]') in
+        U)
+            echo -n "Password: "
+            stty -echo
+            read -r pass
+            stty sane
+            echo
+
+            RESP=$($CURL -X POST \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg p "$pass" '{password: $p}')" \
+                "$API/unlock" 2>/dev/null)
+
+            if [ -z "${RESP}" ]; then
+                echo "Service unavailable."
+            elif has_error "$RESP"; then
+                echo "Error: $(get_error "$RESP")"
+            else
+                AUTH_TOKEN=$(echo "$RESP" | jq -r '.token // empty')
+                if has_results "$RESP"; then
+                    echo "$RESP" | jq -r '
+                        .results[] |
+                        "  " + (if .success then "[ok] " else "[failed] " end) + .device
+                    '
+                elif [ -n "${AUTH_TOKEN}" ]; then
+                    echo "Unlock accepted."
+                else
+                    echo "No unlockable OPAL drives were reported."
+                fi
+            fi
+            sleep 2
+            ;;
+
+        B)
+            echo -n "Boot OS? (y/n): "
+            read -r c
+            if [ "$c" = "y" ]; then
+                RESP=$(post_with_auth "$API/boot" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
+                    sleep 2
+                else
+                    WARN=$(echo "$RESP" | jq -r '.warning // empty')
+                    [ -n "$WARN" ] && echo "Warning: $WARN"
+                    echo "Booting..."
+                    exit 0
+                fi
+            fi
+            ;;
+
+        R)
+            echo -n "Reboot? (y/n): "
+            read -r c
+            if [ "$c" = "y" ]; then
+                RESP=$(post_with_auth "$API/reboot" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
+                    sleep 2
+                else
+                    echo "$(echo "$RESP" | jq -r '.status // "rebooting"')..."
+                    exit 0
+                fi
+            fi
+            ;;
+
+        S)
+            echo -n "Shutdown? (y/n): "
+            read -r c
+            if [ "$c" = "y" ]; then
+                RESP=$(post_with_auth "$API/poweroff" 2>/dev/null)
+                if [ -z "${RESP}" ]; then
+                    echo "Service unavailable."
+                    sleep 2
+                elif has_error "$RESP"; then
+                    echo "Error: $(get_error "$RESP")"
+                    sleep 2
+                else
+                    echo "$(echo "$RESP" | jq -r '.status // "powering off"')..."
+                    exit 0
+                fi
+            fi
+            ;;
+
+        Q)
+            exit 0
+            ;;
+    esac
 done

@@ -1,399 +1,1384 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        border: none;
-        user-select: none;
-      }
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SED Unlock</title>
+<style>
+*,*::before,*::after { box-sizing: border-box; }
+body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 16px;
+}
+h2 {
+    text-align: center;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin: 8px 0 16px;
+    color: #f0f6fc;
+}
+.box {
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: #161b22;
+}
+button {
+    background: #238636;
+    color: #fff;
+    border: 1px solid rgba(240,246,252,0.1);
+    border-radius: 6px;
+    padding: 8px 16px;
+    margin-top: 6px;
+    width: 230px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+}
+button:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
+button:active {
+    transform: translateY(0);
+}
+button:disabled {
+    opacity: 0.4;
+    transform: none;
+    cursor: default;
+}
+input, textarea, select {
+    width: 100%;
+    padding: 8px 10px;
+    margin-top: 6px;
+    background: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    box-sizing: border-box;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: #388bfd;
+    box-shadow: 0 0 0 3px rgba(56,139,253,0.3);
+}
+textarea {
+    min-height: 140px;
+    resize: vertical;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+input[type="text"],
+input[type="password"] {
+    width: 300px;
+}
+.hidden { display: none; }
+.ok   { color: #3fb950; }
+.bad  { color: #f85149; }
+.warn { color: #d29922; }
+.small { font-size: 12px; color: #8b949e; }
+.hint  { font-size: 12px; color: #8b949e; line-height: 1.5; margin-top: 8px; }
+.hint code {
+    background: #262c36;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+.danger {
+    border-color: #f8514966;
+    background: #1a0f0f;
+}
+.tab {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #30363d;
+    padding-bottom: 0;
+}
+.tab button {
+    flex: 1 1 0;
+    width: auto;
+    margin: 0;
+    background: transparent;
+    color: #8b949e;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 10px 8px;
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+.tab button:hover {
+    color: #e6edf3;
+    opacity: 1;
+    transform: none;
+}
+.active {
+    color: #f0f6fc !important;
+    border-bottom-color: #388bfd !important;
+}
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #8b949e;
+}
+.checkbox-row input {
+    width: auto;
+    margin-right: 6px;
+}
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.primary-btn   { background: #238636; border-color: rgba(240,246,252,0.1); }
+.primary-btn:hover { background: #2ea043; }
+.secondary-btn { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+.secondary-btn:hover { background: #30363d; }
+.warm-btn      { background: #c77623; border-color: rgba(240,246,252,0.1); }
+.warm-btn:hover { background: #d68a3a; }
+.danger-btn    { background: #9e2a2b; border-color: rgba(240,246,252,0.1); }
+.danger-btn:hover { background: #b33; }
+.mono {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+.log-box {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #010409;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-top: 8px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #7ee787;
+    display: none;
+}
+#flashLog {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.doc-image {
+    width: 100%;
+    max-width: 720px;
+    display: block;
+    margin: 12px auto 0;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+}
+.section-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f0f6fc;
+    margin-bottom: 4px;
+}
+.kernel-separator {
+    border: none;
+    border-top: 1px solid #30363d;
+    margin: 6px 0;
+}
+.pw-field-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+}
+.pw-field-row input {
+    flex-shrink: 0;
+    margin-top: 0;
+}
+.pw-reqs {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.req-item {
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.req-fail { color: #f85149; }
+.req-pass { color: #3fb950; }
+.pw-match {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    min-width: 110px;
+    flex-shrink: 0;
+}
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.drive-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #21262d;
+    border: 1px solid #30363d;
+}
+.drive-badge .drive-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.drive-badge.locked   { border-color: #f8514966; background: #1a0f0f; }
+.drive-badge.unlocked { border-color: #3fb95066; background: #0f1a0f; }
+.drive-badge.nonopal  { border-color: #d2992244; background: #1a170f; }
+.status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+    color: #8b949e;
+    margin-top: 8px;
+}
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.stat-val {
+    font-weight: 600;
+    color: #e6edf3;
+}
+.build-info {
+    margin-top: 10px;
+}
+.build-label {
+    margin-right: 6px;
+    color: #8b949e;
+}
+.build-tag {
+    display: inline-block;
+    font-size: 11px;
+    color: #8b949e;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+a.build-link {
+    text-decoration: none;
+    color: #58a6ff;
+    cursor: pointer;
+}
+a.build-link:hover {
+    color: #79c0ff;
+    border-color: #58a6ff;
+}
+/* Scrollbar styling for log areas */
+.log-box::-webkit-scrollbar { width: 6px; }
+.log-box::-webkit-scrollbar-track { background: transparent; }
+.log-box::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.log-box::-webkit-scrollbar-thumb:hover { background: #484f58; }
+@media (max-width: 700px) {
+    .tab button { font-size: 11px; padding: 8px 4px; }
+    button { width: 100% !important; }
+    input[type="text"],
+    input[type="password"] { width: 100%; }
+}
+</style>
+</head>
+<body>
 
-      :focus,
-      #toolbar input[type="radio"]:focus + label,
-      input[type="checkbox"]:focus + label::before {
-        outline: 1px solid #007fd4;
-        outline-offset: -1px;
-      }
+<h2>SED Unlock</h2>
 
-      input[type="checkbox"] {
-        appearance: none;
-        -moz-appearance: none;
-        -webkit-appearance: none;
-        position: fixed;
-        cursor: pointer;
-      }
+<div class="tab">
+    <button id="tabUnlock" class="active" onclick="showTab('unlock')">Unlock</button>
+    <button id="tabChange" onclick="showTab('change')">Change Password</button>
+    <button id="tabDiag" onclick="showTab('diag')">Diagnostics</button>
+    <button id="tabExpert" onclick="showTab('expert')">Expert</button>
+</div>
 
-      input[type="checkbox"] + label {
-        display: flex;
-        align-items: center;
-        cursor: pointer;
-      }
+<div class="box">
+    <div id="status"></div>
+    <div id="statusSummary" class="small" style="margin-top:6px"></div>
+    <div id="buildInfo" class="small build-info"></div>
+</div>
 
-      input[type="checkbox"] + label::before {
-        content: "";
-        background: #fff;
-        height: 1em;
-        width: 1em;
-        display: inline-block;
-        margin-right: 0.5em;
-      }
-
-      input[type="checkbox"]:checked + label::before {
-        background: #0e639c;
-      }
-
-      html {
-        background: #1e1e1e;
-        color: #d4d4d4;
-      }
-
-      body {
-        max-width: 40em;
-        margin: 0 auto;
-        font-family: Arial, Helvetica, sans-serif;
-        font-size: 0.8em;
-      }
-
-      h2 {
-        margin: 1em;
-        text-align: center;
-        font-weight: 100;
-      }
-
-      pre {
-        user-select: text;
-      }
-
-      label,
-      button,
-      input {
-        font-size: 0.8em;
-      }
-
-      #toolbar {
-        display: flex;
-        flex-wrap: wrap-reverse;
-      }
-
-      #toolbar input[type="radio"] {
-        opacity: 0;
-        width: 0;
-        height: 0;
-        overflow: hidden;
-        position: absolute;
-      }
-
-      button,
-      #toolbar label {
-        padding: 10px 20px;
-      }
-
-      #toolbar label {
-        background-color: #2d2d2d;
-        text-transform: uppercase;
-        margin: 0 0 10px 0;
-        display: flex;
-        align-items: center;
-      }
-
-      #toolbar input[type="radio"]:not(:checked) + label:hover,
-      button:hover {
-        cursor: pointer;
-        opacity: 0.8;
-      }
-
-      #toolbar input[type="radio"]:checked + label,
-      button {
-        background-color: #0e639c;
-        color: white;
-      }
-
-      #reboot + label {
-        background: #e37933;
-        color: white;
-        margin-left: auto;
-      }
-
-      input[type="password"],
-      input[type="text"] {
-        width: 100%;
-        padding: 12px 20px;
-        margin: 8px 0;
-        display: inline-block;
-        box-sizing: border-box;
-        background: #3c3c3c;
-        color: #ccc;
-      }
-
-      button {
-        margin: 8px 0 0 0;
-        border: none;
-        width: 100%;
-      }
-
-      .container {
-        padding: 10px;
-        background: #2d2d2d;
-        margin-bottom: 0.5em;
-      }
-
-      html > body:not([data-action="change-pwd"]) .container .change-pwd {
-        display: none;
-      }
-
-      #password-toggle + label{
-        padding: 1em 0;
-      }
-
-      #submit {
-        background: #68217a;
-      }
-
-      #rebooting {
-        position: fixed;
-        top: 0;
-        left: 0;
-        bottom: 0;
-        right: 0;
-        background: rgba(0, 0, 0, 0.75);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        text-align: center;
-        color: white;
-      }
-
-      html > body:not(.rebooting) #rebooting {
-        display: none;
-      }
-
-      .lds-ripple {
-        display: inline-block;
-        position: relative;
-        width: 80px;
-        height: 80px;
-      }
-      .lds-ripple div {
-        position: absolute;
-        border: 4px solid #fff;
-        opacity: 1;
-        border-radius: 50%;
-        animation: lds-ripple 2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
-      }
-      .lds-ripple div:nth-child(2) {
-        animation-delay: -0.5s;
-      }
-      @keyframes lds-ripple {
-        0% {
-          top: 36px;
-          left: 36px;
-          width: 0;
-          height: 0;
-          opacity: 1;
-        }
-        100% {
-          top: 0px;
-          left: 0px;
-          width: 72px;
-          height: 72px;
-          opacity: 0;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <h2>SED Unlock Server</h2>
-    <form>
-      <div id="toolbar">
-        <input type="radio" id="unlock" name="action" />
-        <label for="unlock">Unlock</label>
-        <input type="radio" id="change-pwd" name="action" />
-        <label for="change-pwd">Change password</label>
-        <input type="radio" id="reboot" name="action" />
-        <label for="reboot">Reboot</label>
-      </div>
-
-      <div class="container">
-        <input
-          id="psw"
-          class="password"
-          type="password"
-          placeholder="Enter password"
-        />
-        <input
-          id="newpsw"
-          class="password change-pwd"
-          type="password"
-          placeholder="Enter new Password"
-        />
-        <input
-          id="newpsw2"
-          class="password change-pwd"
-          type="password"
-          placeholder="Confirm new password"
-        />
-        <input id="password-toggle" type="checkbox" checked="false" />
-        <label for="password-toggle">Show password</label>
-        <button id="submit">Submit</button>
-      </div>
-    </form>
-    <pre id="log"></pre>
-    <div id="rebooting">
-      <div>
-        <h3>REBOOTING</h3>
-        <div class="lds-ripple">
-          <div></div>
-          <div></div>
+<div id="unlockTab">
+    <div class="box">
+        <div id="unlockPasswordEntry">
+            <input id="pw" type="password" placeholder="Disk Password">
+            <label class="checkbox-row">
+                <input type="checkbox" id="showUnlock"> Show Password
+            </label>
+            <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
         </div>
-      </div>
+        <div id="unlockResult" class="small" style="margin-top:8px"></div>
+        <div id="bootResult" class="small"></div>
+        <div id="bootDebug" class="log-box"></div>
+        <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
+        <div class="hint">
+            After a successful unlock, the system will search for bootable kernels and present them for selection.
+            Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
+            NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
+        </div>
     </div>
-    <script>
-      (function () {
-        var pingTimeout = 2000;
-        var maxPingTime = 10 * 60 * 1000;
-        var pingTimeRemaining = maxPingTime;
+    <div id="kernelSelectionDialog" class="hidden">
+        <div class="box">
+            <div class="section-label">Select Kernel to Boot</div>
+            <div class="hint" style="margin-top:2px">Choose a kernel and confirm to boot the OS:</div>
+            <label class="checkbox-row" style="margin-top:6px">
+                <input type="checkbox" id="hideRecovery" checked onchange="renderKernelList()"> Hide Recovery Kernels
+            </label>
+            <div id="kernelOptions" class="small" style="margin-top:8px"></div>
+            <div class="row" style="margin-top:10px">
+                <button class="primary-btn" onclick="confirmKernelAndBoot()">Boot</button>
+                <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <button class="warm-btn" id="rebootBtn" onclick="reboot()">Reboot</button>
+        <button class="secondary-btn" id="shutdownBtn" onclick="shutdown()">Shutdown</button>
+    </div>
+    <div id="systemActionResult" class="small" style="margin-top:6px"></div>
+</div>
 
-        function ping(url, isUp, isDown) {
-          var handled = false;
+<div id="changeTab" class="hidden">
+    <div class="box">
+        <div class="section-label">Target drives</div>
+        <div id="changeTargets" class="small"></div>
+        <input id="cur" type="password" placeholder="Current Password">
+        <div class="pw-field-row">
+            <input id="new" type="password" placeholder="New Password">
+            <div class="pw-reqs" id="pwReqs"></div>
+        </div>
+        <div class="pw-field-row">
+            <input id="conf" type="password" placeholder="Confirm Password">
+            <div id="pwMatch" class="pw-match"></div>
+        </div>
+        <label class="checkbox-row">
+            <input type="checkbox" id="showChange"> Show Passwords
+        </label>
+        <button class="primary-btn" id="changeBtn" onclick="changePassword()">Update Password</button>
+        <div id="changeResult" class="small" style="margin-top:6px"></div>
+        <div class="hint">This updates Admin1 and SID on the selected drive(s). If SID password changes fail, check firmware or TPM settings and disable Block SID for the next boot. You must unlock at least one drive first in this boot session before changing passwords.</div>
+        <div class="hint">Example BIOS path: TPM or security settings with <b>Disable Block SID</b> set to <b>Disabled</b>, then accept the one-time change on the next boot.</div>
+        <img class="doc-image" src="/block-sid-bios.png" alt="Example BIOS setting showing Disable Block SID set to Disabled">
+    </div>
+</div>
 
-          function handleStatus() {
-            if (handled) {
-              return;
-            }
+<div id="diagTab" class="hidden">
+    <div class="box">
+        <div class="section-label">Network Interfaces</div>
+        <div class="hint" style="margin-top:2px">Detected by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
+        <div id="interfaces" class="small" style="margin-top:6px"></div>
+    </div>
+    <div class="box">
+        <div class="row">
+            <button class="secondary-btn" onclick="loadDiagnostics()">Refresh Diagnostics</button>
+        </div>
+        <div class="hint">Diagnostics are pulled from <code>sedutil-cli --query</code> per drive.</div>
+        <div id="diagSummary" class="small" style="margin-top:6px"></div>
+        <div id="diagContent" class="mono small" style="margin-top:6px"></div>
+    </div>
+</div>
 
-            handled = true;
-            var status = xhr.status;
-            if (status >= 200 && status < 400) {
-              if (isUp) isUp();
+<div id="expertTab" class="hidden">
+    <div class="box danger">
+        <div class="warn"><b>Expert Mode</b> &mdash; these operations can permanently destroy data or ownership metadata.</div>
+        <div class="hint">Use this only when standard unlock paths cannot recover the drive.</div>
+        <div id="expertStatus" class="small" style="margin-top:8px">Expert actions are locked.</div>
+        <div id="expertAuthEntry">
+            <input id="expertPw" type="password" placeholder="Expert Password">
+            <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
+        </div>
+    </div>
+
+    <div id="expertActions" class="hidden">
+        <div class="box danger">
+            <div><b>Revert TPer</b> (destructive)</div>
+            <div class="hint">Attempts a TPer revert using the current drive password. This can invalidate existing unlock configuration.</div>
+            <input id="expDeviceRevert" type="text" placeholder="/dev/sda">
+            <input id="expRevertPw" type="password" placeholder="Current Drive Password">
+            <input id="expRevertConfirm" type="text" placeholder='Type REVERT to confirm'>
+            <button class="danger-btn" onclick="expertRevertTper()">Run Revert TPer</button>
+        </div>
+        <div class="box danger">
+            <div><b>PSID Revert</b> (full erase)</div>
+            <div class="hint">Last-resort factory reset by PSID. This erases access to existing encrypted data.</div>
+            <input id="expDevicePsid" type="text" placeholder="/dev/sda">
+            <input id="expPsid" type="text" placeholder="PSID from drive label">
+            <input id="expPsidConfirm" type="text" placeholder='Type ERASE to confirm'>
+            <button class="danger-btn" onclick="expertPsidRevert()">Run PSID Revert</button>
+        </div>
+        <div class="box danger">
+            <div><b>Re-flash PBA Image</b> (destructive if wrong target)</div>
+            <div class="hint">Uploads a new PBA image and runs sedutil <code>--loadpbaimage</code> on the selected drive.</div>
+            <select id="expDeviceFlash">
+                <option value="">No OPAL2 drives detected</option>
+            </select>
+            <input id="expFlashPw" type="password" placeholder="Current Drive Password">
+            <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream" onchange="checkRAMForFile()">
+            <div id="ramCheckStatus" style="margin-top: 8px; padding: 8px; border-radius: 4px; display: none;">
+            </div>
+            <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
+            <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
+            <div id="flashStatus" class="small" style="margin-top: 8px; display: none;"></div>
+            <div id="flashLog" class="log-box"></div>
+        </div>
+        <div class="box">
+            <div class="small">Expert output</div>
+            <textarea id="expertOutput" readonly></textarea>
+        </div>
+    </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id)
+
+/** Escapes a string for safe insertion into HTML (prevents XSS). */
+function escapeHTML(s) {
+    let d = document.createElement("div")
+    d.appendChild(document.createTextNode(s))
+    return d.innerHTML
+}
+
+let policy = {}
+let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
+let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
+let bootInFlight = false
+let systemActionInFlight = false
+let bootStatusPoller = null
+const maxPBAUploadBytes = 128 * 1024 * 1024
+
+/** Returns an array of device paths selected on the Change Password tab. */
+function selectedChangeDevices() {
+    return Array.from(document.querySelectorAll("input[name='changeDevice']:checked")).map(el => el.value)
+}
+
+/** Renders the target-drive checkboxes on the Change Password tab. */
+function renderChangeTargets(status) {
+    let drives = Array.isArray(status.drives) ? status.drives : []
+    let eligible = drives.filter(d => d.opal && !d.locked)
+    let previouslySelected = selectedChangeDevices()
+    let defaultSelected = previouslySelected.length ? previouslySelected : (status.bootDrives || [])
+    if (!eligible.length) {
+        $("changeTargets").innerHTML = "<div class='warn'>Unlock an OPAL drive first to choose password-change targets.</div>"
+        return
+    }
+    $("changeTargets").innerHTML = eligible.map(d => {
+        let checked = defaultSelected.includes(d.device) ? "checked" : ""
+        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${escapeHTML(d.device)}" ${checked}> ${escapeHTML(d.device)}</label>`
+    }).join("")
+}
+
+/** Populates the OPAL2 drive dropdown on the Expert re-flash panel. */
+function renderExpertFlashTargets(status) {
+    let select = $("expDeviceFlash")
+    if (!select) return
+    let drives = Array.isArray(status.drives) ? status.drives : []
+    let opal = drives.filter(d => d.opal).sort((a, b) => a.device.localeCompare(b.device))
+    let prev = select.value
+
+    if (!opal.length) {
+        select.innerHTML = '<option value="">No OPAL2 drives detected</option>'
+        select.disabled = true
+        return
+    }
+
+    select.disabled = false
+    select.innerHTML = '<option value="">Select OPAL2 drive...</option>' + opal.map(d => {
+        let state = d.locked ? "locked" : "unlocked"
+        return `<option value="${escapeHTML(d.device)}">${escapeHTML(d.device)} (${state})</option>`
+    }).join("")
+
+    if (opal.some(d => d.device === prev)) {
+        select.value = prev
+    } else if (opal.length === 1) {
+        select.value = opal[0].device
+    }
+}
+
+/** Toggles UI controls into/out of the "boot in progress" state. */
+function setBootUiBusy(busy) {
+    bootInFlight = busy
+    $("unlockBtn").disabled = busy
+    $("rebootBtn").disabled = busy
+    $("shutdownBtn").disabled = busy
+    $("bootTransition").classList.toggle("hidden", !busy)
+}
+
+/** Clears the periodic boot-status polling interval. */
+function stopBootStatusPolling() {
+    if (bootStatusPoller) {
+        clearInterval(bootStatusPoller)
+        bootStatusPoller = null
+    }
+}
+
+/** Shows or hides the boot debug log area with the given lines. */
+function showBootDebug(lines) {
+    let el = $("bootDebug")
+    if (Array.isArray(lines) && lines.length) {
+        el.innerText = lines.join("\n")
+        el.style.display = "block"
+        el.scrollTop = el.scrollHeight
+    } else {
+        el.innerText = ""
+        el.style.display = "none"
+    }
+}
+
+/** Polls /boot-status and updates the UI with progress, success, or error. */
+async function checkBootStatus() {
+    let r = await fetch("/boot-status")
+    let j = await r.json()
+    if (Array.isArray(j.debug) && j.debug.length) {
+        showBootDebug(j.debug)
+    }
+    if (j.inProgress) {
+        $("bootResult").innerText = "Searching for a bootable OS..."
+        return
+    }
+    if (j.accepted) {
+        if (j.result && Array.isArray(j.result.debug) && j.result.debug.length) {
+            showBootDebug(j.result.debug)
+        }
+        setBootUiBusy(false)
+        $("bootResult").innerText = "OS handoff initiated successfully. System will restart..."
+        stopBootStatusPolling()
+        return
+    }
+    if (j.error) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = j.error
+        showBootDebug(Array.isArray(j.debug) ? j.debug : [])
+        stopBootStatusPolling()
+    }
+}
+
+/** Toggles the reboot/shutdown buttons into a busy state for the given action. */
+function setSystemActionBusy(action) {
+    systemActionInFlight = !!action
+    $("rebootBtn").disabled = !!action
+    $("shutdownBtn").disabled = !!action
+    $("rebootBtn").innerText = action === "reboot" ? "Rebooting..." : "Reboot"
+    $("shutdownBtn").innerText = action === "shutdown" ? "Shutting down..." : "Shutdown"
+}
+
+/** Switches the visible tab (unlock, change, diag, expert). */
+function showTab(name) {
+    const tabs = {
+        unlock: ["unlockTab", "tabUnlock"],
+        change: ["changeTab", "tabChange"],
+        diag: ["diagTab", "tabDiag"],
+        expert: ["expertTab", "tabExpert"]
+    }
+    Object.keys(tabs).forEach(k => {
+        const visible = k === name
+        $(tabs[k][0]).classList.toggle("hidden", !visible)
+        $(tabs[k][1]).classList.toggle("active", visible)
+    })
+    if (name === "diag") loadDiagnostics()
+    if (name === "expert") syncExpertState()
+}
+
+/** Returns headers object with the session auth token, if present. */
+function authHeaders() {
+    return authToken ? {"X-Auth-Token": authToken} : {}
+}
+
+/** Returns headers object with the expert auth token, if present. */
+function expertHeaders() {
+    return expertToken ? {"X-Expert-Token": expertToken} : {}
+}
+
+/** Fetches the password policy from the server and renders requirement indicators. */
+async function loadPolicy() {
+    let r = await fetch("/password-policy")
+    policy = await r.json()
+    renderPolicyIndicators()
+}
+
+/** Renders the password-requirement badges (min length, A-Z, 0-9, etc.). */
+function renderPolicyIndicators() {
+    let html = `<span id="reqLen" class="req-item req-fail">Min ${policy.minLength || 1}</span>`
+    if (policy.requireUpper) html += ' <span id="reqUpper" class="req-item req-fail">A-Z</span>'
+    if (policy.requireLower) html += ' <span id="reqLower" class="req-item req-fail">a-z</span>'
+    if (policy.requireNumber) html += ' <span id="reqNum" class="req-item req-fail">0-9</span>'
+    if (policy.requireSpecial) html += ' <span id="reqSpecial" class="req-item req-fail">!@#</span>'
+    $("pwReqs").innerHTML = html
+}
+
+/** Updates a single password-requirement badge to pass/fail state. */
+function setRequirementStatus(id, ok) {
+    let el = $(id)
+    if (el) el.className = "req-item " + (ok ? "req-pass" : "req-fail")
+}
+
+/** Live-validates the new password and confirm fields against the policy. */
+function validateNewPassword() {
+    let pw = $("new").value
+    let cf = $("conf").value
+    setRequirementStatus("reqLen", pw.length >= (policy.minLength || 1))
+    if (policy.requireUpper) setRequirementStatus("reqUpper", /[A-Z]/.test(pw))
+    if (policy.requireLower) setRequirementStatus("reqLower", /[a-z]/.test(pw))
+    if (policy.requireNumber) setRequirementStatus("reqNum", /[0-9]/.test(pw))
+    if (policy.requireSpecial) setRequirementStatus("reqSpecial", /[^A-Za-z0-9]/.test(pw))
+    let matchEl = $("pwMatch")
+    if (!cf) {
+        matchEl.textContent = ""
+        matchEl.className = "pw-match"
+    } else if (pw === cf) {
+        matchEl.textContent = "matches"
+        matchEl.className = "pw-match req-pass"
+    } else {
+        matchEl.textContent = "does not match"
+        matchEl.className = "pw-match req-fail"
+    }
+}
+
+/** Renders the build version as a plain tag or a link to the repo commit/release. */
+function buildVersionHTML(build, repoURL) {
+    if (!build) return ""
+    const label = `<span class="build-label">Build Version:</span>`
+    const baseRepoURL = (repoURL || "").replace(/\/+$/, '')
+    if (!baseRepoURL) {
+        return `${label}<span class="build-tag">${escapeHTML(build)}</span>`
+    }
+
+    // Non-tag local builds are formatted as YYYYMMDD-HHMM-<gitsha>; link those to the commit.
+    const commitMatch = build.match(/^\d{8}-\d{4}-([0-9a-f]{7,40})$/i)
+    if (commitMatch) {
+        const commitURL = `${baseRepoURL}/commit/${commitMatch[1]}`
+        return `${label}<a href="${commitURL}" target="_blank" rel="noopener" class="build-tag build-link">${escapeHTML(build)}</a>`
+    }
+
+    const releaseURL = `${baseRepoURL}/releases/tag/${encodeURIComponent(build)}`
+    return `${label}<a href="${releaseURL}" target="_blank" rel="noopener" class="build-tag build-link">${escapeHTML(build)}</a>`
+}
+
+/** Refreshes the full status display: drives, interfaces, counters, build info. */
+async function refresh() {
+    if (bootInFlight) return
+    let r = await fetch("/status")
+    let j = await r.json()
+
+    let html = "", ifaceHtml = ""
+    let drives = Array.isArray(j.drives) ? j.drives : []
+    let interfaces = Array.isArray(j.interfaces) ? j.interfaces : []
+
+    drives.forEach(d => {
+        let isLocked = d.locked
+        let isOpal = d.opal
+        let cls = isOpal ? (isLocked ? "locked" : "unlocked") : "nonopal"
+        let icon = isOpal ? (isLocked ? "&#x1F512;" : "&#x1F513;") : "&#x1F4BE;"
+        let stateText = isOpal ? (isLocked ? "Locked" : "Unlocked") : "Non-OPAL"
+        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${escapeHTML(d.device)} &mdash; ${stateText}</div>`
+    })
+
+    interfaces.forEach(iface => {
+        let link = iface.carrier ? "LINK" : "NO-LINK"
+        let extra = []
+        if (iface.mac) extra.push(escapeHTML(iface.mac))
+        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.map(escapeHTML).join(", "))
+        if (iface.loopback) extra.push("loopback")
+        ifaceHtml += `<div>${escapeHTML(iface.name)} - ${escapeHTML(iface.state)} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
+    })
+
+    let opalDrives = drives.filter(d => d.opal)
+    let opalCount = opalDrives.length
+    let lockedCount = opalDrives.filter(d => d.locked).length
+    $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
+    let bootSummary = j.bootReady ? escapeHTML((j.bootDrives || []).join(", ") || "yes") : "none yet"
+    let failedUnlockAttempts = j.failedAttempts || 0
+    let maxUnlockAttempts = j.maxAttempts || 0
+    let remaining = j.attemptsRemaining || 0
+    let remainColor = remaining <= 1 ? "#f85149" : remaining <= 2 ? "#d29922" : "#3fb950"
+    $("statusSummary").innerHTML = `<div class="status-bar">`
+        + `<span class="stat-item">Drives <span class="stat-val">${drives.length}</span></span>`
+        + `<span class="stat-item">OPAL <span class="stat-val">${opalCount}</span></span>`
+        + `<span class="stat-item">Locked <span class="stat-val" style="color:${lockedCount ? '#f85149' : '#3fb950'}">${lockedCount}</span></span>`
+        + `<span class="stat-item">Boot-ready <span class="stat-val">${bootSummary}</span></span>`
+        + `<span class="stat-item">Failed unlock attempts <span class="stat-val">${failedUnlockAttempts}/${maxUnlockAttempts}</span></span>`
+        + `<span class="stat-item">Attempts before shutdown <span class="stat-val" style="color:${remainColor}">${remaining}</span></span>`
+        + `</div>`
+    $("buildInfo").innerHTML = buildVersionHTML(j.build, j.repoURL)
+    $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
+    renderChangeTargets(j)
+    renderExpertFlashTargets(j)
+}
+
+/** POSTs JSON to the given URL and returns the parsed response. Throws on non-OK. */
+async function postJSON(url, payload, headers) {
+    let r = await fetch(url, {
+        method: "POST",
+        headers: Object.assign({"Content-Type": "application/json"}, headers || {}),
+        body: JSON.stringify(payload || {})
+    })
+    let j = await r.json().catch(() => ({}))
+    if (!r.ok) {
+        let err = new Error(j.error || "Request failed")
+        err.details = j
+        throw err
+    }
+    return j
+}
+
+/** POSTs to a URL with the session auth token and no body. */
+async function postAuthenticated(url) {
+    return postJSON(url, {}, authHeaders())
+}
+
+/** Sends the unlock password to the API, stores the session token on success,
+ *  then triggers kernel discovery. */
+async function unlock() {
+    if ($("unlockBtn").disabled) return
+    $("unlockBtn").disabled = true
+    try {
+        let j = await postJSON("/unlock", {password: $("pw").value})
+        if (j.token) {
+            authToken = j.token
+            sessionStorage.setItem("sedunlocksrvAuthToken", authToken)
+        }
+        let results = Array.isArray(j.results) ? j.results : []
+        if (results.length) {
+            let ok = results.filter(r => r.success).map(r => r.device)
+            let bad = results.filter(r => !r.success).map(r => r.device)
+            let parts = []
+            if (ok.length) parts.push(`Unlocked: ${ok.join(", ")}`)
+            if (bad.length) parts.push(`Failed: ${bad.join(", ")}`)
+            $("unlockResult").innerText = parts.join(" | ")
+        } else if (j.token) {
+            $("unlockResult").innerText = "Unlock accepted."
+        } else {
+            $("unlockResult").innerText = "No unlockable OPAL drives were reported."
+        }
+    } catch (err) {
+        $("unlockResult").innerText = err.message || "Unlock failed"
+        alert(err.message || "Unlock failed")
+        $("pw").value = ""
+        $("unlockBtn").disabled = false
+        refresh()
+        return
+    }
+    $("pw").value = ""
+    $("unlockBtn").disabled = false
+    refresh()
+
+    // Auto-discover kernels after successful unlock
+    if (authToken) {
+        $("bootResult").innerText = "Searching for bootable kernels..."
+        discoverKernels()
+    }
+}
+
+/** Sends the current/new password and selected drives to the change-password API. */
+async function changePassword() {
+    if ($("changeBtn").disabled) return
+    let cur = $("cur").value
+    let nw = $("new").value
+    let cf = $("conf").value
+    let devices = selectedChangeDevices()
+    if (nw !== cf) {
+        alert("Password mismatch")
+        return
+    }
+    if (!devices.length) {
+        alert("Select at least one target drive.")
+        return
+    }
+    $("changeBtn").disabled = true
+    $("changeResult").innerText = "Applying password update..."
+    try {
+        let j = await postJSON("/change-password", {currentPassword: cur, newPassword: nw, devices}, authHeaders())
+        let results = Array.isArray(j.results) ? j.results : []
+        let ok = results.filter(r => r.success)
+        let bad = results.filter(r => !r.success)
+        let lines = []
+        ok.forEach(r => lines.push(`${r.device}: ${r.detail || "password updated"}`))
+        bad.forEach(r => lines.push(`${r.device}: ${r.error || "password change failed"}`))
+        $("changeResult").innerText = lines.join(" | ") || "No eligible OPAL drives reported."
+        if (!ok.length) {
+            alert("Password change did not update any unlockable drive.")
+        }
+    } catch (err) {
+        $("changeResult").innerText = err.message || "Password change failed"
+        alert(err.message || "Password change failed")
+    } finally {
+        $("changeBtn").disabled = false
+        $("cur").value = ""
+        $("new").value = ""
+        $("conf").value = ""
+    }
+}
+
+/** Fetches per-drive diagnostics from /diagnostics and renders the raw query output. */
+async function loadDiagnostics() {
+    try {
+        let r = await fetch("/diagnostics")
+        let j = await r.json()
+        $("diagSummary").innerText = `Generated: ${j.generatedAt || "unknown"}`
+        let out = ""
+        ;(j.drives || []).forEach(d => {
+            out += `Device: ${d.device}\n`
+            out += `  OPAL: ${d.opal}  Locked: ${d.locked}\n`
+            out += `  LockingSupported: ${d.lockingSupported}\n`
+            out += `  LockingEnabled: ${d.lockingEnabled}\n`
+            out += `  MBREnable: ${d.mbrEnabled}\n`
+            out += `  MBRDone: ${d.mbrDone}\n`
+            out += `  MediaEncrypt: ${d.mediaEncrypt}\n`
+            out += `  Locked (from query): ${d.lockingRange0Locked}\n`
+            out += `  --- raw --query output ---\n`
+            out += (d.queryRaw || "(empty)") + "\n\n"
+        })
+        $("diagContent").innerText = out || "No diagnostics data available."
+    } catch (err) {
+        $("diagContent").innerText = "Failed to load diagnostics: " + (err.message || "unknown error")
+    }
+}
+
+/** Authenticates with the expert password and unlocks the expert action panels. */
+async function expertLogin() {
+    try {
+        let j = await postJSON("/expert/auth", {password: $("expertPw").value})
+        if (!j.token) throw new Error("no expert token returned")
+        expertToken = j.token
+        sessionStorage.setItem("sedunlocksrvExpertToken", expertToken)
+        $("expertActions").classList.remove("hidden")
+        $("expertStatus").innerText = "Expert actions unlocked for this session."
+        $("expertPw").value = ""
+        appendExpertOutput("Expert mode authenticated.")
+        syncExpertState()
+    } catch (err) {
+        alert(err.message || "Expert authentication failed")
+    }
+}
+
+/** Checks the server-side expert session state and shows/hides panels accordingly. */
+async function syncExpertState() {
+    try {
+        let r = await fetch("/expert/status", {headers: expertHeaders()})
+        let j = await r.json()
+        let configured = !!j.configured
+        let authenticated = !!j.authenticated
+        if (!configured) {
+            $("expertStatus").innerText = "Expert mode is not configured on this image."
+            $("expertAuthEntry").classList.add("hidden")
+            $("expertActions").classList.add("hidden")
+            expertToken = ""
+            sessionStorage.removeItem("sedunlocksrvExpertToken")
+            return
+        }
+        if (!authenticated) {
+            $("expertStatus").innerText = "Expert actions are locked."
+            $("expertAuthEntry").classList.remove("hidden")
+            $("expertActions").classList.add("hidden")
+            expertToken = ""
+            sessionStorage.removeItem("sedunlocksrvExpertToken")
+            return
+        }
+        $("expertStatus").innerText = "Expert actions unlocked for this session."
+        $("expertAuthEntry").classList.add("hidden")
+        $("expertActions").classList.remove("hidden")
+    } catch (err) {
+        $("expertStatus").innerText = "Unable to verify expert session state."
+        $("expertAuthEntry").classList.remove("hidden")
+        $("expertActions").classList.add("hidden")
+    }
+}
+
+/** Appends text to the expert output textarea and scrolls to the bottom. */
+function appendExpertOutput(text) {
+    let ta = $("expertOutput")
+    ta.value = (ta.value ? ta.value + "\n\n" : "") + text
+    ta.scrollTop = ta.scrollHeight
+}
+
+/** Sends a TPer revert command to the expert API for the specified drive. */
+async function expertRevertTper() {
+    try {
+        let j = await postJSON("/expert/revert-tper", {
+            device: $("expDeviceRevert").value.trim(),
+            password: $("expRevertPw").value,
+            confirm: $("expRevertConfirm").value.trim()
+        }, expertHeaders())
+        appendExpertOutput(JSON.stringify(j, null, 2))
+    } catch (err) {
+        appendExpertOutput("ERROR: " + (err.message || "revert tper failed"))
+        alert(err.message || "Revert TPer failed")
+    }
+}
+
+/** Sends a PSID revert (full erase) command to the expert API. */
+async function expertPsidRevert() {
+    try {
+        let j = await postJSON("/expert/psid-revert", {
+            device: $("expDevicePsid").value.trim(),
+            psid: $("expPsid").value.trim(),
+            confirm: $("expPsidConfirm").value.trim()
+        }, expertHeaders())
+        appendExpertOutput(JSON.stringify(j, null, 2))
+    } catch (err) {
+        appendExpertOutput("ERROR: " + (err.message || "psid revert failed"))
+        alert(err.message || "PSID revert failed")
+    }
+}
+
+let flashPoller = null
+
+/** Clears the periodic flash-status polling interval. */
+function stopFlashPolling() {
+    if (flashPoller) {
+        clearInterval(flashPoller)
+        flashPoller = null
+    }
+}
+
+/** Shows or hides the flash progress log area with the given lines. */
+function showFlashLog(lines) {
+    let el = $("flashLog")
+    if (Array.isArray(lines) && lines.length) {
+        el.innerText = lines.join("\n")
+        el.style.display = "block"
+        el.scrollTop = el.scrollHeight
+    } else {
+        el.innerText = ""
+        el.style.display = "none"
+    }
+}
+
+/** Polls /expert/flash-status and updates the flash log and status indicators. */
+async function pollFlashStatus() {
+    try {
+        let r = await fetch("/expert/flash-status", { method: "GET", headers: expertHeaders() })
+        let j = await r.json()
+        if (Array.isArray(j.lines) && j.lines.length) {
+            showFlashLog(j.lines)
+        }
+        if (j.done) {
+            stopFlashPolling()
+            let flashStatus = $("flashStatus")
+            if (j.success) {
+                flashStatus.classList.remove("warn", "bad")
+                flashStatus.classList.add("ok")
+                flashStatus.innerText = "Re-flash completed successfully"
+                appendExpertOutput("Flash completed successfully.\n" + (j.lines || []).join("\n"))
             } else {
-              if (isDown) isDown();
+                flashStatus.classList.remove("warn", "ok")
+                flashStatus.classList.add("bad")
+                flashStatus.innerText = "Re-flash failed: " + (j.error || "unknown error")
+                appendExpertOutput("Flash FAILED: " + (j.error || "unknown") + "\n" + (j.lines || []).join("\n"))
             }
-          }
-
-          var xhr = new XMLHttpRequest();
-
-          xhr.open("HEAD", url, true);
-          xhr.timeout = 2000;
-          xhr.ontimeout = handleStatus;
-          xhr.onloadend = handleStatus;
-
-          xhr.send();
+            $("uploadBtn").disabled = false
         }
+    } catch (err) {
+        // Network error during poll — keep trying
+    }
+}
 
-        function reloadIfUp() {
-          pingTimeRemaining -= pingTimeout;
-
-          if (pingTimeRemaining <= 0) {
-            // Try reloading anyway
-            window.location.reload();
-            return;
-          }
-
-          ping(
-            window.location.href,
-            function () {
-              window.location.reload();
-            },
-            function () {
-              setTimeout(reloadIfUp, pingTimeout);
+/** Validates inputs, uploads the PBA image, and starts polling flash progress. */
+async function expertReflashPBA() {
+    try {
+        let device = $("expDeviceFlash").value.trim()
+        let password = $("expFlashPw").value
+        let confirm = $("expFlashConfirm").value.trim()
+        let imageInput = $("expPbaImage")
+        if (!device) {
+            alert("Select an OPAL2 target drive from the list.")
+            return
+        }
+        if (!password.trim()) {
+            alert("Enter the current drive password.")
+            return
+        }
+        if (confirm !== "FLASH") {
+            alert("Type FLASH to confirm the re-flash operation.")
+            return
+        }
+        if (!imageInput.files || !imageInput.files.length) {
+            alert("Select a PBA image file first.")
+            return
+        }
+        let imageFile = imageInput.files[0]
+        if (imageFile.size <= 0) {
+            alert("The selected PBA image is empty.")
+            return
+        }
+        if (imageFile.size > maxPBAUploadBytes) {
+            alert("The selected PBA image exceeds the 128 MiB OPAL2 guideline.")
+            return
+        }
+        if (!/\.(img|bin)$/i.test(imageFile.name)) {
+            alert("Select a PBA image file ending in .img or .bin.")
+            return
+        }
+        
+        // Check if sufficient RAM is available
+        try {
+            let ramCheck = await fetch("/expert/check-ram", {
+                method: "GET",
+                headers: expertHeaders()
+            })
+            let ramData = await ramCheck.json()
+            if (ramData.availableBytes < imageFile.size) {
+                alert(`Insufficient RAM available. Need ${(imageFile.size / (1024*1024)).toFixed(1)} MiB but only ${(ramData.availableBytes / (1024*1024)).toFixed(1)} MiB is available.`)
+                return
             }
-          );
+        } catch (err) {
+            alert("Failed to check available RAM: " + (err.message || "unknown error"))
+            return
         }
-        function postData(e, params) {
-          e.preventDefault();
+        
+        // All validation passed; disable button and show status
+        let uploadBtn = $("uploadBtn")
+        let flashStatus = $("flashStatus")
+        uploadBtn.disabled = true
+        flashStatus.style.display = "block"
+        flashStatus.classList.remove("ok", "bad", "warn")
+        flashStatus.classList.add("warn")
+        flashStatus.innerText = "Uploading PBA image..."
+        $("flashLog").innerText = ""
+        $("flashLog").style.display = "none"
+        appendExpertOutput("Starting PBA re-flash operation...")
+        
+        let form = new FormData()
+        form.append("device", device)
+        form.append("password", password)
+        form.append("confirm", confirm)
+        form.append("image", imageFile)
 
-          var logger = document.getElementById("log");
-          logger.textContent = "";
-
-          var xhr = new XMLHttpRequest();
-          xhr.seenBytes = 0;
-          xhr.open("POST", "/", true);
-
-          xhr.setRequestHeader(
-            "Content-type",
-            "application/x-www-form-urlencoded"
-          );
-
-          xhr.onreadystatechange = function () {
-            if (xhr.readyState > 2) {
-              var newData = xhr.responseText.substr(xhr.seenBytes);
-              xhr.seenBytes = xhr.responseText.length;
-              logger.textContent += newData;
-            }
-          };
-
-          xhr.ontimeout = function (e) {
-            logger.textContent +=
-              "\nSending data timed out. Is the server still turned on?";
-          };
-
-          xhr.addEventListener("error", function (e) {
-            if (e instanceof ProgressEvent) {
-              if (document.body.classList.contains("rebooting")) {
-                ping(window.location.href, function () {
-                  window.location.reload();
-                });
-              } else {
-                logger.textContent +=
-                  "\nError sending data. Is the server still turned on?";
-              }
-            } else {
-              logger.textContent +=
-                "\nError sending data. Check the browser console for details.";
-              console.log(e);
-            }
-          });
-
-          xhr.send(params);
+        let r = await fetch("/expert/reflash-pba", {
+            method: "POST",
+            headers: expertHeaders(),
+            body: form
+        })
+        let j = await r.json().catch(() => ({}))
+        if (!r.ok) {
+            let err = new Error(j.error || "pba re-flash failed")
+            err.details = j
+            throw err
         }
-
-        function togglePasswordVisibility(e) {
-          var passwordFields = document.getElementsByClassName("password");
-          var newType = e.target.checked ? "text" : "password";
-          for (var x = 0; x < passwordFields.length; x++) {
-            passwordFields[x].type = newType;
-          }
+        
+        // Flash started — poll for progress
+        flashStatus.innerText = "Flashing PBA image to " + device + "..."
+        stopFlashPolling()
+        flashPoller = setInterval(pollFlashStatus, 750)
+        pollFlashStatus()
+    } catch (err) {
+        // Failure
+        let flashStatus = $("flashStatus")
+        flashStatus.classList.remove("warn", "ok")
+        flashStatus.classList.add("bad")
+        flashStatus.innerText = "Re-flash failed: " + (err.message || "unknown error")
+        if (err.details) {
+            appendExpertOutput(JSON.stringify(err.details, null, 2))
+        } else {
+            appendExpertOutput("ERROR: " + (err.message || "pba re-flash failed"))
         }
+        $("uploadBtn").disabled = false
+    }
+}
 
-        function handleClick(e) {
-          var target = e.target;
-          switch (target.id) {
-            case "change-pwd":
-            case "unlock":
-              document.body.dataset.action = target.id;
-              break;
-            case "reboot":
-              document.body.classList.add("rebooting");
-              postData(e, "action=reboot");
-              setTimeout(reloadIfUp, 2000);
-              break;
-            case "submit":
-              var action = document.body.dataset.action;
-              var data =
-                "action=" +
-                action +
-                "&psw=" +
-                encodeURIComponent(document.getElementById("psw").value);
-
-              if (action === "change-pwd") {
-                data += "&newpsw=" + encodeURIComponent(document.getElementById("newpsw").value);
-                data += "&newpsw2=" + encodeURIComponent(document.getElementById("newpsw2").value);
-              }
-
-              postData(e, data);
-              break;
-            case "password-toggle":
-              togglePasswordVisibility(e);
-              break;
-          }
+/** Called when a PBA image file is selected; checks available RAM sufficiency. */
+async function checkRAMForFile() {
+    let imageInput = $("expPbaImage")
+    let ramStatus = $("ramCheckStatus")
+    let uploadBtn = $("uploadBtn")
+    
+    if (!imageInput.files || !imageInput.files.length) {
+        ramStatus.style.display = "none"
+        uploadBtn.disabled = false
+        return
+    }
+    
+    let fileSize = imageInput.files[0].size
+    
+    try {
+        let ramCheck = await fetch("/expert/check-ram", {
+            method: "GET",
+            headers: expertHeaders()
+        })
+        let ramData = await ramCheck.json()
+        
+        let fileSizeMiB = (fileSize / (1024*1024)).toFixed(1)
+        let availableMiB = (ramData.availableBytes / (1024*1024)).toFixed(1)
+        
+        ramStatus.style.display = "block"
+        
+        if (ramData.availableBytes >= fileSize) {
+            ramStatus.style.backgroundColor = "#d4edda"
+            ramStatus.style.color = "#155724"
+            ramStatus.innerHTML = `✓ Sufficient RAM: ${fileSizeMiB} MiB needed, ${availableMiB} MiB available`
+            uploadBtn.disabled = false
+        } else {
+            ramStatus.style.backgroundColor = "#f8d7da"
+            ramStatus.style.color = "#721c24"
+            ramStatus.innerHTML = `✗ Insufficient RAM: ${fileSizeMiB} MiB needed, but only ${availableMiB} MiB available`
+            uploadBtn.disabled = true
         }
+    } catch (err) {
+        ramStatus.style.display = "block"
+        ramStatus.style.backgroundColor = "#fff3cd"
+        ramStatus.style.color = "#856404"
+        ramStatus.innerHTML = `⚠ Could not check RAM: ${err.message}`
+        uploadBtn.disabled = false
+    }
+}
 
-        document.getElementById("password-toggle").checked = false;
-        document.body.addEventListener("click", handleClick);
-        document.getElementById("unlock").click();
-      })();
-    </script>
-  </body>
+let selectedKernelIndex = -1
+let allKernels = []
+
+/** Starts an async kernel discovery via /boot-list and polls for results. */
+async function discoverKernels() {
+    if (bootInFlight) return
+    setBootUiBusy(true)
+    $("bootResult").innerText = "Searching for bootable kernels..."
+    $("bootDebug").innerText = ""
+    $("bootDebug").style.display = "none"
+    $("kernelSelectionDialog").classList.add("hidden")
+    try {
+        let r = await fetch("/boot-list", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", ...authHeaders()}
+        })
+        if (!r.ok) {
+            let j = await r.json().catch(() => ({}))
+            throw new Error(j.error || "Discovery request failed")
+        }
+        stopBootStatusPolling()
+        bootStatusPoller = setInterval(() => {
+            checkDiscoveryStatus().catch(err => {
+                setBootUiBusy(false)
+                $("bootResult").innerText = err.message || "Discovery failed"
+                stopBootStatusPolling()
+            })
+        }, 250)
+        checkDiscoveryStatus()
+    } catch (err) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = err.message || "Discovery failed"
+    }
+}
+
+/** Polls /boot-status during discovery and renders the kernel selection UI on completion. */
+async function checkDiscoveryStatus() {
+    let r = await fetch("/boot-status")
+    let j = await r.json()
+    if (Array.isArray(j.debug) && j.debug.length) {
+        showBootDebug(j.debug)
+    }
+    if (j.inProgress) {
+        $("bootResult").innerText = "Searching for bootable kernels..."
+        return
+    }
+    stopBootStatusPolling()
+    setBootUiBusy(false)
+    if (j.error) {
+        $("bootResult").innerText = j.error
+        return
+    }
+    if (j.discoveryDone && Array.isArray(j.kernels) && j.kernels.length > 0) {
+        $("bootResult").innerText = j.kernels.length + " bootable kernel(s) found. Select one to boot:"
+        showKernelSelection(j.kernels)
+        return
+    }
+    $("bootResult").innerText = "No bootable kernels found."
+}
+
+/** Entry point for boot — initiates kernel discovery. */
+async function boot() {
+    if (bootInFlight) return
+    discoverKernels()
+}
+
+/** Renders the kernel radio-button list, optionally filtering out recovery entries. */
+function renderKernelList() {
+    let hideRecovery = $("hideRecovery").checked
+    let html = ""
+    let visibleCount = 0
+    allKernels.forEach((kernel, realIdx) => {
+        if (hideRecovery && kernel.recovery) return
+        let label = kernel.kernelName ? escapeHTML(kernel.kernelName) : "Kernel"
+        if (kernel.recovery) label = "[Recovery] " + label
+        let details = []
+        if (kernel.initrdName) details.push(escapeHTML(kernel.initrdName))
+        if (kernel.source) details.push(escapeHTML(kernel.source))
+        if (kernel.cmdline) details.push(escapeHTML(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline))
+        let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
+        if (visibleCount === 1) html += '<hr class="kernel-separator">'
+        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
+        visibleCount++
+    })
+    $("kernelOptions").innerHTML = html
+    let firstRadio = document.querySelector('input[name="kernelChoice"]')
+    if (firstRadio) {
+        firstRadio.checked = true
+        selectedKernelIndex = parseInt(firstRadio.value)
+    } else {
+        selectedKernelIndex = -1
+    }
+}
+
+/** Populates and reveals the kernel selection dialog for the given kernel list. */
+function showKernelSelection(kernels) {
+    allKernels = kernels
+    renderKernelList()
+    $("kernelSelectionDialog").classList.remove("hidden")
+}
+
+/** Hides the kernel selection dialog and clears the boot result text. */
+function cancelKernelSelection() {
+    selectedKernelIndex = -1
+    $("kernelSelectionDialog").classList.add("hidden")
+    $("bootResult").innerText = ""
+}
+
+/** Confirms the kernel radio selection and proceeds to boot. */
+function confirmKernelAndBoot() {
+    $("kernelSelectionDialog").classList.add("hidden")
+    bootSelectedKernel()
+}
+
+/** Sends the selected kernel index to /boot and polls for boot completion. */
+async function bootSelectedKernel() {
+    if (bootInFlight) return
+    if (selectedKernelIndex < 0) {
+        $("bootResult").innerText = "Please select a kernel to boot."
+        return
+    }
+    setBootUiBusy(true)
+    $("kernelSelectionDialog").classList.add("hidden")
+    try {
+        let r = await fetch("/boot", { 
+            method: "POST", 
+            headers: {"Content-Type": "application/json", ...authHeaders()},
+            body: JSON.stringify({ kernelIndex: selectedKernelIndex })
+        })
+        if (!r.ok) {
+            let j = await r.json().catch(() => ({}))
+            throw new Error(j.error || "Boot request failed")
+        }
+        $("bootResult").innerText = "Booting selected kernel..."
+        stopBootStatusPolling()
+        bootStatusPoller = setInterval(() => {
+            checkBootStatus().catch(err => {
+                if (err.message.includes('fetch') || err.message.includes('network')) {
+                    setBootUiBusy(false)
+                    $("bootResult").innerText = "OS handoff in progress..."
+                    stopBootStatusPolling()
+                } else {
+                    setBootUiBusy(false)
+                    $("bootResult").innerText = err.message || "Boot failed"
+                    stopBootStatusPolling()
+                }
+            })
+        }, 250)
+        checkBootStatus()
+    } catch (err) {
+        setBootUiBusy(false)
+        $("bootResult").innerText = err.message || "Boot failed"
+    }
+}
+/** Requests a PBA system reboot via the API. */
+async function reboot() {
+    if (systemActionInFlight || bootInFlight) return
+    $("systemActionResult").innerText = "Requesting reboot..."
+    setSystemActionBusy("reboot")
+    try {
+        let j = await postAuthenticated("/reboot")
+        $("systemActionResult").innerText = j.status ? `Reboot requested: ${j.status}.` : "Reboot requested."
+    } catch (err) {
+        $("systemActionResult").innerText = err.message || "Reboot request failed"
+        setSystemActionBusy("")
+    }
+}
+/** Requests a PBA system shutdown via the API. */
+async function shutdown() {
+    if (systemActionInFlight || bootInFlight) return
+    $("systemActionResult").innerText = "Requesting shutdown..."
+    setSystemActionBusy("shutdown")
+    try {
+        let j = await postAuthenticated("/poweroff")
+        $("systemActionResult").innerText = j.status ? `Shutdown requested: ${j.status}.` : "Shutdown requested."
+    } catch (err) {
+        $("systemActionResult").innerText = err.message || "Shutdown request failed"
+        setSystemActionBusy("")
+    }
+}
+
+$("showUnlock").onchange = e => {
+    $("pw").type = e.target.checked ? "text" : "password"
+}
+$("pw").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+        e.preventDefault()
+        unlock()
+    }
+})
+$("showChange").onchange = e => {
+    ["cur", "new", "conf"].forEach(id => {
+        $(id).type = e.target.checked ? "text" : "password"
+    })
+}
+;["cur", "new", "conf"].forEach(id => {
+    $(id).addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+            e.preventDefault()
+            changePassword()
+        }
+    })
+})
+$("new").addEventListener("input", validateNewPassword)
+$("conf").addEventListener("input", validateNewPassword)
+$("expertPw").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+        e.preventDefault()
+        expertLogin()
+    }
+})
+loadPolicy()
+refresh()
+syncExpertState()
+setInterval(refresh, 5000)
+
+// Restore kernel selection if discovery already completed before page load
+async function restoreBootState() {
+    try {
+        let r = await fetch("/boot-status")
+        let j = await r.json()
+        if (j.discoveryDone && Array.isArray(j.kernels) && j.kernels.length > 0) {
+            $("bootResult").innerText = j.kernels.length + " bootable kernel(s) found. Select one to boot:"
+            showKernelSelection(j.kernels)
+            if (Array.isArray(j.debug) && j.debug.length) showBootDebug(j.debug)
+        }
+    } catch (err) { /* ignore on load */ }
+}
+restoreBootState()
+
+// Set up RAM check listener for PBA image file selection
+$("expPbaImage").addEventListener("change", checkRAMForFile)
+</script>
+
+</body>
 </html>

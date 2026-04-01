@@ -17,6 +17,7 @@
 *.ISO
 *.img
 cache
+build.conf
 
 sedunlocksrv/sedunlocksrv
 
