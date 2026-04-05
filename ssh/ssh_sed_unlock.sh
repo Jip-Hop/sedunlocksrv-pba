@@ -28,6 +28,10 @@ if /usr/local/sbin/sedunlocksrv/opal-functions.sh | grep -q "Could not detect TC
         echo
 fi
 
+echo "List of connected disks:"
+/usr/local/sbin/sedutil-cli --scan
+echo
+
 while [ true ] ; do
 
     echo -n "🔑🔑🔑 Enter SED password: "
