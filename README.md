@@ -131,6 +131,8 @@ To gain shell access to the PBA for debugging, enable SSH and add an SSH key _wi
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
 - PBA flashing via the web interface
 
+Check out the fork in [PR #39](https://github.com/Jip-Hop/sedunlocksrv-pba/pull/39) which implements these features (and more). NOTE: this fork has not been tested by the author of sedunlocksrv-pba.
+
 ## References
 - [Into the Core](http://www.tinycorelinux.net/corebook.pdf) to understand the Tiny Core Linux boot process
 - Build script based on [custom-tinycore.sh](https://gist.github.com/dankrause/2a9ed5ed30fa7f9aaaa2)
