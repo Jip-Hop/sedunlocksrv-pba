@@ -192,7 +192,7 @@ func httpServer() {
 	// redirect every http request to https
 	go http.ListenAndServe(httpAddr, http.HandlerFunc(redirect))
 
-	fmt.Printf("\n%sStarting SED unlock server at %s%s%s%s...%s\n", green, magenta, ip, httpsAddr, green, normal)
+	fmt.Printf("\n%sStarting HTTPS SED unlock server at %shttps://%s%s...%s\n", green, magenta, ip, green, normal)
 
 	l, err := net.Listen("tcp", httpsAddr)
 	if err != nil {
@@ -203,7 +203,7 @@ func httpServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
 
-	fmt.Printf("\nReady to connect\n")
+	fmt.Printf("\n%sReady to connect%s\n", green, normal)
 
 	log.Fatal(http.ServeTLS(l, mux, "server.crt", "server.key"))
 }
@@ -211,7 +211,8 @@ func httpServer() {
 func sshServer() {
 	if _, err := os.Stat("/usr/local/sbin/dropbear"); err == nil {
 		// Start SSH server listening on port 2222
-		fmt.Printf("\n%sStarting SSH SED unlock service on port %s2222%s\n", green, magenta, normal)
+		ip := getOutboundIP()
+		fmt.Printf("\n%sStarting SSH SED unlock server at %s%s:2222%s...%s\n", green, magenta, ip ,green, normal)
 		cmd := exec.Command("/usr/local/sbin/dropbear", "-s", "-g", "-w", "-j", "-k", "-p", "2222", "-b", "/usr/local/etc/dropbear/banner")
 		cmd.Run()
 	}
