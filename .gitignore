@@ -27,3 +27,6 @@ sedunlocksrv/sedunlocksrv
 # SSH build temporary files
 ssh/dropbear*
 ssh/authorized_keys
+
+# Examples directory (local scripts and configs)
+examples/

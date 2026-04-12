@@ -14,6 +14,22 @@
 
 ---
 
+## 📋 Deployment Workflow Reference
+
+**New to this project?** See [DEPLOYMENT-WORKFLOW.md](DEPLOYMENT-WORKFLOW.md) for a **complete step-by-step example** of:
+
+1. **Initial Setup** — Clone → Configure build.conf → Build initial PBA → Flash to OPAL drive
+2. **Operational Setup** — Run setup-deploy.sh → Configure SSH key encryption  
+3. **Automated Updates** — Deploy updated PBA with new certificates via SSH
+
+**Deployment documentation:**
+- [DEPLOYMENT-WORKFLOW.md](DEPLOYMENT-WORKFLOW.md) — Full end-to-end workflow (start here)
+- [deploy/QUICKSTART.md](deploy/QUICKSTART.md) — 20-minute setup guide with troubleshooting
+- [deploy/README.md](deploy/README.md) — Complete command reference for deploy.sh and setup-deploy.sh
+- [deploy/CERTIFICATE-FRESHNESS.md](deploy/CERTIFICATE-FRESHNESS.md) — Race condition protection for automated cert pipelines
+
+---
+
 ## Comparison with Original
 
 This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github.com/Jip-Hop/sedunlocksrv-pba). All original functionality is preserved while adding useful enhancements.
@@ -26,6 +42,9 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 - ✅ **Enhanced Boot Discovery** — Pattern matching for non-standard kernel naming
 - ✅ **Better Reliability** — Console fallback if networking fails, drive diagnostics, real-time status display
 - ✅ **Configuration Flexibility** — GRUB variable expansion, line continuation handling, multiple boot loader support
+- ✅ **Automated Deployment** — `deploy/deploy.sh` automates PBA build + flash over SSH; OPAL password derived from an Ed25519 signing key, independent of the PBA-side SSH unlock key
+- ✅ **Certificate Freshness Validation** — `deploy/deploy.sh` rejects deployments when the TLS certificate is too close to expiry, preventing stale-cert races in automated pipelines
+- ✅ **Full Lifecycle Scripting** — `setup-deploy.sh` one-time setup; then cron or CI runs `deploy.sh` to rebuild and reflash PBA automatically
 
 ### Original Features (Maintained)
 - ✅ Unlock via HTTPS web interface
@@ -264,6 +283,7 @@ source ~/.bashrc
 Before running `./build.sh`, verify:
 - `sedunlocksrv/server.crt` and `sedunlocksrv/server.key` exist if you are supplying custom TLS certs.
 - `ssh/authorized_keys` exists if you plan to build with `--ssh`.
+  > **Note:** The public keys in `ssh/authorized_keys` grant access to the **PBA's Dropbear SSH service** (port 2222) for drive unlocking at boot time. This is completely independent of the Ed25519 key used by `deploy/deploy.sh` for OPAL password KDF decryption — they are separate keys for separate purposes and do not need to be the same key.
 - Expert password plan is set: either pass `--expert-password=...` or set `EXPERT_PASSWORD` in `build.conf`. If omitted, `build.sh` prompts you to enter and confirm one interactively.
 
 ## 🚀 Build Execution
@@ -467,7 +487,7 @@ Note that you can still unlock SED disks using the keyboard with this PBA image.
 
 ## Configuring specific keymaps on the console
 
-To use specific keymaps, set a non-empty map name via the environment or a build flag, for example: `KEYMAP=fr-latin9 ./build.sh` or `./build.sh --keymap=fr-latin9`.
+To use specific keymaps, build with the KEYMAP environment variable set. For example: `KEYMAP=fr-latin9`.
 
 ## Using other forks of `sedutil`
 
@@ -485,32 +505,22 @@ Optionally SED disks can be unlocked via SSH. To enable this feature (in additio
 
 - install dropbear (it will be used to generate dropbear host keys):`apt-get -y install dropbear`
 - create authorized_keys file in `sedunlocksrv-pba/ssh` folder. It should contain public keys of all key pairs allowed to connect to unlocking service. Have a look at provided `sedunlocksrv-pba/ssh/authorized_keys.example`
-- run build with SSH option: `./build.sh --ssh`
+- run build with SSH option: `./build.sh SSH`
 
 Usage:
 run `ssh -p 2222 tc@IP` --> enter SED disk password --> repeat for other disks (if all disks have the same password they will be unlocked in one step) --> press ESC to reboot.
 
 It uses port `2222` to avoid certificates' conflicts with booted computer and `tc` default Tiny Core Linux user. As long as you prefix every key in authorized_keys with the 'command=...' prefix like in the example, it will only allow SED unlocking, with any other SSH services disabled.
 
-If you provide a custom trusted TLS certificate and key at build time with `--tls-cert` and `--tls-key` (or `TLS_CERT_PATH` / `TLS_KEY_PATH` in `build.conf`), the SSH client helper will default to verified HTTPS (`curl` without `-k`). For self-signed build-generated certificates it defaults to insecure verification bypass (`curl -k`). You can override that with `SSH_CURL_INSECURE=true|false`.
-
-The SSH host fingerprint should stay consistent across reboots. If it changes unexpectedly, first check whether the files `ssh/dropbear_ed25519_host_key`, `ssh/dropbear_ecdsa_host_key`, or `ssh/dropbear_rsa_host_key` were deleted or regenerated before the image was built.
-
 ## Excluding network device(s)
 
-By default, the PBA image auto-detects eligible network interfaces, configures them individually with DHCP, and lets the web server and SSH server listen on all configured interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
+Note that by default, the PBA image will try to configure all network devices with dynamic IP addresses using DHCP, and the web server and SSH server will listen on all interfaces. That may not be desirable in some cases (e.g. if some network device(s) is/are exposed to the Internet).
 
 To solve this problem, optionally it is possible to set a list of network devices to be excluded when running the build script, for example:
 ```
-./build.sh --exclude-netdev="eth0 eth1"
+sudo EXCLUDE_NETDEV="eth0 eth1" ./build.sh
 ```
-will exclude `eth0` and `eth1` from network configuration.
-
-To build a bonded LACP image, explicitly select bond mode and the member interfaces:
-```bash
-./build.sh --net-mode=bond --net-ifaces="eth0 eth1" --net-addressing=static \
-  --ip-addr=192.168.10.230 --netmask=255.255.255.0 --gateway=192.168.10.253 --dns="192.168.10.252"
-```
+will exclude `eth0` and `eth1` from DHCP configuration.
 
 ## Encrypting your drive and flashing the PBA
 Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/Encrypting-your-drive) from the official Drive Trust Alliance sedutil wiki page. Except when you arrive at step `Enable locking and the PBA`, don't `gunzip` and flash the included `/usr/sedutil/UEFI64-n.nn.img` file. This is where you connect the USB stick with the `sedunlocksrv-pba.img`. Check the output of `fdisk -l` to see to which device this USB stick is mapped. In my case it's `/dev/sdg1`. Mount the USB with `mount /dev/sdg1 /mnt/`. Now flash the custom PBA with `sedutil-cli --loadpbaimage debug /mnt/sedunlocksrv-pba.img /dev/sdc`. Make sure to replace `/dev/sdc` so it targets your SED. Additionally I recommend that you set a simple password when arriving at the `Set a real password` step. For example use `test`. Set your real password through the web interface when booting from sedunlocksrv-pba.
@@ -521,11 +531,13 @@ Follow [the instructions](https://github.com/Drive-Trust-Alliance/sedutil/wiki/E
 - Replace the `server.crt` and `server.key` (found inside the sedunlocksrv after running `./build.sh`) if you like, or modify `make-cert.sh` and run `./build.sh` again
 
 ## Troubleshooting
-To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
+To gain shell access to the PBA for debugging, enable SSH and add an SSH key _without_ the 'command=...' prefix to ssh/authorized_keys.  This key can then be used with ```ssh -F /dev/null -o IdentitiesOnly=yes -i /path/to/debug_key -p 2222 tc@IP``` to gain a shell in the live PBA, which can then be used for viewing debug information, testing fixes, etc.
 
 ## Wishlist
 - Faster booting after unlock, similar to [opal-kexec-pba](https://github.com/jnohlgard/opal-kexec-pba)
 - PBA flashing via the web interface
+
+Check out the fork in [PR #39](https://github.com/Jip-Hop/sedunlocksrv-pba/pull/39) which implements these features (and more). NOTE: this fork has not been tested by the author of sedunlocksrv-pba.
 
 ## References
 - [Into the Core](http://www.tinycorelinux.net/corebook.pdf) to understand the Tiny Core Linux boot process
