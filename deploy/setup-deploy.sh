@@ -424,6 +424,9 @@ Defaults:${SERVICE_USER} !requiretty
 
 # Reset environment after command
 Defaults:${SERVICE_USER} env_reset
+
+# Preserve SSH agent socket so agent forwarding works through sudo
+Defaults:${SERVICE_USER} env_keep += "SSH_AUTH_SOCK"
 EOF
 chmod 440 "${SUDOERS_FILE}"
 
