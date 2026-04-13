@@ -377,6 +377,14 @@ maybe_clean_workspace() {
 # and removes the temporary build directory.
 cleanup() {
     echo "Cleaning up..."
+    # Detach any measurement loop devices left over from a failed pass-1 run
+    for _mnt in grub-measure.*/mnt; do
+        umount "${_mnt}" 2>/dev/null || true
+    done
+    for _img in grub-measure.*/fat.img grub-measure.*/mbr.img; do
+        losetup -j "${_img}" 2>/dev/null | cut -d: -f1 | xargs -r losetup -d 2>/dev/null || true
+    done
+    rm -rf grub-measure.*
     umount "${BUILD_TMPDIR-}/img" 2>/dev/null || true
     if [ -n "${LOOP_DEVICE_HDD-}" ]; then
         losetup -d "${LOOP_DEVICE_HDD}" 2>/dev/null || true
@@ -929,43 +937,57 @@ repack_initrd_to_boot() {
 # -----------------------------------------------------------------------------
 # Raw disk image
 # -----------------------------------------------------------------------------
-# measure_grub_size — pass 1: install GRUB into a throwaway directory to
-# measure the actual module tree size produced by the host GRUB version.
+# measure_grub_size — pass 1: install GRUB into a throwaway FAT32 loop device
+# to measure the actual module tree size on FAT32. Using a real mounted FAT32
+# filesystem is required because grub-install --target=*-efi validates that
+# --efi-directory is a mounted filesystem, not a plain directory. Measuring on
+# FAT32 also gives accurate cluster-overhead accounting at no extra cost.
 # Returns the measured size in whole MB (rounded up) via stdout.
-# A 1 MB throwaway loop image is used for i386-pc (MBR gap writes only —
-# nothing lands in the filesystem, but grub-install requires a block device).
 measure_grub_size() {
-    local measure_dir measure_loop measure_img grub_mb
+    local measure_dir mbr_img mbr_loop fat_img fat_loop fat_mount grub_mb
     measure_dir="$(mktemp -d --tmpdir="$(pwd)" 'grub-measure.XXXXXX')"
-    measure_img="${measure_dir}/mbr.img"
 
-    echo "--- Measuring GRUB module size (pass 1) ---" >&2
+    echo "--- Measuring GRUB module size on FAT32 (pass 1) ---" >&2
 
-    # 1 MB stub for i386-pc MBR gap writes
-    dd if=/dev/zero of="${measure_img}" bs=1M count=1 2>/dev/null
-    measure_loop=$(losetup --find --show "${measure_img}")
+    # 1 MB stub for i386-pc (writes only to MBR gap, no filesystem files)
+    mbr_img="${measure_dir}/mbr.img"
+    dd if=/dev/zero of="${mbr_img}" bs=1M count=1 2>/dev/null
+    mbr_loop=$(losetup --find --show "${mbr_img}")
+
+    # 50 MB FAT32 for EFI targets — large enough for any GRUB version
+    fat_img="${measure_dir}/fat.img"
+    dd if=/dev/zero of="${fat_img}" bs=1M count=50 2>/dev/null
+    fat_loop=$(losetup --find --show "${fat_img}")
+    mkfs.fat -F32 "${fat_loop}" >/dev/null 2>&1
+    fat_mount="${measure_dir}/mnt"
+    mkdir -p "${fat_mount}"
+    mount "${fat_loop}" "${fat_mount}"
 
     grub-install --no-floppy \
-        --boot-directory="${measure_dir}/boot" \
-        --target=i386-pc "${measure_loop}" >/dev/null 2>&1 || true
+        --boot-directory="${fat_mount}/boot" \
+        --target=i386-pc "${mbr_loop}" >/dev/null 2>&1 || true
     grub-install --removable \
-        --boot-directory="${measure_dir}/boot" \
+        --boot-directory="${fat_mount}/boot" \
         --target=x86_64-efi \
-        --efi-directory="${measure_dir}/" "${measure_loop}" >/dev/null 2>&1
+        --efi-directory="${fat_mount}/" "${fat_loop}" >/dev/null 2>&1
     grub-install --removable \
-        --boot-directory="${measure_dir}/boot" \
+        --boot-directory="${fat_mount}/boot" \
         --target=i386-efi \
-        --efi-directory="${measure_dir}/" "${measure_loop}" >/dev/null 2>&1
+        --efi-directory="${fat_mount}/" "${fat_loop}" >/dev/null 2>&1
 
-    losetup -d "${measure_loop}"
-    rm -f "${measure_img}"
+    # Measure on FAT32 directly — cluster overhead is included in du output
+    grub_mb=$(du -m --summarize "${fat_mount}" | awk '{print $1}')
 
-    # Round up to next whole MB and add 4 MB for FAT32 overhead/alignment
-    grub_mb=$(du -m --summarize "${measure_dir}" | awk '{print $1}')
-    grub_mb=$((grub_mb + 4))
+    umount "${fat_mount}"
+    losetup -d "${fat_loop}"
+    losetup -d "${mbr_loop}"
     rm -rf "${measure_dir}"
 
-    echo "--- GRUB module tree: ${grub_mb} MB ---" >&2
+    # Add 1 MB for MBR partition offset (sfdisk starts at sector 2048)
+    # and 1 MB for FAT table/directory reservation.
+    grub_mb=$((grub_mb + 2))
+
+    echo "--- GRUB module tree: ${grub_mb} MB (FAT32, includes cluster overhead) ---" >&2
     printf '%s' "${grub_mb}"
 }
 
