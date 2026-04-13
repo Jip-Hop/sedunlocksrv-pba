@@ -30,7 +30,7 @@ LATEST_LINK="sedunlocksrv-pba-latest.img"
 # Final image size is filesystem size + GRUBSIZE + 2MB safety margin.
 # OPAL 2 PBA size limit is typically 128MB, so keep this conservative.
 GRUBSIZE=32
-KEXEC_VER="2.0.28"
+KEXEC_VER="2.0.29"
 
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 INPUTISO="TinyCorePure64-current.iso"
@@ -327,6 +327,17 @@ validate_network_settings() {
         *) echo "DEBUG_LEVEL must be 0, 1, or 2 (current: ${DEBUG_LEVEL})" >&2; exit 1 ;;
     esac
 
+}
+
+# resolve_output_image_name — sets OUTPUTIMG to a version-tagged filename when
+# HEAD is exactly on a git tag (e.g. v1.0.0), otherwise keeps the date stamp.
+resolve_output_image_name() {
+    local git_tag
+    git_tag=$(git tag --points-at HEAD 2>/dev/null | head -n1)
+    if [ -n "${git_tag}" ]; then
+        OUTPUTIMG="sedunlocksrv-pba-${git_tag}.img"
+        echo "--- Release build: output image will be ${OUTPUTIMG} ---"
+    fi
 }
 
 # apply_extension_flags — appends optional TinyCore extensions to the
@@ -1023,6 +1034,7 @@ main() {
     parse_args "${REMAINING_ARGS[@]}"
     configure_sedutil_source
     validate_network_settings
+    resolve_output_image_name
     apply_extension_flags
     maybe_clean_workspace
 

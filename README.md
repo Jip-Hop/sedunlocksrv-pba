@@ -243,27 +243,26 @@ sudo apt update && sudo apt install -y \
   curl \
   git \
   openssl \
-  golang-go
+  jq \
+  openssh-client \
+  file \
+  unzip
 ```
 
-The script also checks for these commands at runtime:
+`build.sh` verifies all required commands at startup and lists anything missing. If you build with `--ssh`, also install `dropbear-bin`:
 
-```text
-gcc make curl tar xorriso bsdtar go cpio xz sfdisk sed awk cut tr date
-chown chmod basename mktemp find realpath zcat rsync nproc sort cat head tail
-od touch mkdir cp rm mv mount umount chroot du dd losetup lsblk mknod mkfs.fat
-grub-install sync sleep ln env openssl
+```bash
+sudo apt install -y dropbear-bin
 ```
 
-If you build with `--ssh`, `dropbearkey` is also required (usually package `dropbear-bin`).
-
-## 🐹 Go 1.22+ Upgrade (Required)
-The Go backend requires a modern Go toolchain.
+## 🐹 Go Installation (Required)
+The Go backend requires a modern toolchain — **do not use the `golang-go` distro package**, it is too old.
 
 1. Remove distro Go packages if needed:
 ```bash
 sudo apt remove golang-go && sudo apt autoremove
 ```
+
 
 2. Install official Go (example: 1.26.1):
 ```bash
@@ -467,7 +466,7 @@ After running the command above you will find sedunlocksrv-pba.img in your curre
 - Continue with building in the next steps
 
 ## Building on Ubuntu 22.04 LTS
-- Install build dependencies: `apt-get -y install cpio curl dosfstools dropbear fdisk git golang-go grub-efi-amd64-bin grub-efi-ia32-bin grub-pc-bin grub2-common libarchive-tools rsync squashfs-tools udev wget xorriso`
+- Install build dependencies: `apt-get -y install build-essential cpio curl dosfstools dropbear-bin fdisk git grub-efi-amd64-bin grub-efi-ia32-bin grub-pc-bin grub2-common libarchive-tools rsync xorriso xz-utils jq openssh-client file unzip openssl` (Go must be installed separately from [go.dev/dl](https://go.dev/dl))
 - [Download](https://github.com/Jip-Hop/sedunlocksrv-pba/archive/refs/heads/main.zip) or clone this repo and run: `./build.sh`
 - Connect your USB stick to Ubuntu (if inside VirtualBox, use the Devices dropdown menu)
 - Format the stick with a supported filesystem (e.g. FAT32) if this is not already the case

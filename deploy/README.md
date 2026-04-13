@@ -60,7 +60,7 @@ Deploy:   same challenge + same private key -> same signature -> same enc_key
           openssl dec(opal-password.enc, enc_key) -> OPAL password (in memory only)
 ```
 
-Files stored on host (in repository root `.ssh/`, i.e. `/opt/sedunlocksrv/.ssh/`):
+Files stored on host (in repository root `.ssh/`, i.e. `~/sedunlocksrv/.ssh/`):
 - `.ssh/opal-password.enc` -- encrypted password (mode 600)
 - `.ssh/signing-key.pub` -- SSH public key
 - `.ssh/auth.conf` -- salt and metadata (mode 644)
@@ -70,7 +70,7 @@ Files stored on host (in repository root `.ssh/`, i.e. `/opt/sedunlocksrv/.ssh/`
 Run once as root on the host with the OPAL drive:
 
 ```bash
-cd /opt/sedunlocksrv/deploy
+cd ~/sedunlocksrv/deploy
 sudo ./setup-deploy.sh
 ```
 
@@ -90,14 +90,14 @@ SSH agent forwarding (`-A`) is required so the script can sign the KDF challenge
 ```bash
 # Dry-run first -- builds PBA but does NOT flash to drive
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
     --dry-run'
 
 # Real deployment
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem'
 ```
@@ -106,7 +106,7 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
     --build-args=--ssh,--net-mode=bond,--debug-level=0'
@@ -117,7 +117,7 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
 **Cron job** (check for cert changes and redeploy):
 ```bash
 # /etc/cron.d/pba-redeploy -- runs daily at 3 AM
-0 3 * * * root /opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
+0 3 * * * root ~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
 ```
 
 See [../DEPLOYMENT-WORKFLOW.md](../DEPLOYMENT-WORKFLOW.md) for a complete example cron script
@@ -130,7 +130,7 @@ that hashes the certificate to detect changes.
 Type=oneshot
 User=deploy
 ExecStart=/usr/bin/ssh -A -i ~/.ssh/id_ed25519 \
-    target-host '/opt/sedunlocksrv/deploy/deploy.sh \
+    target-host '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem'
 ```
@@ -138,7 +138,7 @@ ExecStart=/usr/bin/ssh -A -i ~/.ssh/id_ed25519 \
 **CI/CD (GitHub Actions, GitLab CI):**
 ```bash
 ssh -A -i "$DEPLOY_KEY" deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path="$CERT_PATH" \
     --key-path="$KEY_PATH"'
 ```
@@ -173,7 +173,7 @@ Environment variables:
 All output is written to a timestamped log file in the **repository root** (one level above `deploy/`):
 
 ```bash
-tail -f /opt/sedunlocksrv/deploy-*.log
+tail -f ~/sedunlocksrv/deploy-*.log
 ```
 
 Events are also sent to syslog:
@@ -186,7 +186,7 @@ journalctl -u sedunlocksrv-deploy -p err     # errors only
 ## File Structure (after setup)
 
 ```
-/opt/sedunlocksrv/
+~/sedunlocksrv/
 +-- build.sh                     <- PBA image builder
 +-- sedunlocksrv/                <- Go source
 +-- .ssh/
@@ -205,12 +205,13 @@ journalctl -u sedunlocksrv-deploy -p err     # errors only
 ```bash
 # Debian/Ubuntu
 sudo apt update && sudo apt install -y \
-    build-essential golang-go curl xorriso bsdtar cpio xz-utils \
-    util-linux dosfstools openssl grub-common grub-efi-amd64-bin \
-    openssh-client
+    build-essential curl xorriso bsdtar cpio xz-utils \
+    util-linux mount fdisk dosfstools gzip rsync libarchive-tools \
+    grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin \
+    openssl openssh-client jq file unzip git
 ```
 
-Also required: Go 1.21+, `sedutil-cli` in `$PATH`, and an initialized OPAL 2.0 drive.
+Also required: Go 1.22+ (install from [go.dev/dl](https://go.dev/dl), not `golang-go`), `sedutil-cli` in `$PATH`, and an initialized OPAL 2.0 drive.
 
 ## Troubleshooting
 
@@ -221,7 +222,7 @@ The SSH agent must hold the Ed25519 key that was used during setup:
 ```bash
 ssh-add -l                                              # verify key is loaded in agent
 ssh-add ~/.ssh/id_ed25519                               # load it if missing
-cat /opt/sedunlocksrv/.ssh/auth.conf                    # check which key was registered
+cat ~/sedunlocksrv/.ssh/auth.conf                    # check which key was registered
 ssh-keygen -lf ~/.ssh/id_ed25519.pub                    # confirm fingerprint matches
 
 # If wrong key was used during setup, re-run:
@@ -250,5 +251,5 @@ sedutil-cli --query /dev/nvme0               # verify OPAL 2.0 compliance
 go version   # needs Go 1.21+
 df -h /      # check disk space (cache needs ~10 GB)
 # Check build log for details:
-tail -n 100 /opt/sedunlocksrv/deploy-*.log | grep -A5 "ERROR\|FAIL"
+tail -n 100 ~/sedunlocksrv/deploy-*.log | grep -A5 "ERROR\|FAIL"
 ```

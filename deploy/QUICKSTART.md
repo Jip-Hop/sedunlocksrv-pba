@@ -25,7 +25,7 @@ sudo apt update && sudo apt install -y \
 ## 2. Run Setup (one-time, as root)
 
 ```bash
-cd /opt/sedunlocksrv/deploy
+cd ~/sedunlocksrv/deploy
 chmod +x setup-deploy.sh deploy.sh
 sudo ./setup-deploy.sh
 ```
@@ -37,8 +37,8 @@ The script will prompt you for:
 
 After setup, verify these files exist:
 ```bash
-ls -la /opt/sedunlocksrv/.ssh/opal-password.enc   # mode 600 -- in repo root, not deploy/
-ls -la /opt/sedunlocksrv/.ssh/auth.conf
+ls -la ~/sedunlocksrv/.ssh/opal-password.enc   # mode 600 -- in repo root, not deploy/
+ls -la ~/sedunlocksrv/.ssh/auth.conf
 ```
 
 > **Ed25519 keys only.** ECDSA and RSA are not supported (`setup-deploy.sh` will reject
@@ -54,7 +54,7 @@ challenge with your private key to decrypt the stored OPAL password:
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
     --dry-run'
@@ -68,21 +68,21 @@ OK  Build complete
 
 If the dry-run succeeds, check the log:
 ```bash
-ssh deploy@target 'tail -n 30 /opt/sedunlocksrv/deploy-*.log'
+ssh deploy@target 'tail -n 30 ~/sedunlocksrv/deploy-*.log'
 ```
 
 ## 4. First Real Deployment
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem'
 ```
 
 Watch progress:
 ```bash
-ssh -A deploy@target 'tail -f /opt/sedunlocksrv/deploy-*.log'
+ssh -A deploy@target 'tail -f ~/sedunlocksrv/deploy-*.log'
 ```
 
 Success message: `Deployment completed successfully`
@@ -93,11 +93,11 @@ Once manual deployment works, set up automatic triggering when certificates rene
 
 **Example: Proxmox + cron**
 
-Create `/opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh`:
+Create `~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh`:
 ```bash
 #!/bin/bash
 CERT_PATH="/etc/pve/pveproxy-ssl.pem"
-STATE_FILE="/opt/sedunlocksrv/.cert-hash"
+STATE_FILE="~/sedunlocksrv/.cert-hash"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 TARGET="deploy@localhost"
 
@@ -107,7 +107,7 @@ TARGET="deploy@localhost"
 CURRENT_HASH=$(sha256sum "$CERT_PATH" | awk '{print $1}')
 if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
     ssh -A -i "$SSH_KEY" "$TARGET" \
-      '/opt/sedunlocksrv/deploy/deploy.sh \
+      '~/sedunlocksrv/deploy/deploy.sh \
         --cert-path=/etc/pve/pveproxy-ssl.pem \
         --key-path=/etc/pve/pveproxy-ssl-key.pem'
     [ $? -eq 0 ] && echo "$CURRENT_HASH" > "$STATE_FILE"
@@ -116,8 +116,8 @@ fi
 
 Register cron:
 ```bash
-chmod +x /opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
-echo '0 3 * * * root /opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh' \
+chmod +x ~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
+echo '0 3 * * * root ~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh' \
   > /etc/cron.d/pba-redeploy
 ```
 
@@ -132,7 +132,7 @@ The SSH agent must hold the Ed25519 key that was used during setup:
 ```bash
 ssh-add -l                               # list loaded keys
 ssh-add ~/.ssh/id_ed25519                # load key if missing
-cat /opt/sedunlocksrv/.ssh/auth.conf         # check registered key fingerprint
+cat ~/sedunlocksrv/.ssh/auth.conf         # check registered key fingerprint
 ssh-keygen -lf ~/.ssh/id_ed25519.pub    # verify fingerprint matches
 
 # Wrong key? Re-run setup:
@@ -151,7 +151,7 @@ sudo ./setup-deploy.sh     # re-run setup
 ```bash
 go version     # needs 1.21+
 df -h /        # needs ~10 GB free
-ssh deploy@target 'tail -n 100 /opt/sedunlocksrv/deploy-*.log | grep -A5 ERROR'
+ssh deploy@target 'tail -n 100 ~/sedunlocksrv/deploy-*.log | grep -A5 ERROR'
 ```
 
 ### "Certificate and key do not match"

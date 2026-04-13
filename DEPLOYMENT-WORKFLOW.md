@@ -27,8 +27,8 @@ The deployment process has two distinct phases:
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/your-org/sedunlocksrv-pba.git /opt/sedunlocksrv
-cd /opt/sedunlocksrv
+git clone https://github.com/scoutdriver73/sedunlocksrv-pba.git ~/sedunlocksrv
+cd ~/sedunlocksrv
 ```
 
 ### Step 2: Configure build.conf
@@ -124,11 +124,11 @@ Format the second USB stick with FAT32, then copy the PBA image you built in Ste
 
 ```bash
 # Find the PBA image in the repo root
-ls -lh /opt/sedunlocksrv/sedunlocksrv-pba-*.img
+ls -lh ~/sedunlocksrv/sedunlocksrv-pba-*.img
 
 # Copy to FAT32 USB stick (replace /dev/sdPBA1 with your USB partition)
 sudo mount /dev/sdPBA1 /mnt
-sudo cp /opt/sedunlocksrv/sedunlocksrv-pba-*.img /mnt/sedunlocksrv-pba.img
+sudo cp ~/sedunlocksrv/sedunlocksrv-pba-*.img /mnt/sedunlocksrv-pba.img
 sudo umount /mnt
 ```
 
@@ -302,7 +302,7 @@ After initial manual flash, **configure the host for automated deployments**:
 
 ```bash
 # On the host machine with the OPAL drive connected
-cd /opt/sedunlocksrv/deploy
+cd ~/sedunlocksrv/deploy
 
 # Make script executable
 chmod +x setup-deploy.sh
@@ -386,7 +386,7 @@ When certificates are renewed/updated, **call deploy.sh remotely** via SSH:
 # From your remote management host (or CI/CD system):
 # NOTE: -A enables agent forwarding (required for password decryption)
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '/opt/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
     --key-path=/path/to/new/privkey.pem'
 ```
@@ -404,7 +404,7 @@ Always test before deploying for real:
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '/opt/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
     --key-path=/path/to/new/privkey.pem \
     --dry-run'
@@ -427,7 +427,7 @@ Once dry-run succeeds, deploy for real:
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '/opt/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
     --key-path=/path/to/new/privkey.pem'
 ```
@@ -437,11 +437,11 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
 ```bash
 # Watch logs on target host
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  'tail -f /opt/sedunlocksrv/deploy-*.log'
+  'tail -f ~/sedunlocksrv/deploy-*.log'
 
 # Check for success message
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  'grep -i "deployment completed" /opt/sedunlocksrv/deploy-*.log'
+  'grep -i "deployment completed" ~/sedunlocksrv/deploy-*.log'
 ```
 
 ---
@@ -470,8 +470,8 @@ EXPERT_PASSWORD="MyExpertPassword123!"
 
 ```bash
 # Clone and configure
-git clone https://github.com/your-org/sedunlocksrv-pba.git /opt/sedunlocksrv
-cd /opt/sedunlocksrv
+git clone https://github.com/scoutdriver73/sedunlocksrv-pba.git ~/sedunlocksrv
+cd ~/sedunlocksrv
 cp build.conf.example build.conf
 # Edit build.conf as above
 
@@ -493,10 +493,10 @@ Create `/etc/cron.d/pba-redeploy` to rebuild PBA when Proxmox certificates chang
 
 ```bash
 # Every day at 3 AM, check if Proxmox certs changed and redeploy PBA
-0 3 * * * root /opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
+0 3 * * * root ~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
 ```
 
-**Example script** (`/opt/sedunlocksrv/deploy/redeploy-if-cert-changed.sh`):
+**Example script** (`~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh`):
 
 > **Important:** This script runs from cron, which has no SSH agent. You must configure
 > a persistent agent socket or use a key file. See the troubleshooting section for details.
@@ -505,7 +505,7 @@ Create `/etc/cron.d/pba-redeploy` to rebuild PBA when Proxmox certificates chang
 #!/bin/bash
 
 CERT_PATH="/etc/pve/pveproxy-ssl.pem"
-STATE_FILE="/opt/sedunlocksrv/.cert-hash"
+STATE_FILE="~/sedunlocksrv/.cert-hash"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 TARGET="deploy@localhost"
 
@@ -521,7 +521,7 @@ if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
     
     # Deploy via SSH with agent forwarding
     ssh -A -i "$SSH_KEY" "$TARGET" \
-      '/opt/sedunlocksrv/deploy.sh \
+      '~/sedunlocksrv/deploy.sh \
         --cert-path=/etc/pve/pveproxy-ssl.pem \
         --key-path=/etc/pve/pveproxy-ssl-key.pem'
     
@@ -557,7 +557,7 @@ ssh-add ~/.ssh/id_ed25519
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host
 
 # Check which key was used during setup
-cat /opt/sedunlocksrv/.ssh/auth.conf
+cat ~/sedunlocksrv/.ssh/auth.conf
 
 # Verify your key matches the stored fingerprint
 ssh-keygen -lf ~/.ssh/id_ed25519.pub
@@ -596,13 +596,21 @@ sudo apt install -y \
   curl wget git \
   xorriso bsdtar \
   cpio rsync \
-  golang-go \
-  dropbear dropbear-bin \
-  grub-efi-amd64-bin grub-pc-bin \
-  sfdisk
+  jq openssh-client file unzip \
+  dropbear-bin \
+  grub-efi-amd64-bin grub-pc-bin grub-common \
+  util-linux dosfstools openssl
+
+# Do NOT install golang-go — the distro package is too old.
+# Install Go 1.22+ from https://go.dev/dl/ e.g.:
+curl -OL https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
 
 # Verify Go version
-go version  # Should be 1.21+
+go version  # Should be 1.22+
 ```
 
 ### "Failed to write PBA image to /dev/nvme0"
@@ -626,7 +634,7 @@ sudo -l | grep sedutil-cli
 
 - [ ] SSH private key is password-protected
 - [ ] SSH private key is not stored on build host
-- [ ] Encrypted password file (`/opt/sedunlocksrv/.ssh/opal-password.enc`) has mode 600
+- [ ] Encrypted password file (`~/sedunlocksrv/.ssh/opal-password.enc`) has mode 600
 - [ ] Setup-deploy.sh was run as root with correct SSH public key
 - [ ] Certificate renewal process is automated/reliable on remote host
 - [ ] Deploy logs don't contain passwords (they use fingerprint-based decryption)

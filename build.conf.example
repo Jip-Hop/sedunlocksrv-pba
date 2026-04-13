@@ -8,7 +8,7 @@
 
 # --- Image / Tiny Core fetch ---
 # GRUBSIZE=32                   # extra MB reserved for GRUB/EFI files; OPAL2 PBA max is typically 128MB
-# KEXEC_VER="2.0.28"            # version of kexex to download from kernel.org
+# KEXEC_VER="2.0.29"            # version of kexec to download from kernel.org
 # TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 # INPUTISO="TinyCorePure64-current.iso"
 
@@ -18,7 +18,6 @@
 # --- Build behavior ---
 # CLEAN_MODE=false              # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
 # SSHBUILD=false                # true: same as ./build.sh --ssh
-# ENABLE_BINARY_INSPECTION=false # true: adds file.tcz (~5MB) for improved kernel/initrd detection on non-standard systems
 # TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key
 # SSH_CURL_INSECURE="auto"      # auto: false when custom TLS cert/key are used, else true

@@ -274,13 +274,13 @@ cp /etc/letsencrypt/live/example.com/fullchain.pem /opt/pba-certs/
 cp /etc/letsencrypt/live/example.com/privkey.pem /opt/pba-certs/
 
 # Notify or trigger deploy
-ssh deploy@pba-host "cd /opt/sedunlocksrv/deploy && ./deploy.sh ..."
+ssh deploy@pba-host "cd ~/sedunlocksrv/deploy && ./deploy.sh ..."
 ```
 
 **Deployment command:**
 ```bash
 ssh -i ~/.ssh/id_deploy deploy@pba-host \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/opt/pba-certs/fullchain.pem \
     --key-path=/opt/pba-certs/privkey.pem \
     --use-ssh-key-encrypted \
@@ -325,7 +325,7 @@ ssh -i ~/.ssh/id_deploy deploy@pba-host \
 **Deployment command:**
 ```bash
 ssh deploy@proxmox-node \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
     --use-ssh-key-encrypted \
@@ -335,7 +335,7 @@ ssh deploy@proxmox-node \
 
 # After verifying dry-run output:
 ssh deploy@proxmox-node \
-  '/opt/sedunlocksrv/deploy/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
     --use-ssh-key-encrypted \
@@ -478,7 +478,7 @@ CERT_PATH="/etc/letsencrypt/live/example.com/fullchain.pem"
 KEY_PATH="/etc/letsencrypt/live/example.com/privkey.pem"
 
 ssh -i ~/.ssh/id_deploy deploy@pba-server \
-  "/opt/sedunlocksrv/deploy/deploy.sh \
+  "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
     --use-ssh-key-encrypted \
@@ -496,7 +496,7 @@ CERT_PATH="/mnt/shared/certs/fullchain.pem"
 KEY_PATH="/mnt/shared/certs/privkey.pem"
 
 ssh deploy@pba-server \
-  "/opt/sedunlocksrv/deploy/deploy.sh \
+  "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
     --use-ssh-key-encrypted \
