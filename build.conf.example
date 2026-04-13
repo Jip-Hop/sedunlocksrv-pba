@@ -7,7 +7,6 @@
 # BUILD_TMPDIR="img.tmp"        #
 
 # --- Image / Tiny Core fetch ---
-# GRUBSIZE=32                   # extra MB reserved for GRUB/EFI files; OPAL2 PBA max is typically 128MB
 # KEXEC_VER="2.0.29"            # version of kexec to download from kernel.org
 # TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
 # INPUTISO="TinyCorePure64-current.iso"

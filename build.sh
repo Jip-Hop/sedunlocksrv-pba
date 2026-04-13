@@ -26,10 +26,6 @@ BUILD_DATE=$(date +%Y%m%d-%H%M)
 OUTPUTIMG="sedunlocksrv-pba-${BUILD_DATE}.img"
 LATEST_LINK="sedunlocksrv-pba-latest.img"
 
-# Extra MB reserved for bootloader/EFI partition content.
-# Final image size is filesystem size + GRUBSIZE + 2MB safety margin.
-# OPAL 2 PBA size limit is typically 128MB, so keep this conservative.
-GRUBSIZE=32
 KEXEC_VER="2.0.29"
 
 TCURL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64"
@@ -415,8 +411,9 @@ check_host_dependencies() {
         echo "On Debian/Ubuntu:"
         echo "  sudo apt update && sudo apt install -y \\"
         echo "    build-essential coreutils findutils curl xorriso bsdtar cpio xz-utils fdisk \\"
-        echo "    golang-go gzip rsync util-linux dosfstools openssl \\"
+        echo "    gzip rsync util-linux dosfstools openssl jq openssh-client file unzip \\"
         echo "    grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin"
+        echo "  # Go must be installed from https://go.dev/dl/ (do not use golang-go)"
         exit 1
     fi
     if [ "$SSHBUILD" = true ] && ! have_command dropbearkey; then
@@ -941,19 +938,61 @@ repack_initrd_to_boot() {
 # -----------------------------------------------------------------------------
 # Raw disk image
 # -----------------------------------------------------------------------------
+# measure_grub_size — pass 1: install GRUB into a throwaway directory to
+# measure the actual module tree size produced by the host GRUB version.
+# Returns the measured size in whole MB (rounded up) via stdout.
+# A 1 MB throwaway loop image is used for i386-pc (MBR gap writes only —
+# nothing lands in the filesystem, but grub-install requires a block device).
+measure_grub_size() {
+    local measure_dir measure_loop measure_img grub_mb
+    measure_dir="$(mktemp -d --tmpdir="$(pwd)" 'grub-measure.XXXXXX')"
+    measure_img="${measure_dir}/mbr.img"
+
+    echo "--- Measuring GRUB module size (pass 1) ---"
+
+    # 1 MB stub for i386-pc MBR gap writes
+    dd if=/dev/zero of="${measure_img}" bs=1M count=1 2>/dev/null
+    measure_loop=$(losetup --find --show "${measure_img}")
+
+    grub-install --no-floppy \
+        --boot-directory="${measure_dir}/boot" \
+        --target=i386-pc "${measure_loop}" >/dev/null 2>&1 || true
+    grub-install --removable \
+        --boot-directory="${measure_dir}/boot" \
+        --target=x86_64-efi \
+        --efi-directory="${measure_dir}/" "${measure_loop}" >/dev/null 2>&1
+    grub-install --removable \
+        --boot-directory="${measure_dir}/boot" \
+        --target=i386-efi \
+        --efi-directory="${measure_dir}/" "${measure_loop}" >/dev/null 2>&1
+
+    losetup -d "${measure_loop}"
+    rm -f "${measure_img}"
+
+    # Round up to next whole MB and add 4 MB for FAT32 overhead/alignment
+    grub_mb=$(du -m --summarize "${measure_dir}" | awk '{print $1}')
+    grub_mb=$((grub_mb + 4))
+    rm -rf "${measure_dir}"
+
+    echo "--- GRUB module tree: ${grub_mb} MB ---"
+    printf '%s' "${grub_mb}"
+}
+
 # build_partitioned_disk_image — creates a raw .img with a DOS partition
 # table, one bootable FAT32 EFI partition, GRUB (BIOS + EFI), and the
 # kernel + initrd. The result is ready to be written to the OPAL shadow MBR.
 build_partitioned_disk_image() {
-    local fssize projected_size_mb maj min part line counter
+    local fssize grub_size projected_size_mb maj min part line counter
     fssize=$(du -m --summarize --total "${BUILD_TMPDIR}/fs" | awk '$2 == "total" { printf("%.0f\n", $1); }')
-    projected_size_mb=$((fssize + GRUBSIZE + 2))
+    grub_size=$(measure_grub_size)
+    projected_size_mb=$((fssize + grub_size))
 
     if [ "${projected_size_mb}" -gt 128 ]; then
         echo "⚠ WARNING: projected PBA image size is ${projected_size_mb}MB (>128MB OPAL2 guideline)." >&2
-        echo "  Consider reducing initrd size or lowering GRUBSIZE to stay under 128MB." >&2
+        echo "  Consider reducing initrd size to stay under 128MB." >&2
     fi
 
+    echo "--- Image layout: ${fssize} MB initrd + ${grub_size} MB GRUB = ${projected_size_mb} MB total ---"
     dd if=/dev/zero of="${OUTPUTIMG}" bs=1M count="${projected_size_mb}"
 
     LOOP_DEVICE_HDD=$(losetup --find --show --partscan "${OUTPUTIMG}")
