@@ -341,7 +341,7 @@ load_password_from_ssh_encrypted() {
     
     # Extract fingerprint for log message (non-sensitive)
     local fingerprint
-    fingerprint=$(grep '^SSH_PUBKEY_FINGERPRINT=' "${auth_conf}" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"')
+    fingerprint=$(grep '^SSH_PUBKEY_FINGERPRINT=' "${auth_conf}" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'")
     info "✓ Password decrypted using SSH key signature (${fingerprint:-unknown})"
 }
 
