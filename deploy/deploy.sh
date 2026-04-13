@@ -215,10 +215,11 @@ get_pba_partition() {
     info "Verifying OPAL 2.0 drive safety: ${drive}"
     
     # =========================================================================
-    # Check 1: Drive exists and is a block device
+    # Check 1: Drive path exists — early friendly error before sedutil-cli runs.
+    # OPAL compliance is verified in Check 3 below; that is the definitive gate.
     # =========================================================================
-    if [ ! -b "${drive}" ]; then
-        fail_exit 1 "Drive not found or not a block device: ${drive}"
+    if [ ! -e "${drive}" ]; then
+        fail_exit 1 "Drive not found: ${drive}"
     fi
     info "✓ Drive device confirmed: ${drive}"
     
@@ -667,8 +668,10 @@ validate_inputs() {
     
     info "Certificates validated ✅"
     
-    if [ ! -b "${OPAL_DRIVE}" ]; then
-        fail_exit 1 "OPAL drive not found or not a block device: ${OPAL_DRIVE}"
+    # sedutil-cli addresses NVMe drives via the controller path (/dev/nvme0),
+    # which is a character device, not a block device. Use -e instead of -b.
+    if [ ! -e "${OPAL_DRIVE}" ]; then
+        fail_exit 1 "OPAL drive not found: ${OPAL_DRIVE}"
     fi
     
     require_cmd "sedutil-cli"
