@@ -71,6 +71,7 @@ Run once as root on the host with the OPAL drive:
 
 ```bash
 cd ~/sedunlocksrv/deploy
+chmod +x setup-deploy.sh deploy.sh
 sudo ./setup-deploy.sh
 ```
 

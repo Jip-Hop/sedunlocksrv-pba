@@ -412,11 +412,8 @@ log_ok "Directory structure created"
 log_info "Configuring sudoers..."
 SUDOERS_FILE="/etc/sudoers.d/sedunlocksrv"
 
-if [ -f "${SUDOERS_FILE}" ]; then
-    log_ok "Sudoers file already exists"
-else
-    log_info "Creating sudoers configuration..."
-    cat > "${SUDOERS_FILE}" <<EOF
+log_info "Writing sudoers configuration..."
+cat > "${SUDOERS_FILE}" <<EOF
 # Allow ${SERVICE_USER} to run deploy.sh with minimal privilege escalation
 ${SERVICE_USER} ALL=(ALL) NOPASSWD: ${DEPLOY_SCRIPT}, \\
                                   ${SEDUNLOCKSRV_BASE}/build.sh, \\
@@ -428,15 +425,13 @@ Defaults:${SERVICE_USER} !requiretty
 # Reset environment after command
 Defaults:${SERVICE_USER} env_reset
 EOF
-    chmod 440 "${SUDOERS_FILE}"
-    log_ok "Sudoers file created"
-fi
+chmod 440 "${SUDOERS_FILE}"
 
 if ! visudo -c &>/dev/null; then
     log_err "Sudoers syntax error!"
     exit 1
 fi
-log_ok "Sudoers validation passed"
+log_ok "Sudoers configuration written and validated"
 
 echo ""
 
@@ -823,10 +818,11 @@ else
 fi
 
 # Check sudoers
-if sudo -l -U "${SERVICE_USER}" deploy.sh &>/dev/null 2>&1; then
+if [ -f "/etc/sudoers.d/sedunlocksrv" ] && visudo -c &>/dev/null; then
     log_ok "Sudoers configuration valid"
 else
-    log_warn "Sudoers may not be configured correctly (this is normal)"
+    log_err "Sudoers file missing or invalid"
+    ERRORS=$((ERRORS + 1))
 fi
 
 # Check directories

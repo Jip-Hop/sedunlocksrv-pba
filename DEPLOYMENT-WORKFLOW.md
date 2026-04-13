@@ -304,8 +304,8 @@ After initial manual flash, **configure the host for automated deployments**:
 # On the host machine with the OPAL drive connected
 cd ~/sedunlocksrv/deploy
 
-# Make script executable
-chmod +x setup-deploy.sh
+# Make scripts executable
+chmod +x setup-deploy.sh deploy.sh
 
 # Run as root
 sudo ./setup-deploy.sh
@@ -483,8 +483,8 @@ sudo ./build.sh
 
 # Configure for automated deployments
 cd deploy
+chmod +x setup-deploy.sh deploy.sh
 sudo ./setup-deploy.sh
-# When prompted for SSH key path, use: ~/.ssh/id_ed25519.pub
 ```
 
 ### Cron Job for Certificate Updates
