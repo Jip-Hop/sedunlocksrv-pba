@@ -7,7 +7,7 @@
 #   4. Cache ISO & sedutil → 5. Unpack kernel/initrd → 6. Merge app + kexec + TCZs
 #   7. Repack initrd → 8. Partition loop image → GRUB → output .img + symlink
 #
-set -euox pipefail
+set -euo pipefail
 
 export PATH="${PATH}:/usr/local/go/bin"
 
@@ -705,11 +705,6 @@ EOF
 # prepare_expert_password_hash — prompts for the expert mode password if not
 # provided via --expert-password, then hashes it with bcrypt.
 prepare_expert_password_hash() {
-    local had_xtrace=false
-    case "$-" in
-        *x*) had_xtrace=true; set +x ;;
-    esac
-
     if [ -z "${EXPERT_PASSWORD}" ]; then
         echo "\n=== Expert Mode Password ==="
         echo "Enter a password for expert mode access (no requirements, any characters allowed)."
@@ -733,10 +728,6 @@ prepare_expert_password_hash() {
     if [ -z "${EXPERT_PASSWORD_HASH}" ]; then
         echo "Failed to generate EXPERT_PASSWORD_HASH." >&2
         exit 1
-    fi
-
-    if [ "${had_xtrace}" = true ]; then
-        set -x
     fi
 }
 
@@ -948,7 +939,7 @@ measure_grub_size() {
     measure_dir="$(mktemp -d --tmpdir="$(pwd)" 'grub-measure.XXXXXX')"
     measure_img="${measure_dir}/mbr.img"
 
-    echo "--- Measuring GRUB module size (pass 1) ---"
+    echo "--- Measuring GRUB module size (pass 1) ---" >&2
 
     # 1 MB stub for i386-pc MBR gap writes
     dd if=/dev/zero of="${measure_img}" bs=1M count=1 2>/dev/null
@@ -974,7 +965,7 @@ measure_grub_size() {
     grub_mb=$((grub_mb + 4))
     rm -rf "${measure_dir}"
 
-    echo "--- GRUB module tree: ${grub_mb} MB ---"
+    echo "--- GRUB module tree: ${grub_mb} MB ---" >&2
     printf '%s' "${grub_mb}"
 }
 
