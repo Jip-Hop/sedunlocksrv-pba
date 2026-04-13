@@ -830,7 +830,7 @@ else
 fi
 
 # Check directories
-for dir in "${SEDUNLOCKSRV_BASE}"{,/certs,/certs/latest,/logs,.ssh}; do
+for dir in "${SEDUNLOCKSRV_BASE}"{,/certs,/certs/latest,/logs,/.ssh}; do
     if [ -d "${dir}" ]; then
         log_ok "Directory exists: ${dir}"
     else
