@@ -539,14 +539,18 @@ fetch_cached_url() {
 fetch_tinycore_file() {
     local filename="$1" local_dir="$2" remote_type="$3"
     local local_path="${CACHEDIR}/${local_dir}/${filename}"
-    if [ -s "${local_path}" ]; then
-        echo "📦 Using cached: ${filename}"
-        return 0
+    # .dep files may legitimately be absent (package has no deps); cache by
+    # existence so a 0-byte placeholder is not re-fetched on every build.
+    if [[ "${local_dir}" == "dep" ]]; then
+        [ -f "${local_path}" ] && { echo "📦 Using cached: ${filename}"; return 0; }
+        echo "Fetching: ${filename}..."
+        curl -fsSL "${TCURL}/${remote_type}/${filename}" -o "${local_path}" 2>/dev/null \
+            || touch "${local_path}"
+    else
+        [ -s "${local_path}" ] && { echo "📦 Using cached: ${filename}"; return 0; }
+        echo "Fetching: ${filename}..."
+        curl -fL "${TCURL}/${remote_type}/${filename}" -o "${local_path}"
     fi
-    echo "Fetching: ${filename}..."
-    curl -fL "${TCURL}/${remote_type}/${filename}" -o "${local_path}" || {
-        [[ "${local_dir}" == "dep" ]] && touch "${local_path}"
-    }
 }
 
 # expand_tcz_name NAME — replaces the literal string "KERNEL" in a .tcz
