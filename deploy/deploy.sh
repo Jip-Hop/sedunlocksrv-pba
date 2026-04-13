@@ -245,21 +245,14 @@ get_pba_partition() {
     info "✓ OPAL 2.0 drive confirmed"
     
     # =========================================================================
-    # Check 4: Drive is initialized (has locking ranges)
+    # Check 4: Drive is initialized (locking enabled)
     # =========================================================================
-    # Brief pause between sedutil-cli commands to avoid erratic drive controller responses
-    sleep 0.05
-    # Try to list locking ranges - fails if drive not initialized
-    local locking_output
-    locking_output=$(sudo sedutil-cli --passwordless "${drive}" listLockingRanges 2>&1) || true
-    
-    # If passwordless fails, try with admin password (will succeed if initialized)
-    if ! echo "${locking_output}" | grep -qi "locking\|range"; then
-        # Drive may need admin password to show locking ranges, or may not be fully initialized
-        warn "Could not verify locking ranges (may require admin password to query)"
-        info "Attempting to verify shadow MBR directly..."
+    # The --query output from Check 3 includes the locking state — no separate
+    # sedutil-cli call or admin password needed.
+    if echo "${query_output}" | grep -qiE "Locking(Enabled|Function)[[:space:]]*=?[[:space:]]*Y"; then
+        info "✓ Drive locking is enabled"
     else
-        info "✓ Drive is initialized with locking ranges"
+        warn "Could not confirm locking is enabled from query output — proceeding anyway"
     fi
     
     # =========================================================================
