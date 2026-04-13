@@ -466,46 +466,59 @@ declare -a FOUND_PUBKEYS=()
 declare -a PUBKEY_SOURCES=()  # Track where each key came from
 declare -a PUBKEY_CONTENT=()  # Store the actual public key content
 
-# Strategy 1: Extract Ed25519 keys from authorized_keys (most likely to be in use)
-if [ -f "${HOME}/.ssh/authorized_keys" ]; then
+# Determine the home directory of the service account — that is the correct
+# place to look for SSH keys, since deploy.sh runs as SERVICE_USER.
+REAL_USER="${SERVICE_USER}"
+REAL_HOME=$(getent passwd "${SERVICE_USER}" | cut -d: -f6)
+if [ -z "${REAL_HOME}" ]; then
+    # Service user not yet created or has no home; fall back to invoking user.
+    if [ -n "${SUDO_USER:-}" ]; then
+        REAL_USER="${SUDO_USER}"
+        REAL_HOME=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
+    else
+        REAL_USER="$(whoami)"
+        REAL_HOME="${HOME}"
+    fi
+fi
+
+# Strategy 1: Extract Ed25519 keys from the invoking user's authorized_keys.
+_auth_keys="${REAL_HOME}/.ssh/authorized_keys"
+if [ -f "${_auth_keys}" ]; then
     line_num=0
     while IFS= read -r line; do
         line_num=$((line_num + 1))
-        # Skip comments and empty lines
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$line" ]] && continue
-        
-        # Only show Ed25519 keys (ECDSA/RSA are not supported for KDF)
         key_type=$(echo "$line" | awk '{print $1}')
         [[ "${key_type}" != "ssh-ed25519" ]] && continue
-        
-        # Extract identifier (comment/description) if present in authorized_keys
-        # Format: keytype base64-key [identifier]
         identifier=$(echo "$line" | awk 'NF > 2 {print $(NF)}')
-        
-        FOUND_PUBKEYS+=("${HOME}/.ssh/authorized_keys")
+        FOUND_PUBKEYS+=("${_auth_keys}")
         if [ -n "$identifier" ]; then
-            PUBKEY_SOURCES+=("authorized_keys (line $line_num) - $identifier")
+            PUBKEY_SOURCES+=("${REAL_USER} authorized_keys (line $line_num) - $identifier")
         else
-            PUBKEY_SOURCES+=("authorized_keys (line $line_num)")
+            PUBKEY_SOURCES+=("${REAL_USER} authorized_keys (line $line_num)")
         fi
         PUBKEY_CONTENT+=("$line")
-    done < "${HOME}/.ssh/authorized_keys"
+    done < "${_auth_keys}"
 fi
 
-# Strategy 2: Look for Ed25519 .pub files (fallback)
+# Strategy 2: Look for Ed25519 .pub files in the invoking user's ~/.ssh.
 while IFS= read -r -d '' file; do
-    # Only add if we haven't extracted keys from authorized_keys yet
-    if [ ${#FOUND_PUBKEYS[@]} -eq 0 ]; then
-        if [ -f "$file" ]; then
-            pub_key_type=$(awk '{print $1}' "$file")
-            [[ "${pub_key_type}" != "ssh-ed25519" ]] && continue
-            FOUND_PUBKEYS+=("$file")
-            PUBKEY_SOURCES+=("$(basename "$file")")
-            PUBKEY_CONTENT+=("$(cat "$file")")
-        fi
+    if [ -f "$file" ]; then
+        pub_key_type=$(awk '{print $1}' "$file")
+        [[ "${pub_key_type}" != "ssh-ed25519" ]] && continue
+        pub_content=$(cat "$file")
+        # Avoid duplicating a key already found in authorized_keys.
+        already=false
+        for existing in "${PUBKEY_CONTENT[@]+"${PUBKEY_CONTENT[@]}"}"; do
+            [[ "$existing" == "$pub_content" ]] && { already=true; break; }
+        done
+        $already && continue
+        FOUND_PUBKEYS+=("$file")
+        PUBKEY_SOURCES+=("${REAL_USER} ~/.ssh/$(basename "$file")")
+        PUBKEY_CONTENT+=("$pub_content")
     fi
-done < <(find "$HOME/.ssh" -maxdepth 1 -name "*.pub" -type f -print0 2>/dev/null)
+done < <(find "${REAL_HOME}/.ssh" -maxdepth 1 -name "*.pub" -type f -print0 2>/dev/null)
 
 SSH_PUBKEY_PATH=""
 SSH_PUBKEY_CONTENT=""
@@ -513,7 +526,7 @@ SSH_SOURCE=""
 
 if [ ${#FOUND_PUBKEYS[@]} -eq 0 ]; then
     # No Ed25519 keys found, ask for manual path
-    log_warn "No Ed25519 SSH public keys found in ~/.ssh/ or ~/.ssh/authorized_keys"
+    log_warn "No Ed25519 SSH public keys found in ${REAL_HOME}/.ssh/"
     echo ""
     read -p "Enter path to SSH public key file (e.g., ~/.ssh/id_ed25519.pub): " -r SSH_PUBKEY_PATH
     SSH_PUBKEY_PATH="${SSH_PUBKEY_PATH/#\~/$HOME}"
