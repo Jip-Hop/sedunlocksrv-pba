@@ -463,7 +463,8 @@ NET_ADDRESSING="dhcp"
 
 # Features
 BUILD_ARGS="--ssh"
-EXPERT_PASSWORD="MyExpertPassword123!"
+# Expert password is NOT stored in build.conf when using deploy.sh automation;
+# pass it via --expert-password-stdin or the interactive TTY prompt instead.
 ```
 
 ### Initial Setup
@@ -520,10 +521,17 @@ if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
     echo "Certificate changed, rebuilding PBA..."
     
     # Deploy via SSH with agent forwarding
-    ssh -A -i "$SSH_KEY" "$TARGET" \
-      '~/sedunlocksrv/deploy.sh \
+    # Option A: interactive prompt (requires -t for TTY)
+    ssh -A -t -i "$SSH_KEY" "$TARGET" \
+      'sudo ~/sedunlocksrv/deploy/deploy.sh \
         --cert-path=/etc/pve/pveproxy-ssl.pem \
         --key-path=/etc/pve/pveproxy-ssl-key.pem'
+    
+    # Option B: pipe expert password (no shell escaping needed)
+    # echo 'p@$$w0rd!' | ssh -A -i "$SSH_KEY" "$TARGET" \
+    #   'sudo ~/sedunlocksrv/deploy/deploy.sh --expert-password-stdin \
+    #     --cert-path=/etc/pve/pveproxy-ssl.pem \
+    #     --key-path=/etc/pve/pveproxy-ssl-key.pem'
     
     if [ $? -eq 0 ]; then
         # Update hash
@@ -647,7 +655,7 @@ sudo -l | grep sedutil-cli
 
 Once this workflow is operational:
 
-1. **Test regularly** — Use `--dry-run` flag to validate builds without flashing
+1. **Test first** — Use `--dry-run` flag to validate builds without flashing
 2. **Monitor certificate expiry** — Set alerts for upcoming renewals
 3. **Maintain backups** — Keep recent PBA images in case rollback is needed
 4. **Document your certificate trigger** — So team members know how deployments happen

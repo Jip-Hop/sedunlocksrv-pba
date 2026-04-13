@@ -113,6 +113,34 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
     --build-args=--ssh,--net-mode=bond,--debug-level=0'
 ```
 
+### With expert password (remote SSH)
+
+**Interactive prompt** — simplest; `build.sh` prompts on the remote TTY:
+```bash
+ssh -A -t -i ~/.ssh/id_ed25519 deploy@target \
+  'sudo ~/sedunlocksrv/deploy/deploy.sh \
+    --cert-path=/path/to/fullchain.pem \
+    --key-path=/path/to/key.pem'
+```
+
+**Piped** — avoids all shell escaping; use single quotes locally to protect special characters:
+```bash
+echo 'p@$$w0rd!#1' | ssh -A -i ~/.ssh/id_ed25519 deploy@target \
+  'sudo ~/sedunlocksrv/deploy/deploy.sh \
+    --expert-password-stdin \
+    --cert-path=/path/to/fullchain.pem \
+    --key-path=/path/to/key.pem'
+```
+
+**Inline** — only if the password contains no single quotes:
+```bash
+ssh -A -i ~/.ssh/id_ed25519 deploy@target \
+  'sudo ~/sedunlocksrv/deploy/deploy.sh \
+    --expert-password=MySecret123 \
+    --cert-path=/path/to/fullchain.pem \
+    --key-path=/path/to/key.pem'
+```
+
 ### Automation
 
 **Cron job** (check for cert changes and redeploy):
@@ -156,6 +184,12 @@ Required:
 Optional:
   --build-args=ARGS          Comma-separated additional arguments for build.sh
                               e.g. --build-args=--ssh,--net-mode=bond
+  --expert-password=PASS     Expert mode password for build.sh; use single quotes
+                              to protect special characters (no commas needed)
+                              e.g. --expert-password='p@$$w0rd!'
+  --expert-password-stdin    Read expert password from stdin — use when calling
+                              remotely to avoid shell escaping entirely
+                              e.g. echo 'p@$$w0rd!' | ssh -A host 'sudo deploy.sh --expert-password-stdin ...'
   --opal-drive=DEVICE        Target OPAL drive (default: /dev/nvme0)
   --dry-run                  Build and validate only, do not flash to drive
   --cert-freshness=METHOD    hash|mtime|serial|marker|none (default: hash)

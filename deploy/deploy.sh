@@ -47,6 +47,11 @@
 #   --key-path=PATH          Absolute path to key.pem
 #   --build-args=ARGS        Comma-separated additional arguments for build.sh
 #                             (e.g., --build-args=--sedutil-fork=ChubbyAnt,--no-cache)
+#   --expert-password=PASS   Expert mode password passed directly to build.sh;
+#                             use this instead of --build-args to avoid shell
+#                             interpretation of special characters in the password
+#   --expert-password-stdin  Read expert password from stdin (pipe-friendly);
+#                             e.g.: echo 'p@$$w0rd' | ssh -A host 'sudo deploy.sh --expert-password-stdin ...'
 #   --dry-run                Build and validate only, do not flash to drive
 #   --opal-drive=DEVICE      Override OPAL drive (default: /dev/nvme0)
 #   --cert-freshness=METHOD  Certificate freshness check: hash|mtime|serial|marker|none (default: hash)
@@ -68,6 +73,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CERT_PATH=""
 KEY_PATH=""
 BUILD_ADDITIONAL_ARGS=()
+EXPERT_PASSWORD=""
 DRY_RUN=false
 OPAL_DRIVE="${OPAL_DRIVE:-/dev/nvme0}"
 QUIET="${QUIET:-false}"
@@ -360,6 +366,7 @@ build_pba() {
         sudo ./build.sh \
             --tls-cert="${CERT_PATH}" \
             --tls-key="${KEY_PATH}" \
+            ${EXPERT_PASSWORD:+"--expert-password=${EXPERT_PASSWORD}"} \
             ${BUILD_ADDITIONAL_ARGS[@]+"${BUILD_ADDITIONAL_ARGS[@]}"}
     ); then
         fail_exit 1 "build.sh failed; see logs above"
@@ -603,6 +610,12 @@ parse_args() {
                 ;;
             --build-args=*)
                 IFS=',' read -ra BUILD_ADDITIONAL_ARGS <<< "${1#*=}"
+                ;;
+            --expert-password=*)
+                EXPERT_PASSWORD="${1#*=}"
+                ;;
+            --expert-password-stdin)
+                IFS= read -r EXPERT_PASSWORD
                 ;;
             --opal-drive=*)
                 OPAL_DRIVE="${1#*=}"
