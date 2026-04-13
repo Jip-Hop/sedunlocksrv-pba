@@ -752,7 +752,7 @@ PASSWORD_FILE="${SSH_DIR}/opal-password.enc"
 AUTH_CONF="${SSH_DIR}/auth.conf"
 
 echo -n "${OPAL_PASSWORD}" | \
-    openssl enc -aes-256-cbc -pbkdf2 -P -pass "pass:${ENCRYPTION_KEY}" -out "${PASSWORD_FILE}" 2>/dev/null || {
+    openssl enc -aes-256-cbc -e -pbkdf2 -pass "pass:${ENCRYPTION_KEY}" -out "${PASSWORD_FILE}" 2>/dev/null || {
     log_err "Failed to encrypt password"
     exit 1
 }
