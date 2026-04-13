@@ -423,10 +423,10 @@ ${SERVICE_USER} ALL=(ALL) NOPASSWD: ${DEPLOY_SCRIPT}, \\
                                   /usr/bin/sedutil-cli
 
 # Service user configuration
-Defaults ${SERVICE_USER} !requiretty
+Defaults:${SERVICE_USER} !requiretty
 
 # Reset environment after command
-Defaults ${SERVICE_USER} env_reset
+Defaults:${SERVICE_USER} env_reset
 EOF
     chmod 440 "${SUDOERS_FILE}"
     log_ok "Sudoers file created"
@@ -462,9 +462,9 @@ chown root:root "${SSH_DIR}"
 log_info "Searching for SSH public keys..."
 echo ""
 
-declare -a FOUND_PUBKEYS
-declare -a PUBKEY_SOURCES  # Track where each key came from
-declare -a PUBKEY_CONTENT  # Store the actual public key content
+declare -a FOUND_PUBKEYS=()
+declare -a PUBKEY_SOURCES=()  # Track where each key came from
+declare -a PUBKEY_CONTENT=()  # Store the actual public key content
 
 # Strategy 1: Extract Ed25519 keys from authorized_keys (most likely to be in use)
 if [ -f "${HOME}/.ssh/authorized_keys" ]; then
