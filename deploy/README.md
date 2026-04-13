@@ -240,10 +240,11 @@ journalctl -u sedunlocksrv-deploy -p err     # errors only
 ```bash
 # Debian/Ubuntu
 sudo apt update && sudo apt install -y \
-    build-essential curl xorriso bsdtar cpio xz-utils \
-    util-linux mount fdisk dosfstools gzip rsync libarchive-tools \
+    build-essential coreutils findutils util-linux mount \
+    fdisk dosfstools  cpio xz-utils gzip rsync libarchive-tools \
     grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin \
-    openssl openssh-client jq file unzip git
+    xorriso curl git openssl jq openssh-client file unzip
+
 ```
 
 Also required: Go 1.22+ (install from [go.dev/dl](https://go.dev/dl), not `golang-go`), `sedutil-cli` in `$PATH`, and an initialized OPAL 2.0 drive.
