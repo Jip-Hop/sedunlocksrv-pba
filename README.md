@@ -1,5 +1,8 @@
 # 🚀 Enhanced TCG Opal 2.0 PBA
 
+<img width="689" height="409" alt="Screenshot 2026-04-13 013516" src="https://github.com/user-attachments/assets/5beedb7e-19fc-44bc-9b00-050b85dc385d" />
+
+<img width="669" height="727" alt="Screenshot 2026-04-13 013823" src="https://github.com/user-attachments/assets/8fa2e722-3fd1-4141-bdcc-35f05ab3df54" />
 
 ### ✨ Key Enhancements
 *   **Integrated Go Backend**: A single, high-performance Go binary manages the **Web UI (80/443)** and **Interactive Console** simultaneously.
