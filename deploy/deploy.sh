@@ -356,14 +356,6 @@ build_pba() {
         fail_exit 1 "Certificate freshness check failed; refusing to build with potentially stale certificates"
     fi
     
-    # Diagnostic: test whether git works as root on this repo before calling build.sh.
-    # build.sh uses `git tag --points-at HEAD 2>/dev/null` and set -o pipefail means a
-    # non-zero exit (e.g. git's "dubious ownership" refusal, exit 128) silently kills it.
-    local git_diag_out git_diag_exit
-    git_diag_out=$(sudo git -C "${REPO_ROOT}" tag --points-at HEAD 2>&1) \
-        && git_diag_exit=0 || git_diag_exit=$?
-    info "git diagnostic (exit ${git_diag_exit}): '${git_diag_out}'"
-
     if ! (
         cd "${REPO_ROOT}"
         sudo ./build.sh \

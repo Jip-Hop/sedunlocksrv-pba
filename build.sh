@@ -329,7 +329,12 @@ validate_network_settings() {
 # HEAD is exactly on a git tag (e.g. v1.0.0), otherwise keeps the date stamp.
 resolve_output_image_name() {
     local git_tag
-    git_tag=$(git tag --points-at HEAD 2>/dev/null | head -n1)
+    # git 2.35.2+ refuses to run in a repo not owned by the current user
+    # ("dubious ownership"). When build.sh runs as root (via sudo) but the
+    # repo is owned by another user, git exits 128. Passing -c safe.directory=*
+    # as a per-invocation override makes git trust the directory without
+    # permanently modifying root's ~/.gitconfig.
+    git_tag=$(git -c safe.directory='*' tag --points-at HEAD 2>/dev/null | head -n1)
     if [ -n "${git_tag}" ]; then
         OUTPUTIMG="sedunlocksrv-pba-${git_tag}.img"
         echo "--- Release build: output image will be ${OUTPUTIMG} ---"
