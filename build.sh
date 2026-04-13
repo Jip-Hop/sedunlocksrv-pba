@@ -11,6 +11,15 @@ set -euo pipefail
 
 export PATH="${PATH}:/usr/local/go/bin"
 
+# git 2.35.2+ refuses to operate on repos not owned by the current user
+# ("dubious ownership"). build.sh runs as root via sudo but the repo is
+# owned by the service account. Exporting these env vars adds safe.directory=*
+# for every git invocation in this process tree — including those spawned
+# internally by `go build` for VCS stamping — without touching ~/.gitconfig.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0='*'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${BUILD_CONFIG:-${SCRIPT_DIR}/build.conf}"
 
@@ -329,12 +338,7 @@ validate_network_settings() {
 # HEAD is exactly on a git tag (e.g. v1.0.0), otherwise keeps the date stamp.
 resolve_output_image_name() {
     local git_tag
-    # git 2.35.2+ refuses to run in a repo not owned by the current user
-    # ("dubious ownership"). When build.sh runs as root (via sudo) but the
-    # repo is owned by another user, git exits 128. Passing -c safe.directory=*
-    # as a per-invocation override makes git trust the directory without
-    # permanently modifying root's ~/.gitconfig.
-    git_tag=$(git -c safe.directory='*' tag --points-at HEAD 2>/dev/null | head -n1)
+    git_tag=$(git tag --points-at HEAD 2>/dev/null | head -n1)
     if [ -n "${git_tag}" ]; then
         OUTPUTIMG="sedunlocksrv-pba-${git_tag}.img"
         echo "--- Release build: output image will be ${OUTPUTIMG} ---"
