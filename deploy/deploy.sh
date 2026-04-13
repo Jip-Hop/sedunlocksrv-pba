@@ -54,7 +54,8 @@
 #                             e.g.: echo 'p@$$w0rd' | ssh -A host 'sudo deploy.sh --expert-password-stdin ...'
 #   --dry-run                Build and validate only, do not flash to drive
 #   --opal-drive=DEVICE      Override OPAL drive (default: /dev/nvme0)
-#   --cert-freshness=METHOD  Certificate freshness check: hash|mtime|serial|marker|none (default: hash)
+#   --cert-freshness=METHOD  Certificate freshness check: serial|hash|mtime|marker|none (default: serial)
+#                             serial: compare X.509 serial to stored baseline; first run always proceeds
 #   --cert-timeout=SECS      Max seconds to wait for cert update (default: 300)
 #   --cert-grace=SECS        Grace period for mtime check in seconds (default: 10)
 #   --quiet                  Suppress non-error output
@@ -80,7 +81,7 @@ QUIET="${QUIET:-false}"
 SYSLOG_TAG="${SYSLOG_TAG:-deploy.sh}"
 
 # Certificate freshness control
-CERT_FRESHNESS_STRATEGY="${CERT_FRESHNESS_STRATEGY:-hash}"  # hash, mtime, serial, marker, none
+CERT_FRESHNESS_STRATEGY="${CERT_FRESHNESS_STRATEGY:-serial}"  # serial, hash, mtime, marker, none
 CERT_FRESHNESS_TIMEOUT="${CERT_FRESHNESS_TIMEOUT:-300}"     # seconds (5 min default)
 CERT_FRESHNESS_GRACE="${CERT_FRESHNESS_GRACE:-10}"          # seconds (mtime strategy only)
 
@@ -676,14 +677,14 @@ validate_inputs() {
 # =============================================================================
 # Certificate Freshness Validation
 # =============================================================================
-# Prevents building PBA with stale certificates if certificate update
-# process completes copy AFTER deploy.sh starts but BEFORE build.sh is called.
-#
-# Detection Methods:
-#   hash     - Compare SHA256 hash to stored reference (most reliable)
-#   mtime    - Check modification time against threshold (simple, fast)
-#   serial   - Extract and compare certificate serial number (cert-aware)
-#   marker   - Check for explicit marker file from cert update process (explicit)
+# Prevents building PBA with stale certificates.
+# Uses a stored serial baseline (written after each successful deploy) to detect
+# whether the certificate has been renewed since the last build:
+#   - No baseline (first run)    → proceed immediately
+#   - Serial changed             → proceed immediately (new cert confirmed)
+#   - Serial unchanged           → poll for hash change up to timeout
+#                                  (handles cert copy still in progress)
+#   - strategy=none              → skip all checks
 
 # get_cert_hash — returns SHA256 hash of certificate file content
 get_cert_hash() {
@@ -697,133 +698,116 @@ get_cert_serial() {
     openssl x509 -in "${cert_path}" -noout -serial 2>/dev/null | grep -oP '\d+$'
 }
 
-# wait_for_cert_update — delay build if certificate hasn't been updated
+# wait_for_cert_update — verify certificate is fresh before building
 # Usage: wait_for_cert_update /path/to/cert.pem [strategy] [timeout] [grace_period]
-# Strategies:
-#   hash       - Wait for file hash to change (default, most reliable)
-#   mtime      - Wait for modification time to be newer than grace_period
-#   serial     - Wait for certificate serial number to change
-#   marker     - Wait for explicit marker file (e.g., /tmp/cert.updated)
-#   none       - Skip certificate freshness check
 wait_for_cert_update() {
     local cert_path="$1"
-    local strategy="${2:-hash}"
-    local timeout_secs="${3:-300}"           # Default: 5 minutes
-    local grace_period_secs="${4:-10}"       # Default: 10 seconds (mtime only)
-    local marker_file="${cert_path}.updated" # Default marker location
-    
-    # Skip if strategy is "none"
+    local strategy="${2:-serial}"
+    local timeout_secs="${3:-300}"
+    local grace_period_secs="${4:-10}"
+    local marker_file="${cert_path}.updated"
+    local baseline_file="${REPO_ROOT}/.cert-serial.baseline"
+
     if [ "${strategy}" = "none" ]; then
         info "Certificate freshness check disabled (strategy: none)"
         return 0
     fi
-    
-    info "Waiting for certificate update (strategy: ${strategy}, timeout: ${timeout_secs}s)..."
-    
-    local start_time elapsed_secs
-    start_time=$(date +%s)
-    
+
+    info "Checking certificate freshness (strategy: ${strategy})..."
+
+    local current_serial
+    current_serial=$(get_cert_serial "${cert_path}")
+
     case "${strategy}" in
-        hash)
-            # Wait for file hash to change
-            local initial_hash reference_hash
+        serial|hash)
+            # First run — no baseline yet, proceed and let post-deploy save it
+            if [ ! -f "${baseline_file}" ]; then
+                info "First run: no serial baseline stored — proceeding with build"
+                info "Baseline will be saved after successful deploy"
+                return 0
+            fi
+
+            local baseline_serial
+            baseline_serial=$(cat "${baseline_file}" 2>/dev/null || echo "")
+
+            if [ -z "${baseline_serial}" ]; then
+                info "Baseline is empty — treating as first run"
+                return 0
+            fi
+
+            if [ "${current_serial}" != "${baseline_serial}" ]; then
+                info "✓ Certificate serial changed: ${baseline_serial} → ${current_serial}"
+                return 0
+            fi
+
+            # Serial unchanged — cert copy may still be in progress; poll hash
+            warn "Certificate serial unchanged (${current_serial}) — polling for hash change..."
+            local initial_hash current_hash start_time elapsed_secs
             initial_hash=$(get_cert_hash "${cert_path}")
-            reference_hash="${initial_hash}"
-            
+            start_time=$(date +%s)
+
             while true; do
                 elapsed_secs=$(( $(date +%s) - start_time ))
                 if [ "${elapsed_secs}" -ge "${timeout_secs}" ]; then
-                    error "Certificate hash unchanged after ${elapsed_secs}s (strategy: hash)"
-                    error "Certificate may not have been updated. Aborting build."
+                    error "Certificate unchanged after ${elapsed_secs}s — may not have been renewed"
                     return 1
                 fi
-                
-                # Check if hash has changed
                 current_hash=$(get_cert_hash "${cert_path}")
-                if [ "${current_hash}" != "${reference_hash}" ]; then
-                    info "✓ Certificate hash changed (${strategy}), proceeding with build"
+                if [ "${current_hash}" != "${initial_hash}" ]; then
+                    info "✓ Certificate hash changed — new certificate detected"
                     return 0
                 fi
-                
-                # Wait and re-check
+                [ $((elapsed_secs % 10)) -eq 0 ] && [ "${elapsed_secs}" -gt 0 ] && \
+                    info "Still waiting for certificate update... (${elapsed_secs}s/${timeout_secs}s)"
                 sleep 1
             done
             ;;
-            
+
         mtime)
-            # Wait for modification time to be newer than grace period
             local file_mtime current_time age_secs
             current_time=$(date +%s)
             file_mtime=$(stat -c %Y "${cert_path}" 2>/dev/null || stat -f %m "${cert_path}" 2>/dev/null || echo "0")
             age_secs=$(( current_time - file_mtime ))
-            
-            while [ "${age_secs}" -gt "${grace_period_secs}" ]; do
-                elapsed_secs=$(( $(date +%s) - start_time ))
-                if [ "${elapsed_secs}" -ge "${timeout_secs}" ]; then
-                    warn "Certificate age ${age_secs}s exceeds grace period ${grace_period_secs}s (strategy: mtime)"
-                    warn "Certificate may be stale. Proceeding with caution."
-                    return 1
-                fi
-                
-                # Re-check age
-                current_time=$(date +%s)
-                file_mtime=$(stat -c %Y "${cert_path}" 2>/dev/null || stat -f %m "${cert_path}" 2>/dev/null || echo "0")
-                age_secs=$(( current_time - file_mtime ))
-                
-                sleep 1
-            done
-            
-            info "✓ Certificate is fresh (age: ${age_secs}s, grace: ${grace_period_secs}s, strategy: mtime)"
-            return 0
+            if [ "${age_secs}" -le "${grace_period_secs}" ]; then
+                info "✓ Certificate is fresh (age: ${age_secs}s, grace: ${grace_period_secs}s)"
+                return 0
+            fi
+            warn "Certificate age ${age_secs}s exceeds grace period ${grace_period_secs}s"
+            return 1
             ;;
-            
-        serial)
-            # Wait for certificate serial number to match stored reference
-            local initial_serial current_serial
-            initial_serial=$(get_cert_serial "${cert_path}")
-            
-            while true; do
-                elapsed_secs=$(( $(date +%s) - start_time ))
-                if [ "${elapsed_secs}" -ge "${timeout_secs}" ]; then
-                    warn "Certificate serial number unchanged after ${elapsed_secs}s (strategy: serial)"
-                    warn "Certificate may not have been renewed. Proceeding with caution."
-                    return 1
-                fi
-                
-                current_serial=$(get_cert_serial "${cert_path}")
-                if [ "${current_serial}" != "${initial_serial}" ]; then
-                    info "✓ Certificate serial changed (strategy: serial), proceeding with build"
-                    return 0
-                fi
-                
-                sleep 1
-            done
-            ;;
-            
+
         marker)
-            # Wait for explicit marker file (created by certificate update process)
+            local start_time elapsed_secs
+            start_time=$(date +%s)
             while [ ! -f "${marker_file}" ]; do
                 elapsed_secs=$(( $(date +%s) - start_time ))
                 if [ "${elapsed_secs}" -ge "${timeout_secs}" ]; then
                     error "Marker file not found after ${elapsed_secs}s: ${marker_file}"
-                    error "Certificate update process must create: ${marker_file}"
                     return 1
                 fi
-                
                 sleep 1
             done
-            
-            # Clean up marker
             rm -f "${marker_file}"
-            info "✓ Certificate marker file detected, proceeding with build (strategy: marker)"
+            info "✓ Certificate marker file detected (strategy: marker)"
             return 0
             ;;
-            
+
         *)
-            warn "Unknown certificate freshness strategy: ${strategy} (treating as 'none')"
+            warn "Unknown certificate freshness strategy: ${strategy} — skipping"
             return 0
             ;;
     esac
+}
+
+# save_cert_baseline — saves current certificate serial after a successful deploy
+# so future runs can detect whether the cert has changed.
+save_cert_baseline() {
+    local cert_path="$1"
+    local baseline_file="${REPO_ROOT}/.cert-serial.baseline"
+    local serial
+    serial=$(get_cert_serial "${cert_path}") || return 0
+    echo "${serial}" > "${baseline_file}"
+    info "Certificate serial baseline updated: ${serial}"
 }
 
 # =============================================================================
@@ -865,6 +849,9 @@ main() {
     
     # Flash new PBA to drive
     flash_pba_to_drive "${PBA_IMAGE}" "${OPAL_DRIVE}" "${OPAL_PASSWORD}"
+
+    # Save certificate serial baseline so next run can detect renewal
+    save_cert_baseline "${CERT_PATH}"
     
     log "========================================" "INFO"
     log "✅ Deployment Completed Successfully" "INFO"

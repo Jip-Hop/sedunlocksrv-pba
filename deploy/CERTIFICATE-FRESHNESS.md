@@ -26,47 +26,84 @@ When using automated certificate management, there's a race condition risk:
 
 `deploy.sh` can wait for certificate updates before calling `build.sh`. Multiple detection strategies are available.
 
+The default strategy (`serial`) stores the certificate's X.509 serial number to `~/sedunlocksrv/.cert-serial.baseline` after each successful deploy. On subsequent runs it compares the current serial against the baseline — no external state management required.
+
 ---
 
 ## Detection Strategies
 
-### 1. **Hash-Based (Default: `--cert-freshness=hash`)**
+### 1. **Certificate Serial Number (Default): `--cert-freshness=serial`**
 
-Compares the SHA256 hash of the certificate file to detect content changes.
+Uses a stored serial number baseline to detect whether the certificate has been renewed since the last successful deploy.
 
-**Best for**: Most scenarios, immune to timing issues
+**Best for**: Automated pipelines (ACME hooks, cron jobs, CI/CD) — correct on first run and every run after
 
 **How it works:**
-- On first call, hashes the certificate file
-- Repeatedly checks until the hash changes
-- Once hash changes, proceeds with build
+- After each successful deploy, saves the certificate's X.509 serial number to `~/sedunlocksrv/.cert-serial.baseline`
+- On the next run:
+  - **No baseline file** (first run): proceeds immediately; baseline is written after deploy
+  - **Serial changed**: proceeds immediately — new certificate confirmed
+  - **Serial unchanged**: polls for a hash change up to `--cert-timeout` seconds (handles cert copy still in progress)
 
 **Advantages:**
-- ✅ Detects actual content changes
-- ✅ Immune to system clock drift
-- ✅ Works across network filesystems
-- ✅ Works if file is replaced (inode change)
+- ✅ First-run safe — never hangs on initial deployment
+- ✅ Detects actual CA renewals, not incidental file changes
+- ✅ Falls back to hash polling if copy is still in progress
+- ✅ Baseline file is written by deploy.sh — no external state management needed
 
 **Disadvantages:**
-- ❌ Uses CPU for repeated hashing
-- ❌ Requires certificate to be copied from fresh source
+- ❌ Requires `openssl` for serial extraction
+- ❌ Baseline file must be writable by the service user
 
 **Use case:**
-- Default strategy for most deployments
-- Works with: Certbot, cert-manager, Let's Encrypt, manual copy
+- All automated deployments: ACME renewal hooks, cron jobs, CI/CD pipelines
+- Default strategy; no `--cert-freshness` argument required
 
 **Example:**
 ```bash
 deploy.sh --cert-path=/etc/letsencrypt/live/example.com/fullchain.pem \
           --key-path=/etc/letsencrypt/live/example.com/privkey.pem \
-          --use-ssh-key-encrypted \
+          --cert-timeout=300
+# (serial is the default; --cert-freshness=serial not required)
+```
+
+---
+
+### 2. **Hash-Based: `--cert-freshness=hash`**
+
+Compares the SHA256 hash of the certificate file against the stored serial baseline to detect content changes.
+
+**Best for**: Scenarios where serial number tracking is insufficient (e.g. self-signed certs re-issued with the same serial)
+
+**How it works:**
+- Same baseline-file logic as `serial` (first run proceeds; serial-change proceeds)
+- When serial is unchanged, polls the file hash until it changes
+- Explicitly selects hash as the primary detection method
+
+**Advantages:**
+- ✅ Detects content changes even if serial is reused
+- ✅ Immune to system clock drift
+- ✅ Works across network filesystems
+
+**Disadvantages:**
+- ❌ Uses CPU for repeated hashing
+- ❌ Like `serial`, won't detect a change until the hash actually differs
+
+**Use case:**
+- Self-signed certificate environments where serial numbers are not reliably unique
+- When you want to be explicit about hash-based detection
+
+**Example:**
+```bash
+deploy.sh --cert-path=/etc/letsencrypt/live/example.com/fullchain.pem \
+          --key-path=/etc/letsencrypt/live/example.com/privkey.pem \
           --cert-freshness=hash \
           --cert-timeout=300
 ```
 
 ---
 
-### 2. **Modification Time (mtime): `--cert-freshness=mtime`**
+### 3. **Modification Time (mtime): `--cert-freshness=mtime`**
 
 Checks when the certificate file was last modified.
 
@@ -105,42 +142,6 @@ deploy.sh --cert-path=/opt/certs/cert.pem \
           --cert-freshness=mtime \
           --cert-grace=5 \
           --cert-timeout=60
-```
-
----
-
-### 3. **Certificate Serial Number: `--cert-freshness=serial`**
-
-Extracts and compares the certificate's serial number.
-
-**Best for**: Detecting certificate renewals from the same CA
-
-**How it works:**
-- Extracts the X.509 serial number from certificate
-- Waits for serial number to change
-- Only triggers on actual certificate renewal
-
-**Advantages:**
-- ✅ Certificate-aware detection
-- ✅ Detects actual renewals, not just content changes
-- ✅ Immune to test/staging certificate copies
-
-**Disadvantages:**
-- ❌ Requires certificate parsing (slower than hash)
-- ❌ Doesn't detect if cert is replaced with one having same serial
-- ❌ Fails if certificate format is invalid
-
-**Use case:**
-- Deployments using Let's Encrypt or RFC 6844 (CAA) records
-- When you want to detect "new certificate from CA" specifically
-
-**Example:**
-```bash
-deploy.sh --cert-path=/etc/letsencrypt/live/example.com/fullchain.pem \
-          --key-path=/etc/letsencrypt/live/example.com/privkey.pem \
-          --use-ssh-key-encrypted \
-          --cert-freshness=serial \
-          --cert-timeout=300
 ```
 
 ---
@@ -227,7 +228,7 @@ deploy.sh --cert-path=/tmp/cert.pem \
 
 | Option | Default | Purpose |
 |--------|---------|---------|
-| `--cert-freshness=METHOD` | `hash` | Which strategy to use |
+| `--cert-freshness=METHOD` | `serial` | Which strategy to use |
 | `--cert-timeout=SECS` | `300` | Max seconds to wait for certificate update (0 = infinite wait) |
 | `--cert-grace=SECS` | `10` | Grace period for mtime strategy (seconds) |
 
@@ -283,12 +284,10 @@ ssh -i ~/.ssh/id_deploy deploy@pba-host \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/opt/pba-certs/fullchain.pem \
     --key-path=/opt/pba-certs/privkey.pem \
-    --use-ssh-key-encrypted \
-    --cert-freshness=hash \
     --cert-timeout=120'
 ```
 
-**Why hash?** Certbot copies complete files atomically. Hash will change on each renewal. Timeout of 120s is reasonable for certificate copy.
+**Why serial (default)?** Serial baseline is first-run safe and detects each CA-issued renewal automatically. If the baseline shows the serial unchanged (cert copy still in progress), it falls back to hash polling within the same timeout.
 
 ---
 
@@ -328,8 +327,6 @@ ssh deploy@proxmox-node \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
-    --use-ssh-key-encrypted \
-    --cert-freshness=hash \
     --cert-timeout=60 \
     --dry-run'
 
@@ -338,15 +335,13 @@ ssh deploy@proxmox-node \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
-    --use-ssh-key-encrypted \
-    --cert-freshness=hash \
     --cert-timeout=60'
 ```
 
-**Why hash?**
-- Manual deployment usually tight timing (cert just copied)
-- Hash detects actual update
-- Reasonable timeout catches copy issues
+**Why serial (default)?**
+- First run proceeds immediately; baseline written after deploy
+- On renewal, serial changes → proceeds immediately
+- Reasonable timeout covers any in-progress cert copy
 
 ---
 
@@ -368,13 +363,13 @@ ssh deploy@proxmox-node \
 
 ## Behavior Matrix
 
-| Strategy | Detects Content Change | Detects Renewal | Speed | Best For |
-|----------|------------------------|-----------------|-------|----------|
-| **hash** | ✅ Yes | ✅ Yes | Medium | Most scenarios |
+| Strategy | Detects Renewal | First-Run Safe | Speed | Best For |
+|----------|-----------------|----------------|-------|----------|
+| **serial** (default) | ✅ Yes | ✅ Yes | Medium | All automated pipelines |
+| **hash** | ✅ Yes | ✅ Yes | Medium | Self-signed / serial reuse |
 | **mtime** | ⚠️ Maybe* | ⚠️ Maybe* | Fast | Local/quick copy |
-| **serial** | ❌ No | ✅ Yes | Medium | CA renewals |
-| **marker** | ✅ (explicit) | ✅ (explicit) | Fast | CI/CD |
-| **none** | ❌ No | ❌ No | Fastest | Testing |
+| **marker** | ✅ (explicit) | ✅ Yes | Fast | CI/CD with tight coordination |
+| **none** | ❌ No | ✅ Yes | Fastest | Testing / manual |
 
 *Depends on timing accuracy and grace period
 
@@ -385,7 +380,7 @@ ssh deploy@proxmox-node \
 Freshness settings can also be set via environment variables:
 
 ```bash
-export CERT_FRESHNESS_STRATEGY="hash"      # Strategy: hash, mtime, serial, marker, none
+export CERT_FRESHNESS_STRATEGY="serial"    # Strategy: serial, hash, mtime, marker, none
 export CERT_FRESHNESS_TIMEOUT="300"        # Max wait seconds
 export CERT_FRESHNESS_GRACE="10"           # Grace period (mtime only)
 
@@ -396,7 +391,7 @@ export CERT_FRESHNESS_GRACE="10"           # Grace period (mtime only)
 
 ## Troubleshooting
 
-### "Certificate hash unchanged after Xs"
+### "Certificate serial unchanged — polling for hash change" (serial/hash strategy)
 
 **Problem:** Waiting for hash to change, but it hasn't.
 

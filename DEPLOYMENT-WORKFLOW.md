@@ -374,9 +374,9 @@ See [deploy/README.md](deploy/README.md) for cron, systemd timer, and CI/CD exam
 
 **Before this step:** Review [CERTIFICATE-FRESHNESS.md](CERTIFICATE-FRESHNESS.md) to understand race condition protection. Choose the detection strategy that matches your certificate management process:
 
-- **Hash-based** (default): Best for most scenarios
+- **Serial number** (default): First-run safe; detects CA renewals automatically; no extra configuration required
 - **Modification time**: Fast, for local/LAN certificates  
-- **Serial number**: For CA-managed renewals
+- **Hash-based**: For self-signed certs or where serial numbers may be reused
 - **Marker file**: For tight CI/CD coordination
 - **None**: For manual deployments
 
@@ -506,19 +506,21 @@ Create `/etc/cron.d/pba-redeploy` to rebuild PBA when Proxmox certificates chang
 #!/bin/bash
 
 CERT_PATH="/etc/pve/pveproxy-ssl.pem"
-STATE_FILE="~/sedunlocksrv/.cert-hash"
+STATE_FILE="~/sedunlocksrv/.cert-serial.baseline"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 TARGET="deploy@localhost"
 
 # For SSH agent forwarding in cron, point to a persistent agent socket:
 # export SSH_AUTH_SOCK=/run/user/$(id -u)/ssh-agent.sock
 
-# Get current certificate hash
-CURRENT_HASH=$(sha256sum "$CERT_PATH" | awk '{print $1}')
+# Get current certificate serial number
+CURRENT_SERIAL=$(openssl x509 -in "$CERT_PATH" -noout -serial 2>/dev/null | grep -oP '\d+$')
 
-# Check if hash changed
-if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
-    echo "Certificate changed, rebuilding PBA..."
+# Check if serial changed versus the last deploy's baseline
+# Note: deploy.sh also manages this file internally (serial strategy, default);
+# this outer check avoids starting the SSH connection when nothing has changed.
+if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_SERIAL" ]; then
+    echo "Certificate serial changed (or first run), rebuilding PBA..."
     
     # Deploy via SSH with agent forwarding
     # Option A: interactive prompt (requires -t for TTY)
@@ -534,15 +536,14 @@ if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
     #     --key-path=/etc/pve/pveproxy-ssl-key.pem'
     
     if [ $? -eq 0 ]; then
-        # Update hash
-        echo "$CURRENT_HASH" > "$STATE_FILE"
         echo "PBA redeployed successfully"
+        # deploy.sh writes the baseline itself; no manual update needed here
     else
         echo "PBA deployment failed"
         exit 1
     fi
 else
-    echo "Certificate unchanged, no redeploy needed"
+    echo "Certificate serial unchanged, no redeploy needed"
 fi
 ```
 

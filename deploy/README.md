@@ -149,8 +149,8 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
 0 3 * * * root ~/sedunlocksrv/deploy/redeploy-if-cert-changed.sh
 ```
 
-See [../DEPLOYMENT-WORKFLOW.md](../DEPLOYMENT-WORKFLOW.md) for a complete example cron script
-that hashes the certificate to detect changes.
+See [../DEPLOYMENT-WORKFLOW.md](../DEPLOYMENT-WORKFLOW.md) for a complete example cron
+script that uses certificate serial-number baseline tracking to detect renewal.
 
 **Systemd timer:**
 ```ini
@@ -192,7 +192,7 @@ Optional:
                               e.g. echo 'p@$$w0rd!' | ssh -A host 'sudo deploy.sh --expert-password-stdin ...'
   --opal-drive=DEVICE        Target OPAL drive (default: /dev/nvme0)
   --dry-run                  Build and validate only, do not flash to drive
-  --cert-freshness=METHOD    hash|mtime|serial|marker|none (default: hash)
+  --cert-freshness=METHOD    serial|hash|mtime|marker|none (default: serial)
   --cert-timeout=SECS        Max seconds to wait for cert update (default: 300)
   --cert-grace=SECS          Grace period for mtime strategy (default: 10)
   --quiet                    Suppress non-error output
