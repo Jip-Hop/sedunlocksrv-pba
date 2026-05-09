@@ -75,7 +75,7 @@ func checkOrigin(w http.ResponseWriter, r *http.Request) bool {
 	originTrimmed := strings.TrimPrefix(strings.TrimPrefix(origin, "https://"), "http://")
 	originHost := strings.Split(originTrimmed, ":")[0]
 	originHost = strings.TrimSuffix(originHost, "/")
-	if strings.EqualFold(originHost, hostNoPort) || strings.EqualFold(originHost, "localhost") || originHost == "127.0.0.1" {
+	if strings.EqualFold(originHost, hostNoPort) {
 		return false
 	}
 	jsonResponse(w, http.StatusForbidden, map[string]string{"error": "cross-origin request rejected"})
@@ -287,44 +287,14 @@ func recordFlashLine(line string) {
 	}
 }
 
-// runExpertPBAFlashBytes writes the PBA image to a temp file, then invokes
-// sedutil-cli --loadpbaimage in the background, streaming progress into
-// the flash status log.
-func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []byte, device string, validation []string) {
-	// Write image data to temporary file for sedutil to read
-	tmp, err := os.CreateTemp("", "sedunlocksrv-pba-*.img")
-	if err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to prepare temporary image file",
-			"validation": validation,
-		})
-		return
-	}
-	tmpPath := tmp.Name()
-
-	if _, err := tmp.Write(imageData); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to write image to temporary file",
-			"validation": validation,
-		})
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		jsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-			"error":      "failed to finalize temporary image file",
-			"validation": validation,
-		})
-		return
-	}
-
+// runExpertPBAFlashImagePath invokes sedutil-cli --loadpbaimage against an
+// already-written temporary image file, streaming progress into the flash log.
+func runExpertPBAFlashImagePath(w http.ResponseWriter, password, imagePath, device string, validation []string) {
 	// Initialize flash state
 	flashMu.Lock()
 	if flashState.InProgress {
 		flashMu.Unlock()
-		os.Remove(tmpPath)
+		os.Remove(imagePath)
 		jsonResponse(w, http.StatusConflict, map[string]string{"error": "a flash operation is already in progress"})
 		return
 	}
@@ -335,7 +305,7 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "flash started"})
 
 	go func() {
-		defer os.Remove(tmpPath)
+		defer os.Remove(imagePath)
 		defer func() {
 			flashMu.Lock()
 			flashState.InProgress = false
@@ -358,7 +328,7 @@ func runExpertPBAFlashBytes(w http.ResponseWriter, password string, imageData []
 
 		// Use stdbuf -o0 to disable stdout buffering so we can read
 		// sedutil-cli's \r-delimited progress lines in real time.
-		cmd := exec.CommandContext(ctx, "stdbuf", "-o0", "sedutil-cli", "--loadpbaimage", password, tmpPath, device)
+		cmd := exec.CommandContext(ctx, "stdbuf", "-o0", "sedutil-cli", "--loadpbaimage", password, imagePath, device)
 
 		// Pipe stdout for progress; capture stderr for LOG messages
 		stdoutPipe, err := cmd.StdoutPipe()

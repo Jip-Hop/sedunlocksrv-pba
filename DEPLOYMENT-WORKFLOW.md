@@ -49,24 +49,27 @@ nano build.conf
 # TLS Certificates (for PBA HTTPS server)
 TLS_CERT_PATH="/path/to/your/cert.pem"      # Full chain certificate
 TLS_KEY_PATH="/path/to/your/key.pem"        # Private key
+TLS_SERVER_NAME="pba.example.com"           # Required with custom certs; must match one SAN on the certificate
+TLS_CA_CERT_PATH="/path/to/your/ca.pem"     # Optional for internal/private CA chains used by the SSH UI
 
 # Network Configuration
 NET_MODE="bond"                             # or "single"
 NET_IFACES="eth0 eth1"                      # Interfaces to configure
-NET_ADDRESSING="dhcp"                       # or "static"
+NET_DHCP="true"                             # true = DHCP, false = static
 IP_ADDR="192.168.10.100"                    # If static
 NETMASK="255.255.255.0"                     # If static
 
 # Security
 EXPERT_PASSWORD="your-expert-mode-password" # For expert UI access
-PASSWORD_COMPLEXITY="on"                    # Enforce password rules
+PASSWORD_COMPLEXITY_ON="true"               # Enforce password rules
 MIN_PASSWORD_LENGTH="12"
-
-# Features
-BUILD_ARGS="--ssh --debug-level=0"          # Include SSH, set debug level
 ```
 
 See [build.sh section in README.md](../README.md) for all available options.
+
+`TLS_SERVER_NAME` matters only for the SSH UI. The SSH helper always connects to `127.0.0.1:443`, but it uses `curl --resolve` so TLS verification is performed against the configured certificate name rather than the literal loopback address. With the generated self-signed cert, this defaults to `localhost`; with a custom cert/key, you must set a matching SAN explicitly. If the custom cert chains to an internal/private CA that Tiny Core does not already trust, also set `TLS_CA_CERT_PATH` so the SSH helper can verify that chain without falling back to `curl -k`.
+
+If you want the built image to include the SSH UI, pass `--ssh` when you invoke `build.sh`. `BUILD_ARGS` is a `deploy.sh` option, not a `build.conf` variable.
 
 ### Step 3: Build Initial PBA Image
 
@@ -456,13 +459,12 @@ Here's a complete example using **Proxmox + Let's Encrypt certificates + cron jo
 # Proxmox certificates for PBA HTTPS server
 TLS_CERT_PATH="/etc/pve/pveproxy-ssl.pem"      # Proxmox cert
 TLS_KEY_PATH="/etc/pve/pveproxy-ssl-key.pem"   # Proxmox key
+TLS_SERVER_NAME="pba.example.com"              # Must match one SAN on the Proxmox certificate
+TLS_CA_CERT_PATH="/etc/pve/pve-root-ca.pem"    # Optional if the bundled cert chains to a private Proxmox CA
 
 # Network for PBA
 NET_MODE="single"
-NET_ADDRESSING="dhcp"
-
-# Features
-BUILD_ARGS="--ssh"
+NET_DHCP="true"
 # Expert password is NOT stored in build.conf when using deploy.sh automation;
 # pass it via --expert-password-stdin or the interactive TTY prompt instead.
 ```

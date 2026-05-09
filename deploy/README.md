@@ -113,6 +113,8 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
     --build-args=--ssh,--net-mode=bond,--debug-level=0'
 ```
 
+`--build-args` is a `deploy.sh` pass-through for extra `build.sh` flags. For the full list of supported build options, see the root [README.md build section](../README.md#build).
+
 ### With expert password (remote SSH)
 
 **Interactive prompt** — simplest; `build.sh` prompts on the remote TTY:
@@ -184,6 +186,8 @@ Required:
 Optional:
   --build-args=ARGS          Comma-separated additional arguments for build.sh
                               e.g. --build-args=--ssh,--net-mode=bond
+                              See ../README.md#build for the full list of
+                              build.sh flags that can be forwarded here
   --expert-password=PASS     Expert mode password for build.sh; use single quotes
                               to protect special characters (no commas needed)
                               e.g. --expert-password='p@$$w0rd!'

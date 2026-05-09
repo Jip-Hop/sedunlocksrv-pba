@@ -64,6 +64,8 @@ BOND_LACP_RATE="1"
 BOND_XMIT_HASH_POLICY="1"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
+TLS_SERVER_NAME=""
+TLS_CA_CERT_PATH=""
 SSH_CURL_INSECURE="auto"
 REPO_URL=""
 EXPERT_PASSWORD=""
@@ -211,7 +213,9 @@ print_usage() {
     echo "          [--net-addressing=dhcp|static] [--ip-addr=ADDR] [--netmask=MASK]" >&2
     echo "          [--bond-mode=MODE] [--bond-miimon=MS] [--bond-lacp-rate=VAL]" >&2
     echo "          [--bond-xmit-hash-policy=VAL]" >&2
-    echo "          [--tls-cert=PATH] [--tls-key=PATH] [--ssh-curl-insecure=auto|true|false]" >&2
+    echo "          [--tls-cert=PATH] [--tls-key=PATH] [--tls-server-name=NAME]" >&2
+    echo "          [--tls-ca-cert=PATH]" >&2
+    echo "          [--ssh-curl-insecure=auto|true|false]" >&2
     echo "          [--settle=FACTOR]  # scale firmware settling delays (default: 1.0; e.g. 0.5 = half)" >&2
     echo "          [--debug-level=0|1|2]  # 0=verbose, 1=normal (default), 2=quiet" >&2
     echo "          [--expert-password=VALUE]  # if omitted, you will be prompted to enter one" >&2
@@ -251,6 +255,8 @@ parse_args() {
             --dns=*)                 DNS="${arg#*=}" ;;
             --tls-cert=*)            TLS_CERT_PATH="${arg#*=}" ;;
             --tls-key=*)             TLS_KEY_PATH="${arg#*=}" ;;
+            --tls-server-name=*)     TLS_SERVER_NAME="${arg#*=}" ;;
+            --tls-ca-cert=*)         TLS_CA_CERT_PATH="${arg#*=}" ;;
             --ssh-curl-insecure=*)   SSH_CURL_INSECURE="${arg#*=}" ;;
             --repo-url=*)            REPO_URL="${arg#*=}" ;;
             --expert-password=*)     EXPERT_PASSWORD="${arg#*=}" ;;
@@ -321,6 +327,29 @@ validate_network_settings() {
 
     [ -n "${TLS_CERT_PATH}" ] && require_file "${TLS_CERT_PATH}" "TLS cert file"
     [ -n "${TLS_KEY_PATH}"  ] && require_file "${TLS_KEY_PATH}"  "TLS key file"
+    [ -n "${TLS_CA_CERT_PATH}" ] && require_file "${TLS_CA_CERT_PATH}" "TLS CA cert file"
+    if [ -n "${TLS_CERT_PATH}" ] && [ -z "${TLS_SERVER_NAME}" ]; then
+        echo "TLS_SERVER_NAME must be set when TLS_CERT_PATH/TLS_KEY_PATH are provided." >&2
+        echo "This name is used by the SSH UI for TLS hostname verification against the bundled certificate." >&2
+        exit 1
+    fi
+    if printf '%s' "${TLS_SERVER_NAME}" | grep -Eq '[[:space:]]'; then
+        echo "TLS_SERVER_NAME must not contain whitespace (current: ${TLS_SERVER_NAME})" >&2
+        exit 1
+    fi
+    # The generated self-signed certificate only includes localhost-style SANs.
+    # If the user did not supply a custom cert, reject incompatible names here
+    # rather than building an image whose SSH UI can never verify TLS cleanly.
+    if [ -z "${TLS_CERT_PATH}" ] && [ -n "${TLS_SERVER_NAME}" ]; then
+        case "${TLS_SERVER_NAME}" in
+            localhost|127.0.0.1|sedunlocksrv) ;;
+            *)
+                echo "TLS_SERVER_NAME=${TLS_SERVER_NAME} is incompatible with the generated self-signed cert." >&2
+                echo "Use localhost, 127.0.0.1, or sedunlocksrv; otherwise provide a matching custom TLS cert/key." >&2
+                exit 1
+                ;;
+        esac
+    fi
 
     case "${SSH_CURL_INSECURE}" in
         auto|true|false) ;;
@@ -684,20 +713,32 @@ quote_sh_value() {
     printf "'%s'" "$(printf "%s" "${1-}" | sed "s/'/'\\\\''/g")"
 }
 
+# effective_tls_server_name — returns the TLS name the SSH UI should verify
+# against. Custom certs must set TLS_SERVER_NAME explicitly; self-signed builds
+# default to localhost because make-cert.sh includes that SAN.
+effective_tls_server_name() {
+    if [ -n "${TLS_SERVER_NAME}" ]; then
+        printf '%s\n' "${TLS_SERVER_NAME}"
+        return 0
+    fi
+    printf '%s\n' "localhost"
+}
+
 # write_runtime_network_config — generates /etc/sedunlocksrv.conf inside the
-# initrd with all network, bonding, SSH, and password-policy settings.
+# initrd with all network, bonding, TLS, SSH, and password-policy settings.
 write_runtime_network_config() {
-    local effective_ssh_curl_insecure
-    case "${SSH_CURL_INSECURE}" in
-        auto)
-            if [ -n "${TLS_CERT_PATH}" ] && [ -n "${TLS_KEY_PATH}" ]; then
-                effective_ssh_curl_insecure="false"
-            else
-                effective_ssh_curl_insecure="true"
-            fi
-            ;;
-        *) effective_ssh_curl_insecure="${SSH_CURL_INSECURE}" ;;
-    esac
+    local effective_tls_server_name effective_ssh_curl_insecure
+    effective_tls_server_name="$(effective_tls_server_name)"
+
+    # auto means:
+    #   - self-signed build: use the bundled server.crt as the trust anchor
+    #   - private/internal CA build: ssh helper uses the bundled CA file
+    #   - public/custom CA build: use normal CA verification against TLS_SERVER_NAME
+    # Users can still force true/false for unusual CA environments.
+    effective_ssh_curl_insecure="${SSH_CURL_INSECURE}"
+    if [ "${effective_ssh_curl_insecure}" = "auto" ]; then
+        effective_ssh_curl_insecure="auto"
+    fi
 
     cat > "${BUILD_TMPDIR}/core/etc/sedunlocksrv.conf" <<EOF
 NET_MODE=$(quote_sh_value "${NET_MODE}")
@@ -712,6 +753,7 @@ BOND_MODE=$(quote_sh_value "${BOND_MODE}")
 BOND_MIIMON=$(quote_sh_value "${BOND_MIIMON}")
 BOND_LACP_RATE=$(quote_sh_value "${BOND_LACP_RATE}")
 BOND_XMIT_HASH_POLICY=$(quote_sh_value "${BOND_XMIT_HASH_POLICY}")
+TLS_SERVER_NAME=$(quote_sh_value "${effective_tls_server_name}")
 SSH_CURL_INSECURE=$(quote_sh_value "${effective_ssh_curl_insecure}")
 EXPERT_PASSWORD_HASH=$(quote_sh_value "${EXPERT_PASSWORD_HASH}")
 PASSWORD_COMPLEXITY_ON=$(quote_sh_value "${PASSWORD_COMPLEXITY_ON}")
@@ -756,11 +798,18 @@ prepare_expert_password_hash() {
 # certs, static assets, sedutil-cli, and tc-config into the initrd tree.
 populate_initrd_application_tree() {
     mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/"
+    mkdir -p "${BUILD_TMPDIR}/core/usr/local/etc/ssl"
     cp "${CACHEDIR}/sedutil/${SEDUTIL_FORK}/${SEDUTILBINFILENAME}" "${BUILD_TMPDIR}/core/usr/local/sbin/"
     mkdir -p "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static"
     cp ./sedunlocksrv/sedunlocksrv "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
     cp ./sedunlocksrv/server.crt "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
     cp ./sedunlocksrv/server.key "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/"
+    # Bundle an optional private/internal CA for the SSH helper only. We do not
+    # rewrite the Tiny Core system trust store because browser trust lives on
+    # the client side; only the PBA's internal curl path needs this anchor.
+    if [ -n "${TLS_CA_CERT_PATH}" ]; then
+        cp "${TLS_CA_CERT_PATH}" "${BUILD_TMPDIR}/core/usr/local/etc/ssl/sedunlocksrv-ca.pem"
+    fi
     cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"

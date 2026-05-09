@@ -96,7 +96,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Build prints a confirmation message when set via prompt
    
    *Unlock Password Complexity (for password changes):*
-   - Controls requirements when users change unlock passwords from web UI or console
+   - Controls requirements when users change unlock passwords from the web UI
    - Configurable at build time with flags (default: 12+ chars with uppercase, lowercase, digits, special chars)
    - Build flags:
      - `--password-complexity=on|off` — Master switch (default: on)
@@ -106,7 +106,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
      - `--require-number=true|false` — Digits 0-9 (default: true)
      - `--require-special=true|false` — Special chars (default: true)
    - Can also be set in `build.conf` under the "Password Policy" section
-   - Requirements are displayed in console TUI (`P` menu) and web API (`/password-policy` endpoint)
+   - Requirements are exposed through the web UI password change flow and the `/password-policy` API endpoint
 
    **Build Examples:**
    ```bash
@@ -137,10 +137,12 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 ## Quick Start
 1. Build host prep (Debian/Ubuntu): install dependencies, then run `sudo ./build.sh`.
 2. Optional build config: copy `build.conf.example` to `build.conf` and set values for:
-   - Network mode, TLS cert/key, expert password, password complexity settings
+   - Network mode, TLS cert/key, `TLS_SERVER_NAME`, optional `TLS_CA_CERT_PATH`, expert password, password complexity settings
    - Or pass as CLI flags instead
 3. Build image: `sudo ./build.sh --ssh` (with SSH UI) or `sudo ./build.sh` (web + console only)
    - If expert password not in build.conf/CLI, you will be prompted to enter it
+   - If you provide `--tls-cert` and `--tls-key`, also set `--tls-server-name=<cert-name>` so the SSH UI can verify the custom certificate cleanly over loopback
+   - If that custom certificate chains to an internal/private CA not trusted by Tiny Core, also set `--tls-ca-cert=/path/to/ca-bundle.pem`
    - Example with custom settings: `sudo ./build.sh --expert-password='PASS' --password-complexity=off`
 4. Flash and load PBA with `sedutil-cli --loadpbaimage ...`, see original fork for great details
 5. Boot target machine into PBA and unlock drives from:
@@ -199,6 +201,10 @@ Notes:
 ## Security Notes & Known Limitations
 
 - **Unauthenticated `/reboot` and `/poweroff` endpoints**: These endpoints are intentionally unauthenticated. In the PBA context there is no acceptable way to supply a session token for power operations — the user may need to reboot or power off without having unlocked any drives. This is by design.
+- **Pre-auth information exposure**: `/status` and `/diagnostics` are intentionally unauthenticated so operators can troubleshoot drive detection and network setup before unlock. That means network interface names/addresses and per-drive OPAL query metadata are visible before authentication.
+- **SSH loopback transport**: The SSH UI reaches the local API over TLS on `127.0.0.1:443`, using `curl --resolve` so certificate verification is bound to `TLS_SERVER_NAME` rather than the literal loopback address. This avoids opening a plain-HTTP localhost control port while still supporting custom certificates.
+- **Loopback-only token bypass for SSH boot**: The SSH helper can use `/boot-list` and `/boot` without a web session token after a successful unlock, but only when the request originates from loopback. Remote network clients still need the normal unlock session token.
+- **Private/internal CA handling**: `TLS_CA_CERT_PATH` affects only the SSH helper's internal curl path. This is intentional: browser trust belongs to the client machine accessing the web UI, so the PBA image does not need to rewrite its system CA store just to support a private PKI on the browser side.
 - **Passwords visible in `/proc/cmdline`**: Disk passwords are passed as command-line arguments to `sedutil-cli` and are therefore visible in `/proc/<pid>/cmdline` while the process runs. This is a limitation of `sedutil-cli` itself and cannot be mitigated without upstream changes. The PBA environment is a single-user, ephemeral boot image where only the operator has access.
 - **Single active session**: Only one web session token exists at a time. A new login invalidates the previous session. This is by design: the PBA is a single-user environment and does not need concurrent session support.
 - **Docker build path**: The `Dockerfile` is provided for convenience but has not been tested with the current version of this fork. Use the native build host path (`sudo ./build.sh`) for production images.
@@ -209,15 +215,15 @@ Notes:
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
 - **Recovery Kernels in Web UI**: Kernel discovery may include normal and recovery boot entries. Recovery kernels are hidden by default in the web flow (`Hide Recovery Kernels` checked). Users can uncheck the option to show them, and recovery entries are labeled with a `[Recovery]` prefix.
+- **Diagnostics in Console and SSH**: The local console TUI and SSH menu both include a diagnostics screen that shows the current network interfaces plus per-drive OPAL query data. This is useful when networking is misconfigured and the web UI cannot be reached.
 - **Expert Mode Access**: The web UI Expert tab requires the password set at build time. This is not the unlock password, nor is it changed by end users. If a new Expert Mode password is needed, the build must be redone with a new password.
 - **Expert Re-flash PBA**: In the Expert tab you can upload a replacement `.img` file and re-flash PBA on a target drive. You must provide the current drive password, target `/dev/...` path, and type `FLASH` to confirm. The web UI performs preflight checks and rejects files above 128 MiB, matching the project's OPAL2 PBA size guideline. The server also validates that the uploaded image matches the build's expected disk layout: DOS MBR, one bootable `0xEF` partition from the `sfdisk` recipe, and a readable FAT32 boot partition created by `mkfs.fat -F32`. The Expert output panel shows the validation summary so you can see exactly what passed before the flash runs. Use with care: selecting the wrong target can break boot access for that device.
 - **Expert Revert TPer**: This operation attempts to revert the TPer (Trusted Peripheral) to factory state using the current drive password. This is a destructive operation that can invalidate existing unlock configuration and ownership metadata. Use this only when standard unlock paths fail or when you need to completely reset the drive's security configuration. You must provide the target device path, current drive password, and type `REVERT` to confirm. The Expert output panel shows the sedutil output for diagnostic purposes.
 - **Expert PSID Revert**: This is a last-resort factory reset using the Physical Security ID (PSID) printed on the drive's label. This operation **completely erases access to all existing encrypted data** and resets the drive to its original factory state. Only use this when no other recovery method is available and you accept data loss. You must provide the target device path, the PSID value from the drive's label, and type `ERASE` to confirm. The Expert output panel shows the sedutil output.
-- **Unlock Password Changes**: When users change unlock passwords (pressing `P` in console or using web UI password change):
+- **Unlock Password Changes**: When users change unlock passwords through the web UI:
   - The complexity requirements set at build time are enforced (see "Password Configuration" above)
   - Requirements are displayed before the user enters the new password
   - Password change is intentionally target-based: select which drive(s) to update
-  - In console UI, enter the exact target device path when prompted
 - SID password changes can be blocked by firmware. On systems with a BIOS or TPM setting such as `Disable Block SID`, that setting may need to be `Disabled`, and some platforms require a one-time confirmation on the next boot before SID changes are allowed.
 - SSH host fingerprints are expected to remain stable across reboots and rebuilds as long as the Dropbear host keys in `ssh/` are preserved. If you delete and regenerate those files, the fingerprint will change once for the newly built image.
 
@@ -330,13 +336,22 @@ Useful flags:
 - `--bond-xmit-hash-policy=1`: bond transmit hash policy value.
 - `--tls-cert=/path/to/server.crt`: use custom TLS certificate.
 - `--tls-key=/path/to/server.key`: use custom TLS private key.
-- `--ssh-curl-insecure=auto|true|false`: control whether SSH helper uses `curl -k`.
+- `--tls-server-name=NAME`: TLS name the SSH UI verifies while connecting to `127.0.0.1:443` with `curl --resolve`; required when custom TLS cert/key are used.
+- `--tls-ca-cert=/path/to/ca-bundle.pem`: optional CA bundle used only by the SSH helper when your custom cert chains to an internal/private CA.
+- `--ssh-curl-insecure=auto|true|false`: SSH helper TLS mode. `auto` trusts the bundled self-signed cert for default builds and uses normal CA validation for custom certs.
 - `--debug-level=0|1|2`: runtime log verbosity (`0` verbose trace, `1` normal progress, `2` quiet).
 - `--expert-password=...`: set expert password input at build; runtime stores only hash.
 - `--sedutil-fork=ChubbyAnt`: switch sedutil source fork (`Drive-Trust-Alliance` default).
 - `--config=/path/to/file`: load build variables from an alternate config file.
 
 When building with `--ssh`, the generated Dropbear host keys are kept in the repository `ssh/` folder and reused in later builds. Keep those files if you want a stable SSH host fingerprint over time.
+
+TLS note:
+- The SSH helper does not use a plain localhost HTTP port. It connects to `127.0.0.1:443` and uses `curl --resolve` so the TCP connection stays on loopback while TLS hostname verification uses `TLS_SERVER_NAME`.
+- Default self-signed builds work without extra config because `make-cert.sh` includes `localhost`, `127.0.0.1`, and `sedunlocksrv` in the certificate SAN.
+- Custom certificate builds must set `TLS_SERVER_NAME` to one SAN on that certificate.
+- If that custom certificate chains to an internal/private CA, set `TLS_CA_CERT_PATH` so the SSH helper can verify the chain without modifying Tiny Core's global CA store.
+- If the issuer is still unavailable in the image, set `SSH_CURL_INSECURE=true` explicitly as the last-resort escape hatch.
 
 ---
 
@@ -373,7 +388,7 @@ Supporting files:
 | File | Purpose |
 |------|------|
 | `build.sh` | Automated PBA image builder — downloads TinyCore, compiles Go binary, assembles BIOS+UEFI bootable disk image |
-| `ssh/ssh_sed_unlock.sh` | SSH forced-command menu — unlock drives, change passwords, reboot/boot/poweroff from an SSH session |
+| `ssh/ssh_sed_unlock.sh` | SSH forced-command menu — unlock drives, view diagnostics, choose a kernel to boot, reboot/poweroff from an SSH session |
 | `index.html` | Single-page web UI — Unlock, Password Change, Diagnostics, and Expert tabs with token-gated operations |
 | `tc/tc-config` | TinyCore boot init — network setup (DHCP, static, LACP bond), kernel module loading, service startup |
 | `make-cert.sh` | Generates self-signed TLS certificate and key for the HTTPS server |
@@ -390,20 +405,20 @@ The Go backend exposes the following HTTP endpoints on ports 80 (redirect) and 4
 | `/password-policy` | GET | — | Current password complexity requirements (JSON) |
 | `/unlock` | POST | — | Submit unlock password for startup-locked drives |
 | `/change-password` | POST | Token | Change Admin1/SID password on selected drives |
-| `/boot-list` | GET | Token | List discovered kernel/initrd boot candidates (JSON) |
-| `/boot` | POST | Token | Load and execute a selected kernel via kexec |
+| `/boot-list` | POST | Token or local SSH loopback | Start async kernel discovery for boot selection |
+| `/boot` | POST | Token or local SSH loopback | Load and execute a selected kernel via kexec |
 | `/boot-status` | GET | — | Current boot launch state (JSON) |
 | `/reboot` | POST | — | Immediate hardware reboot (`reboot -nf`) |
 | `/poweroff` | POST | — | Immediate power off (`poweroff -nf`) |
 | `/expert/auth` | POST | — | Authenticate with expert password, receive expert token |
-| `/expert/status` | GET | Expert | Flash operation progress (JSON) |
+| `/expert/status` | GET | — | Report whether Expert Mode is configured and whether the supplied expert token is valid |
 | `/expert/revert-tper` | POST | Expert | Factory-reset drive TPer with current password |
 | `/expert/psid-revert` | POST | Expert | PSID factory reset (erases all data) |
-| `/expert/check-ram` | POST | Expert | Verify sufficient RAM for PBA flash upload |
+| `/expert/check-ram` | GET | Expert | Verify sufficient RAM for PBA flash upload |
 | `/expert/reflash-pba` | POST | Expert | Upload and flash a replacement PBA image |
 | `/expert/flash-status` | GET | Expert | Detailed flash validation and progress (JSON) |
 
-**Auth legend:** "—" = unauthenticated, "Token" = session token from successful unlock, "Expert" = expert token from `/expert/auth`.
+**Auth legend:** "—" = unauthenticated, "Token" = session token from successful unlock, "Expert" = expert token from `/expert/auth`, "Token or local SSH loopback" = either a valid web session token or a loopback-local request from the forced-command SSH helper after a successful unlock.
 
 ---
 

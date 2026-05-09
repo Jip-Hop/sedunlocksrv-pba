@@ -30,6 +30,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,15 +43,15 @@ import (
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
 // ============================================================
 // GLOBALS
 // ============================================================
-// kexecReady is closed by bootFirstAvailableKernel/bootWithSelectedKernel
-// after kexec -l succeeds, signalling main() to shut down the HTTP server
-// and execute kexec -e.
+// kexecReady is closed by bootWithSelectedKernel after kexec -l succeeds,
+// signalling main() to shut down the HTTP server and execute kexec -e.
 // kexecFailed receives the error if kexec -e returns (i.e. fails), so the
 // boot function can propagate it and main() can restart the HTTP server.
 var (
@@ -73,6 +74,12 @@ var (
 	bootStateMu       sync.RWMutex
 	startupLockedOpal = map[string]struct{}{}
 	bootLaunchState   BootLaunchStatus
+	bootCacheEpoch    uint64 = 1
+	bootStateEpoch    uint64 = 1
+	bootCacheValid    bool
+	bootCacheError    string
+	bootCacheKernels  []BootKernelInfo
+	bootCacheDebug    []string
 
 	flashMu    sync.RWMutex
 	flashState FlashStatus
@@ -287,6 +294,24 @@ func recordStartupLockedDrives() {
 	bootStateMu.Unlock()
 }
 
+func cloneBootKernelInfoSlice(src []BootKernelInfo) []BootKernelInfo {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]BootKernelInfo, len(src))
+	copy(out, src)
+	return out
+}
+
+func cloneStringSlice(src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
 // getBootLaunchStatus returns a deep-copy snapshot of the current boot launch
 // state, safe for concurrent reads by HTTP handlers polling /boot-status.
 func getBootLaunchStatus() BootLaunchStatus {
@@ -294,15 +319,15 @@ func getBootLaunchStatus() BootLaunchStatus {
 	defer bootStateMu.RUnlock()
 	status := bootLaunchState
 	if status.Debug != nil {
-		status.Debug = append([]string(nil), status.Debug...)
+		status.Debug = cloneStringSlice(status.Debug)
 	}
 	if status.Kernels != nil {
-		status.Kernels = append([]BootKernelInfo(nil), status.Kernels...)
+		status.Kernels = cloneBootKernelInfoSlice(status.Kernels)
 	}
 	if status.Result != nil {
 		resultCopy := *status.Result
 		if resultCopy.Debug != nil {
-			resultCopy.Debug = append([]string(nil), resultCopy.Debug...)
+			resultCopy.Debug = cloneStringSlice(resultCopy.Debug)
 		}
 		if resultCopy.Drives != nil {
 			resultCopy.Drives = append([]DriveStatus(nil), resultCopy.Drives...)
@@ -316,6 +341,49 @@ func getBootLaunchStatus() BootLaunchStatus {
 // Must be called with bootStateMu held.
 func resetBootStateLocked() {
 	bootLaunchState = BootLaunchStatus{}
+}
+
+// invalidateKernelDiscoveryCache clears cached discovery results after a drive
+// unlock/rescan changes the set of bootable devices. The next /boot-list must
+// rescan from scratch so the cache always reflects the current unlock state.
+func invalidateKernelDiscoveryCache() {
+	bootStateMu.Lock()
+	defer bootStateMu.Unlock()
+	bootStateEpoch++
+	bootCacheValid = false
+	bootCacheError = ""
+	bootCacheKernels = nil
+	bootCacheDebug = nil
+	bootCacheEpoch = 0
+	if !bootLaunchState.InProgress {
+		bootLaunchState.DiscoveryDone = false
+		bootLaunchState.Kernels = nil
+		if !bootLaunchState.Accepted {
+			bootLaunchState.Debug = nil
+			bootLaunchState.Error = ""
+		}
+	}
+}
+
+func cacheKernelDiscoveryLocked(epoch uint64, kernels []BootKernelInfo, debug []string, err error) {
+	bootCacheValid = true
+	bootCacheEpoch = epoch
+	if err != nil {
+		bootCacheError = err.Error()
+	} else {
+		bootCacheError = ""
+	}
+	bootCacheKernels = cloneBootKernelInfoSlice(kernels)
+	bootCacheDebug = cloneStringSlice(debug)
+}
+
+func getCachedKernelDiscovery() ([]BootKernelInfo, []string, string, bool) {
+	bootStateMu.RLock()
+	defer bootStateMu.RUnlock()
+	if !bootCacheValid || bootCacheEpoch != bootStateEpoch {
+		return nil, nil, "", false
+	}
+	return cloneBootKernelInfoSlice(bootCacheKernels), cloneStringSlice(bootCacheDebug), bootCacheError, true
 }
 
 // acquireBootLock marks a boot or discovery operation as in-progress.
@@ -377,44 +445,65 @@ func completeBootLaunch(result *BootResult, err error) {
 // all available kernels. Results are stored in bootLaunchState and retrieved
 // via getCachedKernels. The UI polls /boot-status for progress.
 func startKernelDiscovery() error {
+	if cachedKernels, cachedDebug, cachedError, ok := getCachedKernelDiscovery(); ok {
+		bootStateMu.Lock()
+		resetBootStateLocked()
+		bootLaunchState.Debug = cachedDebug
+		bootLaunchState.DiscoveryDone = true
+		bootLaunchState.Kernels = cachedKernels
+		bootLaunchState.Error = cachedError
+		bootStateMu.Unlock()
+		return nil
+	}
 	if err := acquireBootLock(); err != nil {
 		return err
 	}
+	bootStateMu.RLock()
+	epoch := bootStateEpoch
+	bootStateMu.RUnlock()
 	go func() {
 		kernels, debug, err := discoverBootKernels()
-		completeKernelDiscovery(kernels, debug, err)
+		completeKernelDiscovery(epoch, kernels, debug, err)
 	}()
 	return nil
 }
 
 // completeKernelDiscovery finalizes an async kernel discovery operation,
 // storing the discovered kernels or the error into the global boot state.
-func completeKernelDiscovery(kernels []BootKernelInfo, debug []string, err error) {
+func completeKernelDiscovery(epoch uint64, kernels []BootKernelInfo, debug []string, err error) {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	bootLaunchState.InProgress = false
 	bootLaunchState.DiscoveryDone = true
+	bootLaunchState.Debug = cloneStringSlice(debug)
 	if err != nil {
 		bootLaunchState.Error = err.Error()
 		if bootErr, ok := err.(BootAttemptError); ok {
-			bootLaunchState.Debug = append([]string(nil), bootErr.Debug...)
+			bootLaunchState.Debug = cloneStringSlice(bootErr.Debug)
+		}
+		if epoch == bootStateEpoch {
+			cacheKernelDiscoveryLocked(epoch, nil, bootLaunchState.Debug, err)
 		}
 		return
 	}
-	bootLaunchState.Kernels = kernels
+	bootLaunchState.Error = ""
+	bootLaunchState.Kernels = cloneBootKernelInfoSlice(kernels)
+	if epoch == bootStateEpoch {
+		cacheKernelDiscoveryLocked(epoch, kernels, debug, nil)
+	}
 }
 
 // getCachedKernels returns the kernel list from a previously completed
 // discovery. Returns nil if discovery hasn't run or found nothing.
 func getCachedKernels() []BootKernelInfo {
-	bootStateMu.RLock()
-	defer bootStateMu.RUnlock()
-	if !bootLaunchState.DiscoveryDone || len(bootLaunchState.Kernels) == 0 {
+	kernels, _, cachedError, ok := getCachedKernelDiscovery()
+	if !ok {
 		return nil
 	}
-	out := make([]BootKernelInfo, len(bootLaunchState.Kernels))
-	copy(out, bootLaunchState.Kernels)
-	return out
+	if cachedError != "" || len(kernels) == 0 {
+		return nil
+	}
+	return kernels
 }
 
 // startBootWithKernel begins an async boot using the kernel at kernelIndex.
@@ -594,11 +683,28 @@ func hasUnlockedBootDrive() bool {
 	return len(getBootCandidates(scanDrives())) > 0
 }
 
+// isLoopbackRequest reports whether the HTTP client is connecting from the
+// local machine. We allow the SSH forced-command helper to use the boot API
+// without a web session token, but only over loopback so that unlocked-drive
+// state cannot be used as a remote network-side auth bypass.
+func isLoopbackRequest(r *http.Request) bool {
+	host := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // requireSessionTokenOrUnlockedDrive is an HTTP middleware guard. Returns
 // true (and writes a 403) if the request has neither a valid session token
-// nor an unlocked boot drive (the latter allows SSH-based boot requests).
+// nor a loopback-local unlocked-drive request. This preserves the SSH helper's
+// local boot flow without exposing tokenless boot control over the network.
 func requireSessionTokenOrUnlockedDrive(w http.ResponseWriter, r *http.Request) bool {
-	if validSessionToken(r.Header.Get("X-Auth-Token")) || hasUnlockedBootDrive() {
+	if validSessionToken(r.Header.Get("X-Auth-Token")) {
+		return false
+	}
+	if isLoopbackRequest(r) && hasUnlockedBootDrive() {
 		return false
 	}
 	jsonResponse(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
@@ -652,16 +758,24 @@ func hasSuccessfulUnlock(results []UnlockResult) bool {
 // CONSOLE HELPERS
 // ============================================================
 
-// printConsoleStatus renders drive statuses, unlock attempt counters, and
-// network interface details to stdout for the physical console TUI.
+// printConsoleStatus renders a compact status dashboard for the physical
+// console TUI, including build info, drive state, boot readiness, and
+// network interface details.
 func printConsoleStatus(status StatusResponse) {
+	fmt.Printf("%sBuild:%s %s\n", colorDim, colorReset, buildVersionConsoleText(status))
+	opalCount := 0
+	lockedCount := 0
 	if len(status.Drives) == 0 {
 		fmt.Println("No OPAL drives detected.")
 	} else {
 		for _, d := range status.Drives {
+			if d.Opal {
+				opalCount++
+			}
 			lockState := "UNLOCKED"
 			if d.Locked {
 				lockState = "LOCKED"
+				lockedCount++
 			}
 			opalState := "NON-OPAL"
 			if d.Opal {
@@ -674,8 +788,18 @@ func printConsoleStatus(status StatusResponse) {
 			fmt.Printf("%s %s  %s  %s\n", marker, d.Device, lockState, opalState)
 		}
 	}
+	fmt.Printf("\nDrive summary: %d total, %d OPAL, %d locked\n", len(status.Drives), opalCount, lockedCount)
+	if status.BootReady {
+		fmt.Printf("Boot-ready drives: %s\n", strings.Join(status.BootDrives, ", "))
+	} else {
+		fmt.Println("Boot-ready drives: none yet")
+	}
 	fmt.Printf("\nUnlock attempts: %d/%d failed (%d remaining)\n", status.FailedAttempts, status.MaxAttempts, status.AttemptsRemaining)
-	fmt.Println("\nNetwork Interfaces:")
+	fmt.Println("\nNetwork Interfaces (use these names for NET_IFACES / EXCLUDE_NETDEV):")
+	if len(status.Interfaces) == 0 {
+		fmt.Println("  No network interfaces reported.")
+		return
+	}
 	for _, iface := range status.Interfaces {
 		link := "no-link"
 		if iface.Carrier {
@@ -692,6 +816,112 @@ func printConsoleStatus(status StatusResponse) {
 			line += "  loopback"
 		}
 		fmt.Println(line)
+	}
+}
+
+func showConsoleDiagnostics() {
+	clearConsoleScreen()
+	status := buildStatusResponse()
+	fmt.Println(colorBlue + "🩺 DIAGNOSTICS" + colorReset)
+	printConsoleStatus(status)
+	printConsoleDriveDiagnostics(collectDriveDiagnostics())
+	waitForConsoleEnter()
+}
+
+func printConsoleDriveDiagnostics(diag []DriveDiagnostics) {
+	fmt.Println("\nDrive Diagnostics:")
+	if len(diag) == 0 {
+		fmt.Println("  No OPAL diagnostics available.")
+		return
+	}
+	for _, d := range diag {
+		fmt.Printf("  %s  opal=%t locked=%t locking=%s enabled=%s mbrEnabled=%s mbrDone=%s mediaEncrypt=%s queryLocked=%s\n",
+			d.Device, d.Opal, d.Locked, d.LockingSupported, d.LockingEnabled, d.MBREnabled, d.MBRDone, d.MediaEncrypt, d.LockingRange0Locked)
+	}
+}
+
+func runConsoleBootMenu() {
+	kernels, debug, err := discoverBootKernels()
+	if err != nil {
+		fmt.Printf("\n❌ %v\n", err)
+		printBootDebugBlock(debug)
+		waitForConsoleEnter()
+		return
+	}
+	if len(kernels) == 0 {
+		fmt.Println("\n❌ No bootable kernels were discovered.")
+		printBootDebugBlock(debug)
+		waitForConsoleEnter()
+		return
+	}
+
+	showRecovery := false
+	for {
+		clearConsoleScreen()
+		fmt.Println(colorBlue + "🧭 BOOT SELECTION" + colorReset)
+		printConsoleStatus(buildStatusResponse())
+
+		displayed := make([]int, 0, len(kernels))
+		fmt.Println("\nDiscovered kernels:")
+		for idx, kernel := range kernels {
+			if !showRecovery && kernel.Recovery {
+				continue
+			}
+			displayed = append(displayed, idx)
+			label := kernel.KernelName
+			if label == "" {
+				label = filepath.Base(kernel.Kernel)
+			}
+			if kernel.Recovery {
+				label = "[Recovery] " + label
+			}
+			fmt.Printf("  %d. %s  (%s on %s)\n", len(displayed), label, kernel.Source, kernel.Device)
+		}
+		if len(displayed) == 0 {
+			fmt.Println("  No kernels visible with recovery hidden.")
+		}
+		toggleText := "Show"
+		if showRecovery {
+			toggleText = "Hide"
+		}
+		fmt.Printf("\n[%sH%s] %s%s recovery%s  [%sQ%s] %sStandby%s\n",
+			colorDim, colorReset, colorBlue, toggleText, colorReset,
+			colorDim, colorReset, colorDim, colorReset,
+		)
+		choice := strings.TrimSpace(strings.ToUpper(readConsoleLine("Kernel number [Enter=1]: ")))
+		switch choice {
+		case "Q":
+			return
+		case "H":
+			showRecovery = !showRecovery
+			continue
+		}
+		if len(displayed) == 0 {
+			continue
+		}
+		selectedDisplay := 1
+		if choice != "" {
+			n, convErr := strconv.Atoi(choice)
+			if convErr != nil || n < 1 || n > len(displayed) {
+				fmt.Printf("\n❌ Choose a number between 1 and %d.\n", len(displayed))
+				waitForConsoleEnter()
+				continue
+			}
+			selectedDisplay = n
+		}
+		res, bootErr := bootWithSelectedKernel(kernels, displayed[selectedDisplay-1])
+		if bootErr != nil {
+			fmt.Printf("\n❌ %v\n", bootErr)
+			if bootAttemptErr, ok := bootErr.(BootAttemptError); ok {
+				printBootDebugBlock(bootAttemptErr.Debug)
+			}
+			waitForConsoleEnter()
+			return
+		}
+		if res != nil && res.Warning != "" {
+			fmt.Println("\n" + res.Warning)
+		}
+		return
 	}
 }
 
@@ -741,6 +971,7 @@ func unlockDrivesWithPassword(password string) ([]UnlockResult, error) {
 	}
 
 	if successAny {
+		invalidateKernelDiscoveryCache()
 		mu.Lock()
 		failedAttempts = 0
 		mu.Unlock()
@@ -765,41 +996,6 @@ func unlockDrivesWithPassword(password string) ([]UnlockResult, error) {
 // ============================================================
 // PASSWORD CHANGE
 // ============================================================
-
-// passwordPolicySummary returns a human-readable summary of the active
-// password complexity policy, e.g. "min 12 chars, uppercase, lowercase".
-func passwordPolicySummary() string {
-	// If all complexity requirements are disabled, return a simple message
-	if passwordPolicy.MinLength == 0 &&
-		!passwordPolicy.RequireUpper &&
-		!passwordPolicy.RequireLower &&
-		!passwordPolicy.RequireNumber &&
-		!passwordPolicy.RequireSpecial {
-		return "no complexity requirements"
-	}
-
-	parts := make([]string, 0)
-	if passwordPolicy.MinLength > 0 {
-		parts = append(parts, fmt.Sprintf("min %d chars", passwordPolicy.MinLength))
-	}
-	if passwordPolicy.RequireUpper {
-		parts = append(parts, "uppercase")
-	}
-	if passwordPolicy.RequireLower {
-		parts = append(parts, "lowercase")
-	}
-	if passwordPolicy.RequireNumber {
-		parts = append(parts, "number")
-	}
-	if passwordPolicy.RequireSpecial {
-		parts = append(parts, "special")
-	}
-
-	if len(parts) == 0 {
-		return "no complexity requirements"
-	}
-	return strings.Join(parts, ", ")
-}
 
 // eligiblePasswordChangeTargets returns the OPAL drives whose password can
 // be changed. Prefers drives that were locked at startup (boot drives);
@@ -946,30 +1142,6 @@ func changePassword(current, newPw string, selected []string) ([]PasswordChangeR
 // ============================================================
 // BOOT
 // ============================================================
-
-// availableRescanTools returns the names of partition-table rescan tools
-// present in the PBA environment (always includes ioctl BLKRRPART).
-func availableRescanTools() []string {
-	tools := []string{"ioctl(BLKRRPART)"}
-	for _, name := range []string{"blockdev", "partprobe", "partx", "udevadm"} {
-		if haveRuntimeCommand(name) {
-			tools = append(tools, name)
-		}
-	}
-	return tools
-}
-
-// availableLVMTools returns the names of LVM-related commands present
-// in the PBA environment (blkid, pvscan, vgscan, vgchange).
-func availableLVMTools() []string {
-	tools := make([]string, 0, 4)
-	for _, name := range []string{"blkid", "pvscan", "vgscan", "vgchange"} {
-		if haveRuntimeCommand(name) {
-			tools = append(tools, name)
-		}
-	}
-	return tools
-}
 
 // trimForDebug trims whitespace and truncates a string to max characters
 // for inclusion in compact debug log lines.
@@ -1118,22 +1290,6 @@ func likelyLVMPhysicalVolume(device string) bool {
 	}
 	buf = buf[:n]
 	return bytes.Contains(buf, []byte("LABELONE")) && bytes.Contains(buf, []byte("LVM2"))
-}
-
-// probeBlockType determines the filesystem or volume type of a block device.
-// Uses blkid if available; falls back to raw LVM signature detection.
-func probeBlockType(device string) string {
-	if haveRuntimeCommand("blkid") {
-		if out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", device).Output(); err == nil {
-			if t := strings.TrimSpace(string(out)); t != "" {
-				return t
-			}
-		}
-	}
-	if likelyLVMPhysicalVolume(device) {
-		return "LVM2_member"
-	}
-	return "unknown"
 }
 
 // collectBootSearchDevices builds the ordered list of block devices to
@@ -1304,27 +1460,6 @@ func trimMountPrefix(mountPoint, path string) string {
 		return filepath.ToSlash(rel)
 	}
 	return filepath.Base(path)
-}
-
-// snapshotMountFiles returns up to limit file/directory paths visible
-// under a mount point, used for debug logging when no boot artifacts are found.
-func snapshotMountFiles(mountPoint string, limit int) []string {
-	files := make([]string, 0, limit)
-	_ = filepath.WalkDir(mountPoint, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d == nil {
-			return nil
-		}
-		if path == mountPoint {
-			return nil
-		}
-		files = append(files, trimMountPrefix(mountPoint, path))
-		if len(files) >= limit {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	sort.Strings(files)
-	return files
 }
 
 // resolveBootPath converts a boot config reference (e.g. "/boot/vmlinuz-6.8")
@@ -2584,194 +2719,6 @@ func bootWithSelectedKernel(kernels []BootKernelInfo, kernelIndex int) (*BootRes
 	return result, nil
 }
 
-// bootFirstAvailableKernel mounts the first unlocked drive's bootable partition, loads the
-// Proxmox kernel and initrd via kexec, then executes kexec to transfer control.
-func bootFirstAvailableKernel() (*BootResult, error) {
-	drives := scanDrives()
-	debug := make([]string, 0, 32)
-	bootCandidates := getBootCandidates(drives)
-	var locked []string
-	for _, d := range drives {
-		if !d.Opal {
-			continue
-		}
-		if d.Locked {
-			locked = append(locked, d.Device)
-		}
-	}
-	if len(bootCandidates) == 0 {
-		appendBootDebug(&debug, "No startup-locked OPAL drive has transitioned to unlocked.")
-		return nil, BootAttemptError{
-			Message: "boot is unavailable until a startup-locked OPAL drive is unlocked",
-			Debug:   debug,
-		}
-	}
-	appendBootDebug(&debug, "Boot candidate drives: %s", strings.Join(bootCandidates, ", "))
-
-	fullyUnlocked := len(locked) == 0
-	var warning string
-	if !fullyUnlocked {
-		warning = fmt.Sprintf("WARNING: locked drives: %s", strings.Join(locked, ", "))
-		appendBootDebug(&debug, "%s", warning)
-	}
-
-	mountPoint := "/mnt/proxmox"
-	os.MkdirAll(mountPoint, 0755)
-
-	tools := availableRescanTools()
-	if len(tools) == 0 {
-		appendBootDebug(&debug, "Partition rescan tools available: none")
-	} else {
-		appendBootDebug(&debug, "Partition rescan tools available: %s", strings.Join(tools, ", "))
-	}
-	appendBootDebug(&debug, "Refreshing partition tables for boot candidates.")
-	for _, bootDrive := range bootCandidates {
-		rescanBlockDeviceLayout(bootDrive)
-		if partitions, err := listDevicePartitions(bootDrive); err == nil {
-			appendBootDebug(&debug, "Visible partitions after refresh for %s: %s", bootDrive, strings.Join(partitions, ", "))
-			for _, part := range partitions {
-				appendBootDebugVerbose(&debug, "Block type for %s: %s", part, probeBlockType(part))
-			}
-		}
-	}
-
-	lvmTools := availableLVMTools()
-	if len(lvmTools) == 0 {
-		appendBootDebug(&debug, "LVM tools available: none")
-	} else {
-		appendBootDebug(&debug, "LVM tools available: %s", strings.Join(lvmTools, ", "))
-	}
-	activateLVM()
-	if lvs := listLogicalVolumes(); len(lvs) == 0 {
-		appendBootDebug(&debug, "Logical volumes detected after activation: none")
-	} else {
-		appendBootDebug(&debug, "Logical volumes detected after activation: %s", strings.Join(lvs, ", "))
-	}
-
-	searchDevices, err := collectBootSearchDevices(bootCandidates)
-	if err != nil {
-		return nil, err
-	}
-	appendBootDebug(&debug, "Mount search targets: %s", strings.Join(searchDevices, ", "))
-	bootCatalog := make([]BootEntry, 0, 8)
-	for _, dev := range searchDevices {
-		appendBootDebug(&debug, "Trying mount target: %s", dev)
-		if err := runCommandTimeout(4*time.Second, "mount", "-r", dev, mountPoint); err != nil {
-			appendBootDebugVerbose(&debug, "Mount failed: %s", err)
-			continue
-		}
-
-		if entries, err := os.ReadDir(mountPoint); err == nil {
-			names := make([]string, 0, len(entries))
-			for _, e := range entries {
-				names = append(names, e.Name())
-			}
-			appendBootDebugVerbose(&debug, "Mount root contents: %s", strings.Join(names, " "))
-		}
-
-		unmount := func() {
-			if err := runCommandTimeout(3*time.Second, "umount", mountPoint); err != nil {
-				appendBootDebugVerbose(&debug, "Unmount failed for %s: %v", dev, err)
-			}
-		}
-		appendBootDebug(&debug, "Mounted %s on %s", dev, mountPoint)
-		entries := collectBootCatalog(mountPoint)
-		if len(entries) > 0 {
-			bootCatalog = append(bootCatalog, entries...)
-			appendBootDebug(&debug, "Cataloged %d boot entries from %s", len(entries), dev)
-			for i, entry := range entries {
-				if i >= 4 {
-					appendBootDebugVerbose(&debug, "Additional boot entries on %s omitted: %d", dev, len(entries)-i)
-					break
-				}
-				appendBootDebugVerbose(&debug, "Boot entry %d on %s: %s", i+1, dev, summarizeBootEntry(entry))
-			}
-		}
-
-		if kernel, initrd, cmdline, ok := findBootArtifacts(mountPoint, dev); ok {
-			if matchedCmdline, source, matched := matchBootEntryCmdline(bootCatalog, kernel, initrd); matched {
-				if strings.TrimSpace(cmdline) == "" || strings.TrimSpace(cmdline) != strings.TrimSpace(matchedCmdline) {
-					cmdline = matchedCmdline
-					appendBootDebug(&debug, "Matched cmdline from boot catalog for %s using %s", dev, source)
-				}
-			}
-			if looksWeakCmdline(cmdline) && looksLikeRootFilesystem(mountPoint) {
-				if synthesized, ok := synthesizeRootCmdline(dev, cmdline); ok {
-					cmdline = synthesized
-					appendBootDebug(&debug, "Synthesized root cmdline for %s", dev)
-				}
-			}
-			appendBootDebug(&debug, "Found kernel: %s", kernel)
-			appendBootDebug(&debug, "Found initrd: %s", initrd)
-			appendBootDebug(&debug, "Found cmdline: %s", cmdline)
-			if strings.TrimSpace(cmdline) == "" {
-				appendBootDebug(&debug, "Refusing to kexec with an empty kernel command line.")
-				unmount()
-				return nil, BootAttemptError{
-					Message: "unable to determine kernel command line for boot target",
-					Debug:   debug,
-				}
-			}
-			if looksWeakCmdline(cmdline) {
-				appendBootDebug(&debug, "Refusing to kexec with a weak kernel command line: %s", cmdline)
-				unmount()
-				return nil, BootAttemptError{
-					Message: "kernel command line looks incomplete for boot target",
-					Debug:   debug,
-				}
-			}
-
-			if err := exec.Command("kexec", "-l", kernel, "--initrd="+initrd, "--append="+cmdline).Run(); err != nil {
-				appendBootDebug(&debug, "kexec -l failed: %s", err)
-				unmount()
-				return nil, BootAttemptError{Message: err.Error(), Debug: debug}
-			}
-			unmount()
-
-			// Signal success before kexec -e (network will disappear)
-			result := &BootResult{
-				Kernel:        kernel,
-				Initrd:        initrd,
-				Cmdline:       cmdline,
-				Drives:        drives,
-				Warning:       warning,
-				FullyUnlocked: fullyUnlocked,
-				Debug:         debug,
-			}
-			completeBootLaunch(result, nil) // Signal success to UI
-			// Give the web UI time to poll and display the final boot log
-			// before the HTTP server shuts down for kexec.
-			time.Sleep(3 * time.Second)
-			// Signal main() to shut down the HTTP server and fire kexec -e.
-			// We must not call kexec -e here — doing so from inside a live
-			// HTTP server goroutine causes it to fail silently because the Go
-			// runtime has active goroutines making syscalls. Instead we hand
-			// control to main(), which shuts the server down cleanly first.
-			close(kexecReady)
-			// Block until main() attempts kexec -e and reports back.
-			// On success kexec -e never returns so this channel receives only
-			// on failure, letting us surface the error through bootLaunchState.
-			if err := <-kexecFailed; err != nil {
-				return nil, BootAttemptError{
-					Message: fmt.Sprintf("kexec -e failed: %v", err),
-					Debug:   debug,
-				}
-			}
-			// Unreachable on success — kexec -e replaces the kernel.
-			return result, nil
-		}
-		loaderEntries, grubConfigs, kernels, initrds := collectBootFiles(mountPoint)
-		appendBootDebugVerbose(&debug, "Detected loader entries: %d, grub configs: %d, kernels: %d, initrds: %d", len(loaderEntries), len(grubConfigs), len(kernels), len(initrds))
-		if files := snapshotMountFiles(mountPoint, 40); len(files) > 0 {
-			appendBootDebugVerbose(&debug, "Mounted file snapshot: %s", strings.Join(files, ", "))
-		}
-		appendBootDebug(&debug, "No boot artifacts found on %s", dev)
-		unmount()
-	}
-	appendBootDebug(&debug, "Boot search exhausted without finding a usable kernel/initrd pair.")
-	return nil, BootAttemptError{Message: "no bootable partition", Debug: debug}
-}
-
 // extractLinuxCmdline parses a GRUB "linux" or "linuxefi" line.
 func extractLinuxCmdline(line string) (string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
@@ -3063,13 +3010,80 @@ const (
 	colorDim    = "\033[38;5;245m"
 )
 
+func clearConsoleScreen() {
+	fmt.Print("\033[H\033[2J")
+}
+
+func readConsoleLine(prompt string) string {
+	fmt.Print(prompt)
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func readConsoleMenuKey(fd int, timeout time.Duration) (string, bool, error) {
+	timeoutMs := int(timeout / time.Millisecond)
+	if timeout > 0 && timeoutMs == 0 {
+		timeoutMs = 1
+	}
+	pollFDs := []unix.PollFd{{
+		Fd:     int32(fd),
+		Events: unix.POLLIN,
+	}}
+	for {
+		n, err := unix.Poll(pollFDs, timeoutMs)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if n == 0 || pollFDs[0].Revents&unix.POLLIN == 0 {
+			return "", false, nil
+		}
+		buf := make([]byte, 1)
+		_, err = unix.Read(fd, buf)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		return strings.ToUpper(string(buf[0])), true, nil
+	}
+}
+
+func waitForConsoleEnter() {
+	_ = readConsoleLine("\nPress Enter to continue...")
+}
+
+func buildVersionConsoleText(status StatusResponse) string {
+	if status.Build == "" {
+		return "unknown"
+	}
+	if status.RepoURL == "" {
+		return status.Build
+	}
+	return fmt.Sprintf("%s (%s)", status.Build, status.RepoURL)
+}
+
+func printBootDebugBlock(debug []string) {
+	if len(debug) == 0 {
+		return
+	}
+	fmt.Println("\nBoot debug:")
+	for _, line := range debug {
+		fmt.Printf("  %s\n", line)
+	}
+}
+
 // runConsoleUI is the main loop for the physical console TUI. It displays
 // the standby screen, waits for a keypress, then enters the active menu.
 // Runs in its own goroutine for the duration of the PBA lifecycle.
 func runConsoleUI() {
 	fd := int(os.Stdin.Fd())
 	for {
-		fmt.Print("\033[H\033[2J")
+		clearConsoleScreen()
 		fmt.Println(colorBlue + "🔒 PBA STANDBY" + colorReset)
 		printConsoleStatus(buildStatusResponse())
 		fmt.Println("\n" + colorDim + "Press any key..." + colorReset)
@@ -3088,21 +3102,23 @@ func runConsoleUI() {
 }
 
 // runActiveConsoleMenu presents an interactive menu on the physical console
-// for unlock, boot, password change, reboot, and shutdown operations.
-// Times out back to the standby screen after privacyTimeout.
+// for unlock, boot, diagnostics, reboot, and shutdown operations. Destructive
+// expert actions and password changes are intentionally web-only. Times out
+// back to the standby screen after privacyTimeout.
 func runActiveConsoleMenu(fd int) {
 	for {
-		fmt.Print("\033[H\033[2J")
+		clearConsoleScreen()
 		fmt.Println(colorBlue + "🔑 ACTIVE MODE" + colorReset)
 		printConsoleStatus(buildStatusResponse())
 
 		fmt.Printf(
-			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sP%s] %sChange PW%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s\n",
+			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sD%s] %sDiagnostics%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s  [%sQ%s] %sStandby%s\n",
 			colorDim, colorReset, colorPurple, colorReset,
 			colorDim, colorReset, colorBlue, colorReset,
-			colorDim, colorReset, colorPurple, colorReset,
+			colorDim, colorReset, colorBlue, colorReset,
 			colorDim, colorReset, colorOrange, colorReset,
 			colorDim, colorReset, colorBlue, colorReset,
+			colorDim, colorReset, colorDim, colorReset,
 		)
 
 		old, err := term.MakeRaw(fd)
@@ -3111,27 +3127,13 @@ func runActiveConsoleMenu(fd int) {
 			return
 		}
 
-		type readResult struct {
-			b   byte
-			err error
+		key, ok, err := readConsoleMenuKey(fd, privacyTimeout)
+		term.Restore(fd, old)
+		if err != nil {
+			dbgPrintf(debugNormal, "console input failed: %v", err)
+			return
 		}
-		ch := make(chan readResult, 1)
-		go func() {
-			buf := make([]byte, 1)
-			_, err := os.Stdin.Read(buf)
-			ch <- readResult{buf[0], err}
-		}()
-
-		var key string
-		select {
-		case res := <-ch:
-			term.Restore(fd, old)
-			if res.err != nil {
-				return
-			}
-			key = strings.ToUpper(string(res.b))
-		case <-time.After(privacyTimeout):
-			term.Restore(fd, old)
+		if !ok {
 			return
 		}
 
@@ -3139,107 +3141,68 @@ func runActiveConsoleMenu(fd int) {
 		case "\r":
 			fmt.Print("Password: ")
 			pw, _ := term.ReadPassword(fd)
-			if _, err := unlockDrivesWithPassword(string(pw)); err != nil {
-				fmt.Println("\n❌", err)
-				time.Sleep(2 * time.Second)
-			}
-
-		case "B":
-			res, err := bootFirstAvailableKernel()
-			if err != nil {
-				fmt.Println(err)
-			} else if res.Warning != "" {
-				fmt.Println(res.Warning)
-			}
-			time.Sleep(2 * time.Second)
-
-		case "P":
-			eligible := eligiblePasswordChangeTargets(scanDrives())
-			if len(eligible) == 0 {
-				fmt.Println("\n❌ No unlocked OPAL drives are eligible for password change.")
-				time.Sleep(3 * time.Second)
-				break
-			}
-			fmt.Printf("\nRequirements: %s\n", passwordPolicySummary())
-			fmt.Println("BIOS note: if SID password changes fail, check firmware/TPM settings and disable Block SID for the next boot.")
-			devices := make([]string, 0, len(eligible))
-			for _, drive := range eligible {
-				devices = append(devices, drive.Device)
-			}
-			fmt.Printf("Target device (%s): ", strings.Join(devices, ", "))
-			reader := bufio.NewReader(os.Stdin)
-			deviceLine, _ := reader.ReadString('\n')
-			deviceLine = strings.TrimSpace(deviceLine)
-			if deviceLine == "" {
-				fmt.Println("\n❌ target device is required")
-				time.Sleep(2 * time.Second)
-				break
-			}
-			fmt.Print("\nCurrent: ")
-			curr, _ := term.ReadPassword(fd)
-			fmt.Print("\nNew: ")
-			newP, _ := term.ReadPassword(fd)
-			fmt.Print("\nConfirm: ")
-			conf, _ := term.ReadPassword(fd)
-
-			if string(newP) != string(conf) {
-				fmt.Println("\n❌ mismatch")
-				time.Sleep(2 * time.Second)
-				break
-			}
-			if err := validatePassword(string(newP)); err != nil {
-				fmt.Println("\n❌", err)
-				time.Sleep(2 * time.Second)
-				break
-			}
-			results, err := changePassword(string(curr), string(newP), []string{deviceLine})
-			if err != nil {
-				fmt.Println("\n❌", err)
-				time.Sleep(3 * time.Second)
-				break
-			}
+			results, err := unlockDrivesWithPassword(string(pw))
 			fmt.Println()
-			anySuccess := false
+			if len(results) == 0 && err == nil {
+				fmt.Println("No locked OPAL drives were reported.")
+			}
 			for _, result := range results {
 				if result.Success {
-					anySuccess = true
-					fmt.Printf("✅ %s: %s\n", result.Device, result.Detail)
-					continue
+					fmt.Printf("✅ %s unlocked\n", result.Device)
+				} else {
+					fmt.Printf("❌ %s unlock failed\n", result.Device)
 				}
-				msg := result.Error
-				if msg == "" {
-					msg = "password change failed"
-				}
-				if result.Detail != "" {
-					msg += " (" + result.Detail + ")"
-				}
-				fmt.Printf("❌ %s: %s\n", result.Device, msg)
 			}
-			if !anySuccess {
-				fmt.Println("❌ No drive accepted the new unlock password.")
+			if err != nil {
+				fmt.Println("❌", err)
 			}
-			time.Sleep(4 * time.Second)
+			waitForConsoleEnter()
+
+		case "B":
+			runConsoleBootMenu()
+
+		case "D":
+			showConsoleDiagnostics()
 
 		case "R":
 			exec.Command("reboot", "-nf").Run()
 
 		case "S":
 			exec.Command("poweroff", "-nf").Run()
+
+		case "Q":
+			return
 		}
 	}
 }
 
-// validateUploadedPBAImageBytes checks that a user-uploaded PBA image has a
-// valid MBR signature, a bootable EFI partition (type 0xEF), and a FAT32
-// filesystem. Returns a slice of human-readable validation steps alongside
-// any error encountered.
-func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string, error) {
+func readImageRange(f *os.File, offset int64, size int) ([]byte, error) {
+	buf := make([]byte, size)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	if n != size {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return buf, nil
+}
+
+// validateUploadedPBAImageFile checks that a user-uploaded PBA image stored
+// in a temporary file has a valid MBR signature, a bootable EFI partition
+// (type 0xEF), and a FAT32 filesystem. Only the required sectors are read so
+// the upload path does not keep a duplicate full-image copy in memory.
+func validateUploadedPBAImageFile(imagePath, filename string) ([]string, error) {
 	validation := make([]string, 0, 12)
-	if len(imageData) <= 0 {
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		return validation, fmt.Errorf("failed to stat uploaded image: %w", err)
+	}
+	if info.Size() <= 0 {
 		return validation, fmt.Errorf("uploaded image is empty")
 	}
-	validation = append(validation, fmt.Sprintf("file size: %d bytes", len(imageData)))
-	if len(imageData) > 128<<20 {
+	validation = append(validation, fmt.Sprintf("file size: %d bytes", info.Size()))
+	if info.Size() > 128<<20 {
 		return validation, fmt.Errorf("uploaded image exceeds 128 MiB")
 	}
 	validation = append(validation, "size is within the 128 MiB OPAL2 guideline")
@@ -3249,11 +3212,20 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 	}
 	validation = append(validation, "filename extension is acceptable")
 
-	if len(imageData) < 512 {
+	if info.Size() < 512 {
 		return validation, fmt.Errorf("uploaded image is too small to contain a valid MBR")
 	}
 
-	mbr := imageData[0:512]
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return validation, fmt.Errorf("failed to open uploaded image: %w", err)
+	}
+	defer f.Close()
+
+	mbr, err := readImageRange(f, 0, 512)
+	if err != nil {
+		return validation, fmt.Errorf("failed to read uploaded image MBR: %w", err)
+	}
 	if mbr[510] != 0x55 || mbr[511] != 0xaa {
 		return validation, fmt.Errorf("uploaded image is missing the MBR signature")
 	}
@@ -3288,16 +3260,19 @@ func validateUploadedPBAImageBytes(imageData []byte, filename string) ([]string,
 
 	bootSectorOffset := int64(startLBA) * 512
 	bootSectorEnd := bootSectorOffset + 512
-	if bootSectorEnd > int64(len(imageData)) {
+	if bootSectorEnd > info.Size() {
 		return validation, fmt.Errorf("uploaded image boot partition is unreadable")
 	}
 
-	bootSector := imageData[bootSectorOffset:bootSectorEnd]
+	bootSector, err := readImageRange(f, bootSectorOffset, 512)
+	if err != nil {
+		return validation, fmt.Errorf("failed to read uploaded image boot sector: %w", err)
+	}
 	if bootSector[510] != 0x55 || bootSector[511] != 0xaa {
 		return validation, fmt.Errorf("uploaded image first partition is missing a valid boot sector signature")
 	}
 	validation = append(validation, "boot partition has a valid boot sector signature")
-	if !bytes.HasPrefix(bootSector, []byte{0xeb}) && !bytes.HasPrefix(bootSector, []byte{0xe9}) {
+	if bootSector[0] != 0xeb && bootSector[0] != 0xe9 {
 		return validation, fmt.Errorf("uploaded image first partition does not look bootable")
 	}
 	validation = append(validation, "boot sector has a valid jump instruction")
@@ -3361,7 +3336,14 @@ func main() {
 		redirectSrv := &http.Server{
 			Addr: ":80",
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, "https://localhost"+r.URL.String(), http.StatusMovedPermanently)
+				// Preserve the user-visible host for HTTP->HTTPS redirects so
+				// custom certificates tied to a real DNS name/IP are not replaced
+				// with "localhost" on the client side.
+				host := r.Host
+				if h, _, err := net.SplitHostPort(r.Host); err == nil {
+					host = h
+				}
+				http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusMovedPermanently)
 			}),
 			ErrorLog: httpErrorLog,
 		}
@@ -3631,55 +3613,117 @@ func main() {
 
 		const maxUploadBytes = 128 << 20
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+1024)
-		// Parse with full maxUploadBytes limit for in-memory handling
-		if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid upload; ensure image size is <= 128 MiB"})
+		mr, err := r.MultipartReader()
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid upload; multipart form data is required"})
 			return
 		}
 
-		device := strings.TrimSpace(r.FormValue("device"))
-		password := r.FormValue("password")
-		confirm := strings.TrimSpace(r.FormValue("confirm"))
+		device := ""
+		password := ""
+		confirm := ""
+		imagePath := ""
+		imageFilename := ""
+
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				if imagePath != "" {
+					_ = os.Remove(imagePath)
+				}
+				jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "failed to read upload data"})
+				return
+			}
+
+			switch part.FormName() {
+			case "device":
+				if data, err := io.ReadAll(io.LimitReader(part, 4096)); err == nil {
+					device = strings.TrimSpace(string(data))
+				}
+			case "password":
+				if data, err := io.ReadAll(io.LimitReader(part, 4096)); err == nil {
+					password = string(data)
+				}
+			case "confirm":
+				if data, err := io.ReadAll(io.LimitReader(part, 4096)); err == nil {
+					confirm = strings.TrimSpace(string(data))
+				}
+			case "image":
+				if imagePath != "" {
+					part.Close()
+					_ = os.Remove(imagePath)
+					jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "only one image upload is allowed"})
+					return
+				}
+				imageFilename = part.FileName()
+				tmp, err := os.CreateTemp("", "sedunlocksrv-pba-upload-*.img")
+				if err != nil {
+					part.Close()
+					jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to prepare temporary upload file"})
+					return
+				}
+				imagePath = tmp.Name()
+				limited := &io.LimitedReader{R: part, N: maxUploadBytes + 1}
+				written, copyErr := io.Copy(tmp, limited)
+				closeErr := tmp.Close()
+				part.Close()
+				if copyErr != nil {
+					_ = os.Remove(imagePath)
+					jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "failed to read uploaded image"})
+					return
+				}
+				if closeErr != nil {
+					_ = os.Remove(imagePath)
+					jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize uploaded image"})
+					return
+				}
+				if limited.N == 0 {
+					_ = os.Remove(imagePath)
+					jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "uploaded image exceeds 128 MiB"})
+					return
+				}
+				if written == 0 {
+					_ = os.Remove(imagePath)
+					jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "uploaded image is empty"})
+					return
+				}
+			default:
+				_, _ = io.Copy(io.Discard, part)
+			}
+			part.Close()
+		}
 
 		if !validateDevicePath(device) {
+			_ = os.Remove(imagePath)
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a valid /dev path"})
 			return
 		}
 		if !isOpal2Drive(device) {
+			_ = os.Remove(imagePath)
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "device must be a detected OPAL2 drive"})
 			return
 		}
 		if strings.TrimSpace(password) == "" {
+			_ = os.Remove(imagePath)
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "current drive password is required"})
 			return
 		}
 		if confirm != "FLASH" {
+			_ = os.Remove(imagePath)
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "confirmation text must be FLASH"})
 			return
 		}
-
-		file, fileHeader, err := r.FormFile("image")
-		if err != nil {
+		if imagePath == "" || imageFilename == "" {
 			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "pba image file is required"})
 			return
 		}
-		defer file.Close()
 
-		// Read image entirely into memory
-		imageBuffer := bytes.NewBuffer(make([]byte, 0, maxUploadBytes+1))
-		written, err := io.Copy(imageBuffer, file)
+		validation, err := validateUploadedPBAImageFile(imagePath, imageFilename)
 		if err != nil {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "failed to read uploaded image"})
-			return
-		}
-		if written == 0 {
-			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "uploaded image is empty"})
-			return
-		}
-
-		imageData := imageBuffer.Bytes()
-		validation, err := validateUploadedPBAImageBytes(imageData, fileHeader.Filename)
-		if err != nil {
+			_ = os.Remove(imagePath)
 			jsonResponse(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error(), "validation": validation})
 			return
 		}
@@ -3696,11 +3740,14 @@ func main() {
 			validation = append(validation, fmt.Sprintf("preflight MBRDone=%s", queryField(status, "MBRDone")))
 		}
 
-		runExpertPBAFlashBytes(w, password, imageData, device, validation)
+		runExpertPBAFlashImagePath(w, password, imagePath, device, validation)
 	})
 
 	mux.HandleFunc("/expert/flash-status", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		if requireExpertToken(w, r) {
 			return
 		}
 		flashMu.RLock()
@@ -3782,9 +3829,9 @@ func main() {
 		}
 	}()
 	// Wait for a boot function to signal that kexec -l succeeded and it is
-	// ready for us to fire kexec -e. This only triggers on web-initiated boots;
-	// console and SSH boots call bootFirstAvailableKernel() synchronously and
-	// never close this channel, so they are unaffected.
+	// ready for us to fire kexec -e. Web and console boot flows both close this
+	// channel after loading the selected kernel; idle sessions simply block here
+	// until an operator requests a boot.
 	<-kexecReady
 	// Shut the HTTP server down before calling kexec -e. A live server with
 	// active goroutines making syscalls will cause kexec -e to fail silently.

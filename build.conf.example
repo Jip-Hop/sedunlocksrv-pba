@@ -19,7 +19,9 @@
 # SSHBUILD=false                # true: same as ./build.sh --ssh
 # TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key
-# SSH_CURL_INSECURE="auto"      # auto: false when custom TLS cert/key are used, else true
+# TLS_SERVER_NAME=""            # required with custom TLS cert/key; SSH UI verifies this cert name over loopback using curl --resolve
+# TLS_CA_CERT_PATH=""           # optional CA bundle for SSH helper when custom cert chains to an internal/private CA
+# SSH_CURL_INSECURE="auto"      # auto: trust bundled self-signed cert; use normal CA validation for custom certs; true forces curl -k
 # DEBUG_LEVEL="1"               # 0=verbose trace, 1=normal progress (default), 2=quiet
 # EXPERT_PASSWORD=""            # optional; if empty, build.sh will prompt you to enter a password (no complexity requirements)
 
@@ -38,7 +40,7 @@
 # BOND_LACP_RATE="1"            # 1 = fast LACPDU rate
 # BOND_XMIT_HASH_POLICY="1"     # default transmit hash policy
 
-# --- Password Policy (applies to web UI and console password change) ---
+# --- Password Policy (applies to web UI password change) ---
 # PASSWORD_COMPLEXITY_ON="true" # true/false to enable/disable password complexity enforcement
 # MIN_PASSWORD_LENGTH="12"      # minimum password length (when complexity is on)
 # REQUIRE_UPPER="true"          # require uppercase letters (A-Z)
