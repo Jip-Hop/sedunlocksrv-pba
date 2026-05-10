@@ -401,9 +401,10 @@ When certificates are renewed/updated, **call deploy.sh remotely** via SSH:
 # From your remote management host (or CI/CD system):
 # NOTE: -A enables agent forwarding (required for password decryption)
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '~/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
-    --key-path=/path/to/new/privkey.pem'
+    --key-path=/path/to/new/privkey.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 **Note:** 
@@ -412,6 +413,7 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
 - No password needs to be provided on the command line
 - **Ed25519 keys only** — ECDSA keys are not supported
 - Certificate paths must be accessible to the script (usually on target host's filesystem)
+- `--tls-server-name` is required for deploy.sh custom-certificate builds and must match a DNS/IP SAN or CN on the certificate. Add `--tls-ca-cert=/path/to/ca.pem` if the SSH UI should trust an internal/private CA chain.
 
 ### Step 7a: Dry-Run (Safe Testing)
 
@@ -419,9 +421,10 @@ Always test before deploying for real:
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '~/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
     --key-path=/path/to/new/privkey.pem \
+    --tls-server-name=pba.example.com \
     --dry-run'
 ```
 
@@ -442,9 +445,10 @@ Once dry-run succeeds, deploy for real:
 
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target-host \
-  '~/sedunlocksrv/deploy.sh \
+  '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/new/fullchain.pem \
-    --key-path=/path/to/new/privkey.pem'
+    --key-path=/path/to/new/privkey.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 **Monitor progress:**
@@ -541,13 +545,15 @@ if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_SERIAL" ]; th
     ssh -A -t -i "$SSH_KEY" "$TARGET" \
       'sudo ~/sedunlocksrv/deploy/deploy.sh \
         --cert-path=/etc/pve/pveproxy-ssl.pem \
-        --key-path=/etc/pve/pveproxy-ssl-key.pem'
+        --key-path=/etc/pve/pveproxy-ssl-key.pem \
+        --tls-server-name=pba.example.com'
     
     # Option B: pipe expert password (no shell escaping needed)
     # echo 'p@$$w0rd!' | ssh -A -i "$SSH_KEY" "$TARGET" \
     #   'sudo ~/sedunlocksrv/deploy/deploy.sh --expert-password-stdin \
     #     --cert-path=/etc/pve/pveproxy-ssl.pem \
-    #     --key-path=/etc/pve/pveproxy-ssl-key.pem'
+    #     --key-path=/etc/pve/pveproxy-ssl-key.pem \
+    #     --tls-server-name=pba.example.com'
     
     if [ $? -eq 0 ]; then
         echo "PBA redeployed successfully"

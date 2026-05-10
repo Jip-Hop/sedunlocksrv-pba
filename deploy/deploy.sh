@@ -3,7 +3,7 @@
 # deploy.sh — Build and validate SED unlock server PBA with new certificates, then flash to OPAL 2.0 drive.
 #
 # Usage:
-#   deploy.sh --cert-path=/path/to/fullchain.pem --key-path=/path/to/key.pem [OPTIONS]
+#   deploy.sh --cert-path=/path/to/fullchain.pem --key-path=/path/to/key.pem --tls-server-name=NAME [OPTIONS]
 #
 # Prerequisites:
 #   - OPAL 2.0 drive must be properly initialized (ownership taken, locking ranges configured)
@@ -39,12 +39,17 @@
 #     remains in the process address space until the script terminates.
 #
 # Optional environment:
-#   OPAL_DRIVE     - Override default OPAL drive (/dev/nvme0)
-#   SYSLOG_TAG     - Custom syslog tag (default: deploy.sh)
+#   OPAL_DRIVE       - Override default OPAL drive (/dev/nvme0)
+#   TLS_SERVER_NAME  - Default for --tls-server-name
+#   TLS_CA_CERT_PATH - Default for --tls-ca-cert
+#   SYSLOG_TAG       - Custom syslog tag (default: deploy.sh)
 #
 # Options:
 #   --cert-path=PATH         Absolute path to fullchain.pem
 #   --key-path=PATH          Absolute path to key.pem
+#   --tls-server-name=NAME   Required TLS name that must match the certificate;
+#                             the SSH UI verifies this name while connecting to 127.0.0.1
+#   --tls-ca-cert=PATH       Optional CA bundle for private/internal certificate chains
 #   --build-args=ARGS        Comma-separated additional arguments for build.sh
 #                             (e.g., --build-args=--ssh,--sedutil-fork=ChubbyAnt)
 #   --expert-password=PASS   Expert mode password passed directly to build.sh;
@@ -73,6 +78,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # =============================================================================
 CERT_PATH=""
 KEY_PATH=""
+TLS_SERVER_NAME="${TLS_SERVER_NAME:-}"
+TLS_CA_CERT_PATH="${TLS_CA_CERT_PATH:-}"
 BUILD_ADDITIONAL_ARGS=()
 EXPERT_PASSWORD=""
 DRY_RUN=false
@@ -140,7 +147,7 @@ fail_exit() {
 # =============================================================================
 
 print_usage() {
-    sed -n '5,57p' "${BASH_SOURCE[0]}" | sed -E 's/^# ?//'
+    sed -n '5,/^$/p' "${BASH_SOURCE[0]}" | sed -E 's/^# ?//'
 }
 
 # require_cmd CMD — exits if CMD not found
@@ -200,6 +207,30 @@ cert_key_pair_check() {
     if [ "${cert_pub}" != "${key_pub}" ]; then
         fail_exit 1 "Certificate and key do not match: ${cert} / ${key}"
     fi
+}
+
+# cert_matches_tls_server_name CERT NAME -- verifies NAME is present in the
+# certificate SAN/CN using OpenSSL's hostname/IP matching rules.
+cert_matches_tls_server_name() {
+    local cert="$1" name="$2"
+    openssl x509 -in "${cert}" -noout -checkhost "${name}" >/dev/null 2>&1 && return 0
+    openssl x509 -in "${cert}" -noout -checkip "${name}" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# validate_forwarded_build_args -- keeps deploy-owned TLS flags out of
+# --build-args so certificate identity is configured in one explicit place.
+validate_forwarded_build_args() {
+    local arg opt
+    for arg in "${BUILD_ADDITIONAL_ARGS[@]}"; do
+        [ -n "${arg}" ] || continue
+        opt="${arg%%=*}"
+        case "${opt}" in
+            --tls-cert|--tls-key|--tls-server-name|--tls-ca-cert)
+                fail_exit 1 "${opt} is managed by deploy.sh; use --cert-path, --key-path, --tls-server-name, or --tls-ca-cert instead of --build-args"
+                ;;
+        esac
+    done
 }
 
 # get_pba_partition DRIVE — verifies OPAL 2 drive is properly initialized before PBA write
@@ -358,11 +389,15 @@ build_pba() {
     
     if ! (
         cd "${REPO_ROOT}"
-        sudo ./build.sh \
-            --tls-cert="${CERT_PATH}" \
-            --tls-key="${KEY_PATH}" \
-            ${EXPERT_PASSWORD:+"--expert-password=${EXPERT_PASSWORD}"} \
-            ${BUILD_ADDITIONAL_ARGS[@]+"${BUILD_ADDITIONAL_ARGS[@]}"}
+        build_args=(
+            --tls-cert="${CERT_PATH}"
+            --tls-key="${KEY_PATH}"
+            --tls-server-name="${TLS_SERVER_NAME}"
+        )
+        [ -z "${TLS_CA_CERT_PATH}" ] || build_args+=(--tls-ca-cert="${TLS_CA_CERT_PATH}")
+        [ -z "${EXPERT_PASSWORD}" ] || build_args+=(--expert-password="${EXPERT_PASSWORD}")
+        build_args+=("${BUILD_ADDITIONAL_ARGS[@]}")
+        sudo ./build.sh "${build_args[@]}"
     ); then
         fail_exit 1 "build.sh failed; see logs above"
     fi
@@ -603,6 +638,7 @@ parse_args() {
         case "$1" in
             --help|-h)
                 print_usage
+                trap - EXIT
                 exit 0
                 ;;
             --cert-path=*)
@@ -610,6 +646,12 @@ parse_args() {
                 ;;
             --key-path=*)
                 KEY_PATH="${1#*=}"
+                ;;
+            --tls-server-name=*)
+                TLS_SERVER_NAME="${1#*=}"
+                ;;
+            --tls-ca-cert=*)
+                TLS_CA_CERT_PATH="${1#*=}"
                 ;;
             --build-args=*)
                 IFS=',' read -ra BUILD_ADDITIONAL_ARGS <<< "${1#*=}"
@@ -658,15 +700,27 @@ validate_inputs() {
     if [ -z "${CERT_PATH}" ] || [ -z "${KEY_PATH}" ]; then
         fail_exit 1 "Both --cert-path and --key-path are required"
     fi
+    if [ -z "${TLS_SERVER_NAME}" ]; then
+        fail_exit 1 "--tls-server-name is required when deploying with a custom certificate"
+    fi
+    if printf '%s' "${TLS_SERVER_NAME}" | grep -Eq '[[:space:]]'; then
+        fail_exit 1 "--tls-server-name must not contain whitespace: ${TLS_SERVER_NAME}"
+    fi
+    validate_forwarded_build_args
     
     require_file "${CERT_PATH}" "Certificate file"
     require_file "${KEY_PATH}" "Key file"
+    [ -z "${TLS_CA_CERT_PATH}" ] || require_file "${TLS_CA_CERT_PATH}" "TLS CA certificate file"
     require_readable "${CERT_PATH}"
     require_readable "${KEY_PATH}"
+    [ -z "${TLS_CA_CERT_PATH}" ] || require_readable "${TLS_CA_CERT_PATH}"
     
     cert_validity_check "${CERT_PATH}"
     key_validity_check "${KEY_PATH}"
     cert_key_pair_check "${CERT_PATH}" "${KEY_PATH}"
+    if ! cert_matches_tls_server_name "${CERT_PATH}" "${TLS_SERVER_NAME}"; then
+        fail_exit 1 "--tls-server-name=${TLS_SERVER_NAME} does not match the certificate SAN/CN"
+    fi
     
     info "Certificates validated ✅"
     

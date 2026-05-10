@@ -26,6 +26,8 @@ When using automated certificate management, there's a race condition risk:
 
 `deploy.sh` can wait for certificate updates before calling `build.sh`. Multiple detection strategies are available.
 
+Because `deploy.sh` always builds with a custom certificate, every deployment must provide `--tls-server-name=NAME` or set `TLS_SERVER_NAME=NAME`. The name must match a DNS/IP SAN or CN on the certificate. Use `--tls-ca-cert=/path/to/ca.pem` when the SSH UI needs a private/internal CA bundle.
+
 The default strategy (`serial`) stores the certificate's X.509 serial number to `~/sedunlocksrv/.cert-serial.baseline` after each successful deploy. On subsequent runs it compares the current serial against the baseline — no external state management required.
 
 ---
@@ -63,6 +65,7 @@ Uses a stored serial number baseline to detect whether the certificate has been 
 ```bash
 deploy.sh --cert-path=/etc/letsencrypt/live/example.com/fullchain.pem \
           --key-path=/etc/letsencrypt/live/example.com/privkey.pem \
+          --tls-server-name=pba.example.com \
           --cert-timeout=300
 # (serial is the default; --cert-freshness=serial not required)
 ```
@@ -97,6 +100,7 @@ Compares the SHA256 hash of the certificate file against the stored serial basel
 ```bash
 deploy.sh --cert-path=/etc/letsencrypt/live/example.com/fullchain.pem \
           --key-path=/etc/letsencrypt/live/example.com/privkey.pem \
+          --tls-server-name=pba.example.com \
           --cert-freshness=hash \
           --cert-timeout=300
 ```
@@ -138,6 +142,7 @@ Checks when the certificate file was last modified.
 ```bash
 deploy.sh --cert-path=/opt/certs/cert.pem \
           --key-path=/opt/certs/key.pem \
+          --tls-server-name=pba.example.com \
           --cert-freshness=mtime \
           --cert-grace=5 \
           --cert-timeout=60
@@ -183,6 +188,7 @@ Then in deployment:
 ```bash
 deploy.sh --cert-path=/opt/pba-certs/cert.pem \
           --key-path=/opt/pba-certs/key.pem \
+          --tls-server-name=pba.example.com \
           --cert-freshness=marker
 ```
 
@@ -216,6 +222,7 @@ Disables certificate freshness validation entirely.
 ```bash
 deploy.sh --cert-path=/tmp/cert.pem \
           --key-path=/tmp/key.pem \
+          --tls-server-name=pba.example.com \
           --cert-freshness=none
 ```
 
@@ -281,6 +288,7 @@ ssh -i ~/.ssh/id_deploy deploy@pba-host \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/opt/pba-certs/fullchain.pem \
     --key-path=/opt/pba-certs/privkey.pem \
+    --tls-server-name=pba.example.com \
     --cert-timeout=120'
 ```
 
@@ -299,6 +307,7 @@ ssh -i ~/.ssh/id_deploy deploy@pba-host \
 ./deploy.sh \
   --cert-path=/shared/certs/fullchain.pem \
   --key-path=/shared/certs/privkey.pem \
+  --tls-server-name=pba.example.com \
   --cert-freshness=marker \
   --cert-timeout=300
 ```
@@ -323,6 +332,7 @@ ssh deploy@proxmox-node \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
+    --tls-server-name=pba.example.com \
     --cert-timeout=60 \
     --dry-run'
 
@@ -331,6 +341,7 @@ ssh deploy@proxmox-node \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
     --key-path=/etc/pve/pveproxy-ssl-key.pem \
+    --tls-server-name=pba.example.com \
     --cert-timeout=60'
 ```
 
@@ -348,6 +359,7 @@ ssh deploy@proxmox-node \
 ./deploy.sh \
   --cert-path=./test-cert.pem \
   --key-path=./test-key.pem \
+  --tls-server-name=pba.example.com \
   --cert-freshness=none \
   --dry-run
 ```
@@ -378,6 +390,7 @@ Freshness settings can also be set via environment variables:
 export CERT_FRESHNESS_STRATEGY="serial"    # Strategy: serial, hash, mtime, marker, none
 export CERT_FRESHNESS_TIMEOUT="300"        # Max wait seconds
 export CERT_FRESHNESS_GRACE="10"           # Grace period (mtime only)
+export TLS_SERVER_NAME="pba.example.com"   # Required with deploy.sh custom certs
 
 ./deploy.sh --cert-path=... --key-path=...
 ```
@@ -466,11 +479,13 @@ deploy.sh ... --cert-freshness=hash
 
 CERT_PATH="/etc/letsencrypt/live/example.com/fullchain.pem"
 KEY_PATH="/etc/letsencrypt/live/example.com/privkey.pem"
+TLS_SERVER_NAME="pba.example.com"
 
 ssh -i ~/.ssh/id_deploy deploy@pba-server \
   "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
+    --tls-server-name=${TLS_SERVER_NAME} \
     --cert-freshness=hash \
     --cert-timeout=300"
 ```
@@ -483,11 +498,13 @@ ssh -i ~/.ssh/id_deploy deploy@pba-server \
 
 CERT_PATH="/mnt/shared/certs/fullchain.pem"
 KEY_PATH="/mnt/shared/certs/privkey.pem"
+TLS_SERVER_NAME="pba.example.com"
 
 ssh deploy@pba-server \
   "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
+    --tls-server-name=${TLS_SERVER_NAME} \
     --cert-freshness=mtime \
     --cert-grace=15 \
     --cert-timeout=60"
@@ -501,6 +518,7 @@ ssh deploy@pba-server \
 
 CERT_PATH="/opt/pba/certs/fullchain.pem"
 KEY_PATH="/opt/pba/certs/privkey.pem"
+TLS_SERVER_NAME="pba.example.com"
 MARKER_FILE="${CERT_PATH}.updated"
 
 # Wait for cert update process to finish
@@ -522,6 +540,7 @@ if wait_for_cert_marker; then
     ./deploy.sh \
       --cert-path=${CERT_PATH} \
       --key-path=${KEY_PATH} \
+      --tls-server-name=${TLS_SERVER_NAME} \
       --cert-freshness=marker
 else
     echo "Certificate marker file not found"
@@ -539,6 +558,7 @@ fi
 # Terminal 1: Start deployment with hash check
 deploy.sh --cert-path=/tmp/test-cert.pem \
           --key-path=/tmp/test-key.pem \
+          --tls-server-name=pba.example.com \
           --cert-freshness=hash \
           --cert-timeout=30
 
@@ -557,6 +577,7 @@ openssl req -x509 -newkey rsa:2048 -keyout /tmp/test.key -out /tmp/test.crt -day
 # Start deployment with mtime check
 deploy.sh --cert-path=/tmp/test.crt \
           --key-path=/tmp/test.key \
+          --tls-server-name=pba.example.com \
           --cert-freshness=mtime \
           --cert-grace=5 \
           --cert-timeout=30

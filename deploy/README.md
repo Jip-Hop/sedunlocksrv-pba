@@ -94,13 +94,15 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com \
     --dry-run'
 
 # Real deployment
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
-    --key-path=/path/to/key.pem'
+    --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 ### With custom build options
@@ -110,10 +112,11 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com \
     --build-args=--ssh,--net-mode=bond,--debug-level=0'
 ```
 
-`--build-args` is a `deploy.sh` pass-through for extra `build.sh` flags. For the full list of supported build options, see the root [README.md build section](../README.md#build).
+`--tls-server-name` and `--tls-ca-cert` are first-class deploy options because they are part of custom-certificate deployment, and deploy rejects TLS identity flags inside `--build-args` to avoid conflicting settings. Other build-time choices, including SSH inclusion, network mode/static IP settings, password policy, debug level, and sedutil fork, remain in `--build-args` and are validated by `build.sh`. For the full list of supported build options, see the root [README.md build section](../README.md#build).
 
 ### With expert password (remote SSH)
 
@@ -122,7 +125,8 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
 ssh -A -t -i ~/.ssh/id_ed25519 deploy@target \
   'sudo ~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
-    --key-path=/path/to/key.pem'
+    --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 **Piped** — avoids all shell escaping; use single quotes locally to protect special characters:
@@ -131,7 +135,8 @@ echo 'p@$$w0rd!#1' | ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   'sudo ~/sedunlocksrv/deploy/deploy.sh \
     --expert-password-stdin \
     --cert-path=/path/to/fullchain.pem \
-    --key-path=/path/to/key.pem'
+    --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 **Inline** — only if the password contains no single quotes:
@@ -140,7 +145,8 @@ ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   'sudo ~/sedunlocksrv/deploy/deploy.sh \
     --expert-password=MySecret123 \
     --cert-path=/path/to/fullchain.pem \
-    --key-path=/path/to/key.pem'
+    --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 ### Automation
@@ -163,7 +169,8 @@ User=deploy
 ExecStart=/usr/bin/ssh -A -i ~/.ssh/id_ed25519 \
     target-host '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/etc/pve/pveproxy-ssl.pem \
-    --key-path=/etc/pve/pveproxy-ssl-key.pem'
+    --key-path=/etc/pve/pveproxy-ssl-key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 **CI/CD (GitHub Actions, GitLab CI):**
@@ -171,19 +178,24 @@ ExecStart=/usr/bin/ssh -A -i ~/.ssh/id_ed25519 \
 ssh -A -i "$DEPLOY_KEY" deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path="$CERT_PATH" \
-    --key-path="$KEY_PATH"'
+    --key-path="$KEY_PATH" \
+    --tls-server-name="$TLS_SERVER_NAME"'
 ```
 
 ## Command-Line Reference
 
 ```
-deploy.sh --cert-path=PATH --key-path=PATH [OPTIONS]
+deploy.sh --cert-path=PATH --key-path=PATH --tls-server-name=NAME [OPTIONS]
 
 Required:
   --cert-path=PATH           Absolute path to fullchain.pem
   --key-path=PATH            Absolute path to key.pem
+  --tls-server-name=NAME     TLS name verified by the SSH UI; must match a
+                              DNS/IP SAN or CN on the certificate
 
 Optional:
+  --tls-ca-cert=PATH         Optional CA bundle for private/internal certificate
+                              chains used by the SSH helper
   --build-args=ARGS          Comma-separated additional arguments for build.sh
                               e.g. --build-args=--ssh,--net-mode=bond
                               See ../README.md#build for the full list of
@@ -204,6 +216,8 @@ Optional:
 
 Environment variables:
   OPAL_DRIVE                 Override target drive (/dev/nvme0)
+  TLS_SERVER_NAME            Default for --tls-server-name
+  TLS_CA_CERT_PATH           Default for --tls-ca-cert
   SYSLOG_TAG                 Custom syslog tag (default: deploy.sh)
 ```
 

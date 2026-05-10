@@ -55,11 +55,14 @@ but does not write to the drive.
 SSH agent forwarding (`-A`) is **required** -- it allows the script to sign the KDF
 challenge with your private key to decrypt the stored OPAL password:
 
+`--tls-server-name` must be a DNS/IP name present on the certificate. If the cert chains to a private/internal CA, also pass `--tls-ca-cert=/path/to/ca.pem`.
+
 ```bash
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
     --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com \
     --dry-run'
 ```
 
@@ -80,7 +83,8 @@ ssh deploy@target 'tail -n 30 ~/sedunlocksrv/deploy-*.log'
 ssh -A -i ~/.ssh/id_ed25519 deploy@target \
   '~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=/path/to/fullchain.pem \
-    --key-path=/path/to/key.pem'
+    --key-path=/path/to/key.pem \
+    --tls-server-name=pba.example.com'
 ```
 
 Watch progress:
@@ -112,7 +116,8 @@ if [ ! -f "$STATE_FILE" ] || [ "$(cat "$STATE_FILE")" != "$CURRENT_HASH" ]; then
     ssh -A -i "$SSH_KEY" "$TARGET" \
       '~/sedunlocksrv/deploy/deploy.sh \
         --cert-path=/etc/pve/pveproxy-ssl.pem \
-        --key-path=/etc/pve/pveproxy-ssl-key.pem'
+        --key-path=/etc/pve/pveproxy-ssl-key.pem \
+        --tls-server-name=pba.example.com'
     [ $? -eq 0 ] && echo "$CURRENT_HASH" > "$STATE_FILE"
 fi
 ```
