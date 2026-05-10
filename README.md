@@ -73,6 +73,8 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Static IP configuration: `--net-addressing=static --ip-addr=... --netmask=...`
    - Linux LACP bonding: `--net-mode=bond --net-ifaces="eth0 eth1"` with 802.3ad mode
    - DHCP still works as before with no configuration needed
+   - Build-time validation for static IPv4 settings loaded from `build.conf` or CLI flags, so invalid IP, netmask, gateway, or DNS values stop the build before a bad PBA is flashed
+   - Console TUI network recovery for changing single/bond mode and DHCP/static IPv4 settings during the current PBA boot
 
 **Boot Process**: Original supports BIOS/UEFI boot. This fork adds:
    - `kexec` warm handoff for faster boots (use `Boot` button)
@@ -149,6 +151,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
    - Web UI: `https://<pba-ip>/`
    - SSH UI (optional): `ssh -p 2222 tc@<pba-ip>`
    - Local console keyboard on the machine
+   - If networking is unreachable, use the local console `Network` menu to switch between single/bond mode and DHCP/static IPv4, then apply the change for the current PBA boot
 6. After unlock:
    - Use `Boot` for fast warm handoff via `kexec`
    - Use `Reboot` for a full hardware/firmware restart path
@@ -317,6 +320,11 @@ Defaults live in `build.sh`. To use your own defaults:
 Resolution order:
 **built-in defaults → `build.conf` (or `BUILD_CONFIG`) → `--config=FILE` → remaining CLI flags**
 
+Network values are validated after that resolution step. This includes values
+loaded from `build.conf`, not only CLI flags. Static IPv4 builds require a valid
+`IP_ADDR` and contiguous dotted `NETMASK`; optional `GATEWAY` and `DNS` values
+must be valid IPv4 addresses, and the gateway must be in the same subnet.
+
 Useful flags:
 - `--clean`: remove build artifacts and cache before building.
 - `--ssh`: include SSH unlock interface (`dropbear`) in the image.
@@ -355,6 +363,29 @@ TLS note:
 
 ---
 
+## Console Network Recovery
+
+The physical console TUI includes a `Network` action. Use it when the PBA boots
+but the web or SSH interface is unreachable, such as after flashing an image with
+the wrong static address.
+
+The menu can change:
+- Network mode: `single` or `bond`
+- Managed interface list, or `auto` for detection
+- Addressing mode: DHCP or static IPv4
+- Static IPv4 address, netmask, gateway, and DNS servers
+
+The TUI validates the entered values before saving them. It writes only the
+network keys in `/etc/sedunlocksrv.conf` using shell-safe quoting, then applies
+the change by running `/usr/local/sbin/sedunlocksrv-net --configure` directly.
+No user-provided text is passed through a shell command line.
+
+Runtime TUI changes apply to the current PBA boot. Rebuild and reflash the PBA
+with corrected `build.conf` values if you need the change to survive another
+PBA reboot.
+
+---
+
 ## Boot Discovery
 
 The PBA automatically discovers your installed operating system's kernel and initrd files to boot after unlock. This works on all systems, including:
@@ -379,6 +410,7 @@ The Go backend (`sedunlocksrv/`) is organized into focused modules:
 | `types.go` | All shared data structures (`StatusResponse`, `DriveStatus`, `BootResult`, `BootKernelInfo`, `PasswordPolicy`, etc.) — doubles as API contract documentation |
 | `drive.go` | OPAL drive detection (`scanDrives`), diagnostics (`collectDriveDiagnostics`), partition enumeration, block device rescanning |
 | `network.go` | Network interface discovery — addresses, carrier state, interface names |
+| `network_config.go` | Console TUI network configuration editor and runtime validation |
 | `ssh.go` | Dropbear SSH service detection and startup on port 2222 |
 | `util.go` | HTTP helpers (`jsonResponse`, `requireMethod`), `sedutil-cli` wrappers (`runSedutil`, `queryDrive`, `queryField`), file lookup, expert command execution |
 | `cmd/hash-password/main.go` | Standalone CLI tool — hashes a password with bcrypt for `build.conf` or `--expert-password` use |
@@ -390,7 +422,8 @@ Supporting files:
 | `build.sh` | Automated PBA image builder — downloads TinyCore, compiles Go binary, assembles BIOS+UEFI bootable disk image |
 | `ssh/ssh_sed_unlock.sh` | SSH forced-command menu — unlock drives, view diagnostics, choose a kernel to boot, reboot/poweroff from an SSH session |
 | `index.html` | Single-page web UI — Unlock, Password Change, Diagnostics, and Expert tabs with token-gated operations |
-| `tc/tc-config` | TinyCore boot init — network setup (DHCP, static, LACP bond), kernel module loading, service startup |
+| `tc/tc-config` | TinyCore boot init — early system setup and service startup |
+| `tc/sedunlocksrv-net` | TinyCore network helper for DHCP, static IPv4, and LACP bond setup at boot or from the console TUI |
 | `make-cert.sh` | Generates self-signed TLS certificate and key for the HTTPS server |
 
 ## 🌐 API Endpoints

@@ -150,6 +150,89 @@ require_numeric() {
     esac
 }
 
+# network_config_warning MESSAGE — prints a clear warning for invalid network
+# input. Callers decide whether to return or abort.
+network_config_warning() {
+    echo "WARNING: invalid network configuration: $1" >&2
+    echo "Fix the value in build.conf or override it with a CLI flag, then rerun build.sh." >&2
+}
+
+# network_config_error MESSAGE — prints a clear warning and aborts the build.
+network_config_error() {
+    network_config_warning "$1"
+    exit 1
+}
+
+# ipv4_to_int NAME VALUE — validates a dotted IPv4 address and prints it as an
+# unsigned integer. The NAME is used only for readable error messages.
+ipv4_to_int() {
+    local name="$1" value="$2" o1 o2 o3 o4 extra oct n
+    IFS=. read -r o1 o2 o3 o4 extra <<< "${value}"
+    if [ -n "${extra}" ] || [ -z "${o1}" ] || [ -z "${o2}" ] || [ -z "${o3}" ] || [ -z "${o4}" ]; then
+        network_config_warning "${name} must be a dotted IPv4 address (current: ${value})"
+        return 1
+    fi
+    for oct in "${o1}" "${o2}" "${o3}" "${o4}"; do
+        case "${oct}" in
+            ''|*[!0-9]*)
+                network_config_warning "${name} contains a non-numeric octet (current: ${value})"
+                return 1
+                ;;
+        esac
+        n=$((10#${oct}))
+        if [ "${n}" -lt 0 ] || [ "${n}" -gt 255 ]; then
+            network_config_warning "${name} octets must be between 0 and 255 (current: ${value})"
+            return 1
+        fi
+    done
+    printf '%u\n' $(( (10#${o1} << 24) + (10#${o2} << 16) + (10#${o3} << 8) + 10#${o4} ))
+}
+
+validate_static_ipv4_settings() {
+    local ip_int mask_int host_mask network broadcast gateway_int dns_item
+
+    [ -n "${IP_ADDR}" ] || network_config_error "static networking requires IP_ADDR"
+    [ -n "${NETMASK}" ] || network_config_error "static networking requires NETMASK"
+
+    ip_int="$(ipv4_to_int "IP_ADDR" "${IP_ADDR}")" || exit 1
+    mask_int="$(ipv4_to_int "NETMASK" "${NETMASK}")" || exit 1
+
+    if [ "${ip_int}" -eq 0 ] || [ "${ip_int}" -eq 4294967295 ]; then
+        network_config_error "IP_ADDR cannot be 0.0.0.0 or 255.255.255.255"
+    fi
+
+    # Valid dotted netmasks are contiguous one-bits followed by zero-bits.
+    host_mask=$(( 0xFFFFFFFF ^ mask_int ))
+    if [ "${mask_int}" -eq 0 ] || [ $(( host_mask & (host_mask + 1) )) -ne 0 ]; then
+        network_config_error "NETMASK must be a contiguous IPv4 netmask (current: ${NETMASK})"
+    fi
+
+    network=$(( ip_int & mask_int ))
+    broadcast=$(( network | host_mask ))
+    if [ "${host_mask}" -gt 1 ]; then
+        if [ "${ip_int}" -eq "${network}" ] || [ "${ip_int}" -eq "${broadcast}" ]; then
+            network_config_error "IP_ADDR is the network or broadcast address for NETMASK=${NETMASK}"
+        fi
+    fi
+
+    if [ -n "${GATEWAY}" ]; then
+        gateway_int="$(ipv4_to_int "GATEWAY" "${GATEWAY}")" || exit 1
+        if [ "${gateway_int}" -eq "${ip_int}" ]; then
+            network_config_error "GATEWAY must not be the same address as IP_ADDR"
+        fi
+        if [ $(( gateway_int & mask_int )) -ne "${network}" ]; then
+            network_config_error "GATEWAY must be in the same subnet as IP_ADDR/NETMASK"
+        fi
+        if [ "${host_mask}" -gt 1 ] && { [ "${gateway_int}" -eq "${network}" ] || [ "${gateway_int}" -eq "${broadcast}" ]; }; then
+            network_config_error "GATEWAY cannot be the network or broadcast address"
+        fi
+    fi
+
+    for dns_item in ${DNS}; do
+        ipv4_to_int "DNS" "${dns_item}" >/dev/null || exit 1
+    done
+}
+
 # -----------------------------------------------------------------------------
 # sedutil upstream (env SEDUTIL_FORK=ChubbyAnt or chubbyant)
 # -----------------------------------------------------------------------------
@@ -294,8 +377,8 @@ validate_network_settings() {
         *) echo "NET_DHCP must be true or false (current: ${NET_DHCP})" >&2; exit 1 ;;
     esac
 
-    if [ "${NET_DHCP}" = "false" ] && [ -z "${IP_ADDR}" -o -z "${NETMASK}" ]; then
-        echo "Static networking requires IP_ADDR and NETMASK." >&2; exit 1
+    if [ "${NET_DHCP}" = "false" ]; then
+        validate_static_ipv4_settings
     fi
 
     # Four identical numeric-validation blocks replaced by require_numeric. (Size reduction)
@@ -813,6 +896,8 @@ populate_initrd_application_tree() {
     cp -r ./sedunlocksrv/static/. "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/"
     cp ./sedunlocksrv/index.html "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv/static/index.html"
     cp ./tc/tc-config "${BUILD_TMPDIR}/core/etc/init.d/tc-config"
+    cp ./tc/sedunlocksrv-net "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv-net"
+    chmod +x "${BUILD_TMPDIR}/core/usr/local/sbin/sedunlocksrv-net"
     mkdir -p "${BUILD_TMPDIR}/core/sbin"
 
     # IMPORTANT: /sbin/modprobe in TinyCore is usually a symlink to BusyBox.

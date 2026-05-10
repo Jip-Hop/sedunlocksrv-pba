@@ -26,6 +26,8 @@
 # EXPERT_PASSWORD=""            # optional; if empty, build.sh will prompt you to enter a password (no complexity requirements)
 
 # --- PBA runtime (wired into tc-config where supported) ---
+# build.sh validates these settings after loading build.conf and CLI overrides.
+# Static IPv4 builds fail early if IP_ADDR, NETMASK, GATEWAY, or DNS is invalid.
 # KEYMAP=""                     # e.g. fr-latin9 → adds kmaps.tcz and /home/tc/keymap
 # EXCLUDE_NETDEV=""             # interfaces to skip entirely, e.g. "eth0 eno2"
 # NET_MODE="single"             # single | bond

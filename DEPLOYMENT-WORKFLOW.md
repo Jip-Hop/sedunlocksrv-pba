@@ -65,6 +65,11 @@ PASSWORD_COMPLEXITY_ON="true"               # Enforce password rules
 MIN_PASSWORD_LENGTH="12"
 ```
 
+`build.sh` validates network settings after loading `build.conf` and applying
+CLI overrides. Static IPv4 builds fail before image creation if the address,
+netmask, gateway, or DNS values are malformed; this prevents flashing a PBA
+that can never bring up the expected interface.
+
 See [build.sh section in README.md](../README.md) for all available options.
 
 `TLS_SERVER_NAME` matters only for the SSH UI. The SSH helper always connects to `127.0.0.1:443`, but it uses `curl --resolve` so TLS verification is performed against the configured certificate name rather than the literal loopback address. With the generated self-signed cert, this defaults to `localhost`; with a custom cert/key, you must set a matching SAN explicitly. If the custom cert chains to an internal/private CA that Tiny Core does not already trust, also set `TLS_CA_CERT_PATH` so the SSH helper can verify that chain without falling back to `curl -k`.
@@ -253,6 +258,13 @@ Power the machine back on. It should boot directly into the sedunlocksrv PBA. Fr
 2. Enter the initial password (`test`) to unlock the drive
 3. After unlock, use the **Password Change** tab to set your real password
 4. Press **Boot** (kexec warm handoff) or **Reboot** to continue into the OS
+
+If the web interface is unreachable because the network settings were wrong,
+use the physical console TUI. Press any key, choose `Network`, set single vs
+bond mode and DHCP/static IPv4 values, then apply. This rewrites the runtime
+network keys in `/etc/sedunlocksrv.conf` and runs the PBA network helper for
+the current boot only. Rebuild and reflash with corrected `build.conf` values
+to make the fix persistent across PBA reboots.
 
 ---
 

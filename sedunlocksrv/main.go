@@ -3112,8 +3112,9 @@ func runActiveConsoleMenu(fd int) {
 		printConsoleStatus(buildStatusResponse())
 
 		fmt.Printf(
-			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sD%s] %sDiagnostics%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s  [%sQ%s] %sStandby%s\n",
+			"\n[%sENTER%s] %sUnlock%s  [%sB%s] %sBoot%s  [%sN%s] %sNetwork%s  [%sD%s] %sDiagnostics%s  [%sR%s] %sReboot%s  [%sS%s] %sShutdown%s  [%sQ%s] %sStandby%s\n",
 			colorDim, colorReset, colorPurple, colorReset,
+			colorDim, colorReset, colorBlue, colorReset,
 			colorDim, colorReset, colorBlue, colorReset,
 			colorDim, colorReset, colorBlue, colorReset,
 			colorDim, colorReset, colorOrange, colorReset,
@@ -3160,6 +3161,9 @@ func runActiveConsoleMenu(fd int) {
 
 		case "B":
 			runConsoleBootMenu()
+
+		case "N":
+			runConsoleNetworkMenu()
 
 		case "D":
 			showConsoleDiagnostics()
