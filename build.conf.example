@@ -15,7 +15,7 @@
 # BOOTARGS="libata.allow_tpm=1"
 
 # --- Build behavior ---
-# CLEAN_MODE=false              # true: reset build artifacts (cache/tmp/images/certs/keys/build.conf) before building
+# CLEAN_MODE=false              # true: remove cache/tmp/images/generated certs/app binary, then exit
 # SSHBUILD=false                # true: same as ./build.sh --ssh
 # TLS_CERT_PATH=""              # optional custom TLS cert copied to sedunlocksrv/server.crt
 # TLS_KEY_PATH=""               # optional custom TLS key copied to sedunlocksrv/server.key

@@ -539,7 +539,7 @@ check_host_dependencies() {
         echo "❌ ERROR: Missing required build tools:${missing}"
         echo "On Debian/Ubuntu:"
         echo "  sudo apt update && sudo apt install -y \\"
-        echo "    build-essential coreutils findutils curl xorriso bsdtar cpio xz-utils fdisk \\"
+        echo "    build-essential coreutils findutils curl xorriso libarchive-tools cpio xz-utils fdisk \\"
         echo "    gzip rsync util-linux dosfstools openssl jq openssh-client file unzip \\"
         echo "    grub-common grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin"
         echo "  # Go must be installed from https://go.dev/dl/ (do not use golang-go)"
@@ -591,8 +591,8 @@ build_sedunlocksrv_go() {
         else
             build_id="${BUILD_DATE}-${git_rev}"
         fi
-        if [ "${maj}" -lt 1 ] || [ "${min}" -lt 21 ]; then
-            echo "❌ Go 1.21+ required (found: ${go_version})"
+        if [ "${maj}" -lt 1 ] || { [ "${maj}" -eq 1 ] && [ "${min}" -lt 22 ]; }; then
+            echo "❌ Go 1.22+ required (found: ${go_version})"
             exit 1
         fi
         [ -f go.mod ] || go mod init sedunlocksrv
@@ -1242,11 +1242,11 @@ main() {
     load_config_file
     require_root
     parse_args "${REMAINING_ARGS[@]}"
+    maybe_clean_workspace
     configure_sedutil_source
     validate_network_settings
     resolve_output_image_name
     apply_extension_flags
-    maybe_clean_workspace
 
     trap cleanup EXIT
 

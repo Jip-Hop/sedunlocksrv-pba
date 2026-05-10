@@ -223,7 +223,6 @@ configure_static_ipv4() {
         echo "[net] Static networking skipped on ${iface}: IP_ADDR or NETMASK is missing"
         return 1
     fi
-    clear_default_route
     ifconfig "${iface}" "${IP_ADDR}" netmask "${NETMASK}" up || return 1
     [ -n "${GATEWAY}" ] && route add default gw "${GATEWAY}" "${iface}" >/dev/null 2>&1
     write_resolv_conf
@@ -232,7 +231,6 @@ configure_static_ipv4() {
 
 configure_dhcp_ipv4() {
     local iface="$1"
-    clear_default_route
     ifconfig "${iface}" up || return 1
     if ! have_command udhcpc; then
         echo "[net] DHCP requested but udhcpc is unavailable"
@@ -268,6 +266,7 @@ configure_individual_ifaces() {
         echo "[net] No eligible interfaces found after exclusions"
         return 1
     fi
+    clear_default_route
     if [ "${NET_DHCP}" = "false" ] && [ "$(count_words "${ifaces}")" -gt 1 ]; then
         set -- ${ifaces}
         ifaces="$1"
@@ -303,6 +302,7 @@ create_bond() {
     [ -d "/sys/class/net/${BOND_NAME}" ] || return 1
 
     release_bond_if_present
+    clear_default_route
     ifconfig "${BOND_NAME}" down >/dev/null 2>&1 || true
     echo "${bond_mode}"             > "/sys/class/net/${BOND_NAME}/bonding/mode"
     echo "${BOND_MIIMON}"           > "/sys/class/net/${BOND_NAME}/bonding/miimon"

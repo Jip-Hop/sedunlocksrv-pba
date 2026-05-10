@@ -6,303 +6,448 @@
 <title>SED Unlock</title>
 <style>
 *,*::before,*::after { box-sizing: border-box; }
+:root {
+    --bg: #0c1117;
+    --panel: #141a21;
+    --panel-soft: #11171f;
+    --line: #27313c;
+    --line-soft: #202934;
+    --text: #e7edf4;
+    --muted: #93a0ad;
+    --faint: #6f7b88;
+    --blue: #58a6ff;
+    --blue-soft: #17324f;
+    --green: #3fb950;
+    --green-bg: #10251a;
+    --red: #f85149;
+    --red-bg: #2a1214;
+    --amber: #d29922;
+    --amber-bg: #241d0f;
+}
 body {
-    background: #0d1117;
-    color: #e6edf3;
+    background: var(--bg);
+    color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     font-size: 14px;
-    line-height: 1.5;
-    max-width: 900px;
+    line-height: 1.45;
+    max-width: 1180px;
     margin: 0 auto;
-    padding: 16px;
+    padding: 24px;
 }
 h2 {
     text-align: center;
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    margin: 8px 0 16px;
-    color: #f0f6fc;
-}
-.box {
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
-    background: #161b22;
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: 0;
+    margin: 4px 0 18px;
+    color: #f7fbff;
 }
 button {
-    background: #238636;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 8px 14px;
+    background: #1f6feb;
     color: #fff;
-    border: 1px solid rgba(240,246,252,0.1);
+    border: 1px solid rgba(240,246,252,0.12);
     border-radius: 6px;
-    padding: 8px 16px;
-    margin-top: 6px;
-    width: 230px;
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
     font-family: inherit;
     cursor: pointer;
-    transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
-button:hover {
-    opacity: 0.9;
-    transform: translateY(-1px);
-}
-button:active {
-    transform: translateY(0);
-}
+button:hover { background: #2f81f7; }
 button:disabled {
-    opacity: 0.4;
-    transform: none;
+    opacity: 0.45;
     cursor: default;
 }
 input, textarea, select {
     width: 100%;
+    min-height: 36px;
     padding: 8px 10px;
-    margin-top: 6px;
-    background: #0d1117;
-    color: #e6edf3;
-    border: 1px solid #30363d;
+    background: #0b1016;
+    color: var(--text);
+    border: 1px solid var(--line);
     border-radius: 6px;
     font-family: inherit;
     font-size: 13px;
-    box-sizing: border-box;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 input:focus, textarea:focus, select:focus {
     outline: none;
-    border-color: #388bfd;
-    box-shadow: 0 0 0 3px rgba(56,139,253,0.3);
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(88,166,255,0.18);
+}
+input[type="checkbox"],
+input[type="radio"] {
+    width: auto;
+    min-height: auto;
 }
 textarea {
-    min-height: 140px;
+    min-height: 168px;
     resize: vertical;
     font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
 }
-input[type="text"],
-input[type="password"] {
-    width: 300px;
-}
-.hidden { display: none; }
-.ok   { color: #3fb950; }
-.bad  { color: #f85149; }
-.warn { color: #d29922; }
-.small { font-size: 12px; color: #8b949e; }
-.hint  { font-size: 12px; color: #8b949e; line-height: 1.5; margin-top: 8px; }
-.hint code {
-    background: #262c36;
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
-    font-size: 11px;
-}
-.danger {
-    border-color: #f8514966;
-    background: #1a0f0f;
-}
-.tab {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 14px;
-    border-bottom: 1px solid #30363d;
-    padding-bottom: 0;
-}
-.tab button {
-    flex: 1 1 0;
-    width: auto;
-    margin: 0;
-    background: transparent;
-    color: #8b949e;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    padding: 10px 8px;
-    font-size: 13px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    transition: color 0.15s ease, border-color 0.15s ease;
-}
-.tab button:hover {
-    color: #e6edf3;
-    opacity: 1;
-    transform: none;
-}
-.active {
-    color: #f0f6fc !important;
-    border-bottom-color: #388bfd !important;
-}
-.checkbox-row {
-    display: flex;
-    align-items: center;
-    margin-top: 6px;
-    font-size: 12px;
-    color: #8b949e;
-}
-.checkbox-row input {
-    width: auto;
-    margin-right: 6px;
-}
-.row { display: flex; gap: 8px; flex-wrap: wrap; }
-.primary-btn   { background: #238636; border-color: rgba(240,246,252,0.1); }
-.primary-btn:hover { background: #2ea043; }
-.secondary-btn { background: #21262d; border-color: #30363d; color: #c9d1d9; }
-.secondary-btn:hover { background: #30363d; }
-.warm-btn      { background: #c77623; border-color: rgba(240,246,252,0.1); }
-.warm-btn:hover { background: #d68a3a; }
-.danger-btn    { background: #9e2a2b; border-color: rgba(240,246,252,0.1); }
-.danger-btn:hover { background: #b33; }
+.hidden { display: none !important; }
+.ok { color: var(--green); }
+.bad { color: var(--red); }
+.warn { color: var(--amber); }
+.small { font-size: 12px; color: var(--muted); }
+.muted { color: var(--muted); }
 .mono {
     white-space: pre-wrap;
     word-break: break-word;
     font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
 }
-.log-box {
-    max-height: 200px;
-    overflow-y: auto;
-    background: #010409;
-    border: 1px solid #21262d;
-    border-radius: 6px;
-    padding: 8px 10px;
+.tab {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 16px;
+}
+.tab button {
+    min-height: 40px;
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    font-size: 13px;
+    font-weight: 650;
+}
+.tab button:hover {
+    background: transparent;
+    color: var(--text);
+}
+.active {
+    color: #fff !important;
+    border-bottom-color: var(--blue) !important;
+}
+.box,
+.panel {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+}
+.box {
+    padding: 14px 16px;
+    margin-bottom: 14px;
+}
+.summary-panel {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    align-items: center;
+}
+.status-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.stat-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--muted);
+}
+.stat-val {
+    color: var(--text);
+    font-weight: 700;
+}
+.build-info {
+    white-space: nowrap;
+}
+.build-label {
+    color: var(--muted);
+    margin-right: 6px;
+}
+.build-tag {
+    display: inline-block;
+    color: var(--muted);
+    background: #101823;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 2px 7px;
+    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+a.build-link {
+    color: var(--blue);
+    text-decoration: none;
+}
+a.build-link:hover { border-color: var(--blue); }
+.panel {
+    padding: 16px;
+    margin-bottom: 14px;
+}
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.section-label {
+    color: #f7fbff;
+    font-size: 14px;
+    font-weight: 700;
+}
+.section-note {
+    color: var(--muted);
+    font-size: 12px;
+}
+.layout-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+}
+.field-stack {
+    display: grid;
+    gap: 10px;
+}
+.field-label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+.checkbox-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 12px;
+}
+.checkbox-row input {
+    width: auto;
+    min-height: auto;
+    margin: 0;
+}
+.row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.row input[type="text"],
+.row input[type="password"] {
+    flex: 1 1 180px;
+}
+.button-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+.primary-btn { background: #1f6feb; }
+.primary-btn:hover { background: #2f81f7; }
+.secondary-btn {
+    background: #1a222c;
+    border-color: var(--line);
+    color: #d4dde7;
+}
+.secondary-btn:hover { background: #222c38; }
+.warm-btn {
+    background: #8a5a16;
+    border-color: rgba(210,153,34,0.35);
+}
+.warm-btn:hover { background: #9c6619; }
+.danger-btn {
+    background: #8e2528;
+    border-color: rgba(248,81,73,0.34);
+}
+.danger-btn:hover { background: #a22d31; }
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+}
+.data-table th,
+.data-table td {
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left;
+    vertical-align: middle;
+}
+.data-table th {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.data-table td {
+    color: #d8e1ea;
+    font-size: 13px;
+}
+.data-table tr:last-child td { border-bottom: none; }
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+.status-pill,
+.req-item {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.pill-ok,
+.req-pass {
+    color: #8ff0a4;
+    background: var(--green-bg);
+    border-color: rgba(63,185,80,0.45);
+}
+.pill-bad,
+.req-fail {
+    color: #ffb4ad;
+    background: var(--red-bg);
+    border-color: rgba(248,81,73,0.45);
+}
+.pill-warn {
+    color: #f0cf72;
+    background: var(--amber-bg);
+    border-color: rgba(210,153,34,0.45);
+}
+.pill-muted {
+    color: var(--muted);
+    background: #101823;
+}
+.output-line {
+    min-height: 18px;
+    color: var(--muted);
+    font-size: 12px;
     margin-top: 8px;
+}
+.log-box {
+    max-height: 220px;
+    overflow-y: auto;
+    background: #080d13;
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
+    padding: 9px 10px;
+    margin-top: 10px;
     font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
     font-size: 11px;
     line-height: 1.45;
-    color: #7ee787;
+    color: #9be9a8;
     display: none;
 }
 #flashLog {
     white-space: pre-wrap;
     word-break: break-word;
 }
+.kernel-option {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px;
+    align-items: start;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--line-soft);
+}
+.kernel-option:last-child { border-bottom: none; }
+.kernel-main { color: var(--text); font-weight: 600; }
+.kernel-detail { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.pw-field-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+}
+.pw-reqs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.pw-match {
+    min-width: 94px;
+    font-size: 12px;
+    font-weight: 700;
+}
+.advisory {
+    border: 1px solid rgba(210,153,34,0.35);
+    background: rgba(210,153,34,0.07);
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+.danger {
+    border-color: rgba(248,81,73,0.35);
+    background: rgba(248,81,73,0.06);
+}
+.danger-muted {
+    border-color: rgba(248,81,73,0.2);
+    background: #151b22;
+}
+.expert-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+.action-panel {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--panel-soft);
+}
+.action-panel.danger-muted { border-color: rgba(248,81,73,0.25); }
 .doc-image {
     width: 100%;
     max-width: 720px;
     display: block;
     margin: 12px auto 0;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
 }
-.section-label {
-    font-size: 13px;
-    font-weight: 600;
-    color: #f0f6fc;
-    margin-bottom: 4px;
-}
-.kernel-separator {
-    border: none;
-    border-top: 1px solid #30363d;
-    margin: 6px 0;
-}
-.pw-field-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+.raw-toggle {
+    border-top: 1px solid var(--line-soft);
+    padding-top: 8px;
     margin-top: 6px;
 }
-.pw-field-row input {
-    flex-shrink: 0;
-    margin-top: 0;
-}
-.pw-reqs {
-    display: flex;
-    gap: 6px;
-    flex-shrink: 0;
-}
-.req-item {
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-}
-.req-fail { color: #f85149; }
-.req-pass { color: #3fb950; }
-.pw-match {
-    font-size: 12px;
-    font-weight: 500;
-    white-space: nowrap;
-    min-width: 110px;
-    flex-shrink: 0;
-}
-.status-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 6px;
-    margin-bottom: 8px;
-}
-.drive-badge {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    background: #21262d;
-    border: 1px solid #30363d;
-}
-.drive-badge .drive-icon {
-    font-size: 14px;
-    line-height: 1;
-}
-.drive-badge.locked   { border-color: #f8514966; background: #1a0f0f; }
-.drive-badge.unlocked { border-color: #3fb95066; background: #0f1a0f; }
-.drive-badge.nonopal  { border-color: #d2992244; background: #1a170f; }
-.status-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    font-size: 12px;
-    color: #8b949e;
-    margin-top: 8px;
-}
-.stat-item {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-.stat-val {
-    font-weight: 600;
-    color: #e6edf3;
-}
-.build-info {
-    margin-top: 10px;
-}
-.build-label {
-    margin-right: 6px;
-    color: #8b949e;
-}
-.build-tag {
-    display: inline-block;
-    font-size: 11px;
-    color: #8b949e;
-    background: #21262d;
-    border: 1px solid #30363d;
-    border-radius: 4px;
-    padding: 1px 7px;
-    font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
-}
-a.build-link {
-    text-decoration: none;
-    color: #58a6ff;
+.raw-toggle summary {
     cursor: pointer;
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 600;
 }
-a.build-link:hover {
-    color: #79c0ff;
-    border-color: #58a6ff;
+.raw-toggle pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #aab7c5;
+    background: #080d13;
+    border: 1px solid var(--line-soft);
+    border-radius: 6px;
+    padding: 9px 10px;
+    max-height: 260px;
+    overflow: auto;
 }
-/* Scrollbar styling for log areas */
-.log-box::-webkit-scrollbar { width: 6px; }
-.log-box::-webkit-scrollbar-track { background: transparent; }
-.log-box::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
-.log-box::-webkit-scrollbar-thumb:hover { background: #484f58; }
-@media (max-width: 700px) {
-    .tab button { font-size: 11px; padding: 8px 4px; }
-    button { width: 100% !important; }
-    input[type="text"],
-    input[type="password"] { width: 100%; }
+.log-box::-webkit-scrollbar,
+.table-wrap::-webkit-scrollbar,
+.raw-toggle pre::-webkit-scrollbar { width: 6px; height: 6px; }
+.log-box::-webkit-scrollbar-track,
+.table-wrap::-webkit-scrollbar-track,
+.raw-toggle pre::-webkit-scrollbar-track { background: transparent; }
+.log-box::-webkit-scrollbar-thumb,
+.table-wrap::-webkit-scrollbar-thumb,
+.raw-toggle pre::-webkit-scrollbar-thumb { background: #303b48; border-radius: 3px; }
+@media (max-width: 820px) {
+    body { padding: 16px; }
+    .tab { grid-template-columns: repeat(2, 1fr); }
+    .summary-panel,
+    .layout-grid,
+    .expert-grid { grid-template-columns: 1fr; display: grid; }
+    .summary-panel { gap: 10px; }
+    .build-info { white-space: normal; }
+    .pw-field-row { grid-template-columns: 1fr; }
+    .button-row button,
+    .row button { width: 100%; }
 }
 </style>
 </head>
@@ -317,139 +462,244 @@ a.build-link:hover {
     <button id="tabExpert" onclick="showTab('expert')">Expert</button>
 </div>
 
-<div class="box">
-    <div id="status"></div>
-    <div id="statusSummary" class="small" style="margin-top:6px"></div>
+<div class="box summary-panel">
+    <div id="statusSummary" class="status-bar"></div>
     <div id="buildInfo" class="small build-info"></div>
 </div>
 
 <div id="unlockTab">
-    <div class="box">
-        <div id="unlockPasswordEntry">
-            <input id="pw" type="password" placeholder="Disk Password">
-            <label class="checkbox-row">
-                <input type="checkbox" id="showUnlock"> Show Password
-            </label>
-            <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
-        </div>
-        <div id="unlockResult" class="small" style="margin-top:8px"></div>
-        <div id="bootResult" class="small"></div>
-        <div id="bootDebug" class="log-box"></div>
-        <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
-        <div class="hint">
-            After a successful unlock, the system will search for bootable kernels and present them for selection.
-            Use <b>Reboot</b> when hardware or firmware needs a full restart (for example,
-            NIC firmware/switch renegotiation or when the target OS only behaves correctly after a cold reboot).
-        </div>
+    <div class="layout-grid">
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="section-label">Unlock Drives</div>
+                    <div class="section-note">Startup-locked OPAL devices</div>
+                </div>
+            </div>
+            <div id="unlockPasswordEntry" class="field-stack">
+                <label class="field-label">Disk Password
+                    <input id="pw" type="password" placeholder="Enter disk password">
+                </label>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="showUnlock"> Show password
+                </label>
+                <div class="button-row">
+                    <button class="primary-btn" id="unlockBtn" onclick="unlock()">Unlock</button>
+                </div>
+            </div>
+            <div id="unlockResult" class="output-line"></div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="section-label">Boot Control</div>
+                    <div class="section-note">Kernel discovery and system power</div>
+                </div>
+            </div>
+            <div class="field-stack">
+                <div class="row">
+                    <input id="bootPairingCode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="Boot Code">
+                    <button class="secondary-btn" id="bootPairingBtn" onclick="redeemBootCode()">Enable Web Boot</button>
+                </div>
+                <div id="bootPairingResult" class="output-line"></div>
+                <div id="bootResult" class="output-line"></div>
+                <div id="bootTransition" class="small hidden">OS handoff in progress. The web UI may stop responding while kexec takes over.</div>
+                <div class="button-row">
+                    <button class="warm-btn" id="rebootBtn" onclick="reboot()">Reboot</button>
+                    <button class="secondary-btn" id="shutdownBtn" onclick="shutdown()">Shutdown</button>
+                </div>
+                <div id="systemActionResult" class="output-line"></div>
+            </div>
+        </section>
     </div>
+
     <div id="kernelSelectionDialog" class="hidden">
-        <div class="box">
-            <div class="section-label">Select Kernel to Boot</div>
-            <div class="hint" style="margin-top:2px">Choose a kernel and confirm to boot the OS:</div>
-            <label class="checkbox-row" style="margin-top:6px">
-                <input type="checkbox" id="hideRecovery" checked onchange="renderKernelList()"> Hide Recovery Kernels
-            </label>
-            <div id="kernelOptions" class="small" style="margin-top:8px"></div>
-            <div class="row" style="margin-top:10px">
-                <button class="primary-btn" onclick="confirmKernelAndBoot()">Boot</button>
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="section-label">Select Kernel</div>
+                    <div class="section-note">Normal entries are shown by default</div>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="hideRecovery" checked onchange="renderKernelList()"> Hide recovery
+                </label>
+            </div>
+            <div id="kernelOptions"></div>
+            <div class="button-row">
+                <button class="primary-btn" onclick="confirmKernelAndBoot()">Boot Selected Kernel</button>
                 <button class="secondary-btn" onclick="cancelKernelSelection()">Cancel</button>
             </div>
+        </section>
+    </div>
+
+    <section class="panel">
+        <div class="panel-header">
+            <div class="section-label">Drive Status</div>
         </div>
-    </div>
-    <div class="row">
-        <button class="warm-btn" id="rebootBtn" onclick="reboot()">Reboot</button>
-        <button class="secondary-btn" id="shutdownBtn" onclick="shutdown()">Shutdown</button>
-    </div>
-    <div id="systemActionResult" class="small" style="margin-top:6px"></div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead><tr><th>Device</th><th>Type</th><th>State</th><th>Boot Eligible</th></tr></thead>
+                <tbody id="driveTable"><tr><td colspan="4" class="muted">No status yet</td></tr></tbody>
+            </table>
+        </div>
+        <div id="bootDebug" class="log-box"></div>
+    </section>
 </div>
 
 <div id="changeTab" class="hidden">
-    <div class="box">
-        <div class="section-label">Target drives</div>
-        <div id="changeTargets" class="small"></div>
-        <input id="cur" type="password" placeholder="Current Password">
-        <div class="pw-field-row">
-            <input id="new" type="password" placeholder="New Password">
-            <div class="pw-reqs" id="pwReqs"></div>
-        </div>
-        <div class="pw-field-row">
-            <input id="conf" type="password" placeholder="Confirm Password">
-            <div id="pwMatch" class="pw-match"></div>
-        </div>
-        <label class="checkbox-row">
-            <input type="checkbox" id="showChange"> Show Passwords
-        </label>
-        <button class="primary-btn" id="changeBtn" onclick="changePassword()">Update Password</button>
-        <div id="changeResult" class="small" style="margin-top:6px"></div>
-        <div class="hint">This updates Admin1 and SID on the selected drive(s). If SID password changes fail, check firmware or TPM settings and disable Block SID for the next boot. You must unlock at least one drive first in this boot session before changing passwords.</div>
-        <div class="hint">Example BIOS path: TPM or security settings with <b>Disable Block SID</b> set to <b>Disabled</b>, then accept the one-time change on the next boot.</div>
-        <img class="doc-image" src="/block-sid-bios.png" alt="Example BIOS setting showing Disable Block SID set to Disabled">
+    <div class="layout-grid">
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="section-label">Target Drives</div>
+                    <div class="section-note">Unlocked OPAL devices</div>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead><tr><th></th><th>Device</th><th>State</th><th>Boot Drive</th></tr></thead>
+                    <tbody id="changeTargets"><tr><td colspan="4" class="muted">Unlock an OPAL drive first</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-header">
+                <div>
+                    <div class="section-label">Update Password</div>
+                    <div class="section-note">Admin1 and SID password change</div>
+                </div>
+            </div>
+            <div class="field-stack">
+                <label class="field-label">Current Password
+                    <input id="cur" type="password" placeholder="Current password">
+                </label>
+                <div class="pw-field-row">
+                    <label class="field-label">New Password
+                        <input id="new" type="password" placeholder="New password">
+                    </label>
+                    <div class="pw-reqs" id="pwReqs"></div>
+                </div>
+                <div class="pw-field-row">
+                    <label class="field-label">Confirm Password
+                        <input id="conf" type="password" placeholder="Confirm password">
+                    </label>
+                    <div id="pwMatch" class="pw-match"></div>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="showChange"> Show passwords
+                </label>
+                <div class="button-row">
+                    <button class="primary-btn" id="changeBtn" onclick="changePassword()">Update Password</button>
+                </div>
+                <div id="changeResult" class="output-line"></div>
+            </div>
+        </section>
     </div>
+
+    <section class="panel advisory">
+        <div class="section-label">Firmware Notes</div>
+        <div class="section-note">SID password changes can require Block SID to be disabled in firmware settings before the next boot.</div>
+        <img class="doc-image" src="/block-sid-bios.png" alt="Example BIOS setting showing Disable Block SID set to Disabled">
+    </section>
 </div>
 
 <div id="diagTab" class="hidden">
-    <div class="box">
-        <div class="section-label">Network Interfaces</div>
-        <div class="hint" style="margin-top:2px">Detected by Tiny Core. Use these names with <code>NET_IFACES</code> and <code>EXCLUDE_NETDEV</code>.</div>
-        <div id="interfaces" class="small" style="margin-top:6px"></div>
-    </div>
-    <div class="box">
-        <div class="row">
-            <button class="secondary-btn" onclick="loadDiagnostics()">Refresh Diagnostics</button>
+    <section class="panel">
+        <div class="panel-header">
+            <div>
+                <div class="section-label">Network Interfaces</div>
+                <div class="section-note">Runtime interface state</div>
+            </div>
         </div>
-        <div class="hint">Diagnostics are pulled from <code>sedutil-cli --query</code> per drive.</div>
-        <div id="diagSummary" class="small" style="margin-top:6px"></div>
-        <div id="diagContent" class="mono small" style="margin-top:6px"></div>
-    </div>
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead><tr><th>Name</th><th>State</th><th>Link</th><th>Address</th><th>MAC</th><th>Notes</th></tr></thead>
+                <tbody id="interfaces"><tr><td colspan="6" class="muted">No interfaces detected</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <div>
+                <div class="section-label">Drive Diagnostics</div>
+                <div id="diagSummary" class="section-note">Not loaded</div>
+            </div>
+            <button class="secondary-btn" onclick="loadDiagnostics()">Refresh</button>
+        </div>
+        <div id="diagContent"></div>
+    </section>
 </div>
 
 <div id="expertTab" class="hidden">
-    <div class="box danger">
-        <div class="warn"><b>Expert Mode</b> &mdash; these operations can permanently destroy data or ownership metadata.</div>
-        <div class="hint">Use this only when standard unlock paths cannot recover the drive.</div>
-        <div id="expertStatus" class="small" style="margin-top:8px">Expert actions are locked.</div>
-        <div id="expertAuthEntry">
-            <input id="expertPw" type="password" placeholder="Expert Password">
-            <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
+    <section class="panel danger">
+        <div class="panel-header">
+            <div>
+                <div class="section-label">Expert Mode</div>
+                <div class="section-note">Destructive drive ownership and PBA image operations</div>
+            </div>
+            <span id="expertStatus" class="status-pill pill-warn">Expert actions are locked</span>
         </div>
-    </div>
+        <div id="expertAuthEntry" class="field-stack">
+            <label class="field-label">Expert Password
+                <input id="expertPw" type="password" placeholder="Expert password">
+            </label>
+            <div class="button-row">
+                <button class="danger-btn" onclick="expertLogin()">Unlock Expert Actions</button>
+            </div>
+        </div>
+    </section>
 
     <div id="expertActions" class="hidden">
-        <div class="box danger">
-            <div><b>Revert TPer</b> (destructive)</div>
-            <div class="hint">Attempts a TPer revert using the current drive password. This can invalidate existing unlock configuration.</div>
-            <input id="expDeviceRevert" type="text" placeholder="/dev/sda">
-            <input id="expRevertPw" type="password" placeholder="Current Drive Password">
-            <input id="expRevertConfirm" type="text" placeholder='Type REVERT to confirm'>
-            <button class="danger-btn" onclick="expertRevertTper()">Run Revert TPer</button>
+        <div class="expert-grid">
+            <section class="action-panel danger-muted field-stack">
+                <div>
+                    <div class="section-label">Revert TPer</div>
+                    <div class="section-note">Factory reset using the current drive password</div>
+                </div>
+                <input id="expDeviceRevert" type="text" placeholder="/dev/sda">
+                <input id="expRevertPw" type="password" placeholder="Current drive password">
+                <input id="expRevertConfirm" type="text" placeholder="Type REVERT to confirm">
+                <button class="danger-btn" onclick="expertRevertTper()">Run Revert TPer</button>
+            </section>
+
+            <section class="action-panel danger-muted field-stack">
+                <div>
+                    <div class="section-label">PSID Revert</div>
+                    <div class="section-note">Factory reset by PSID; encrypted data is lost</div>
+                </div>
+                <input id="expDevicePsid" type="text" placeholder="/dev/sda">
+                <input id="expPsid" type="text" placeholder="PSID from drive label">
+                <input id="expPsidConfirm" type="text" placeholder="Type ERASE to confirm">
+                <button class="danger-btn" onclick="expertPsidRevert()">Run PSID Revert</button>
+            </section>
+
+            <section class="action-panel danger-muted field-stack">
+                <div>
+                    <div class="section-label">Re-flash PBA Image</div>
+                    <div class="section-note">Upload and write a replacement PBA image</div>
+                </div>
+                <select id="expDeviceFlash">
+                    <option value="">No OPAL2 drives detected</option>
+                </select>
+                <input id="expFlashPw" type="password" placeholder="Current drive password">
+                <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream" onchange="checkRAMForFile()">
+                <div id="ramCheckStatus" class="output-line" style="display:none"></div>
+                <input id="expFlashConfirm" type="text" placeholder="Type FLASH to confirm">
+                <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
+                <div id="flashStatus" class="output-line" style="display:none"></div>
+                <div id="flashLog" class="log-box"></div>
+            </section>
         </div>
-        <div class="box danger">
-            <div><b>PSID Revert</b> (full erase)</div>
-            <div class="hint">Last-resort factory reset by PSID. This erases access to existing encrypted data.</div>
-            <input id="expDevicePsid" type="text" placeholder="/dev/sda">
-            <input id="expPsid" type="text" placeholder="PSID from drive label">
-            <input id="expPsidConfirm" type="text" placeholder='Type ERASE to confirm'>
-            <button class="danger-btn" onclick="expertPsidRevert()">Run PSID Revert</button>
-        </div>
-        <div class="box danger">
-            <div><b>Re-flash PBA Image</b> (destructive if wrong target)</div>
-            <div class="hint">Uploads a new PBA image and runs sedutil <code>--loadpbaimage</code> on the selected drive.</div>
-            <select id="expDeviceFlash">
-                <option value="">No OPAL2 drives detected</option>
-            </select>
-            <input id="expFlashPw" type="password" placeholder="Current Drive Password">
-            <input id="expPbaImage" type="file" accept=".img,.bin,application/octet-stream" onchange="checkRAMForFile()">
-            <div id="ramCheckStatus" style="margin-top: 8px; padding: 8px; border-radius: 4px; display: none;">
+
+        <section class="panel">
+            <div class="panel-header">
+                <div class="section-label">Expert Output</div>
             </div>
-            <input id="expFlashConfirm" type="text" placeholder='Type FLASH to confirm'>
-            <button class="danger-btn" id="uploadBtn" onclick="expertReflashPBA()">Upload And Re-flash PBA</button>
-            <div id="flashStatus" class="small" style="margin-top: 8px; display: none;"></div>
-            <div id="flashLog" class="log-box"></div>
-        </div>
-        <div class="box">
-            <div class="small">Expert output</div>
             <textarea id="expertOutput" readonly></textarea>
-        </div>
+        </section>
     </div>
 </div>
 
@@ -466,10 +716,51 @@ function escapeHTML(s) {
 let policy = {}
 let authToken = sessionStorage.getItem("sedunlocksrvAuthToken") || ""
 let expertToken = sessionStorage.getItem("sedunlocksrvExpertToken") || ""
+let bootToken = sessionStorage.getItem("sedunlocksrvBootToken") || ""
 let bootInFlight = false
 let systemActionInFlight = false
 let bootStatusPoller = null
 const maxPBAUploadBytes = 128 * 1024 * 1024
+
+function statusPill(text, kind) {
+    return `<span class="status-pill pill-${kind || "muted"}">${escapeHTML(text)}</span>`
+}
+
+function emptyRow(cols, text) {
+    return `<tr><td colspan="${cols}" class="muted">${escapeHTML(text)}</td></tr>`
+}
+
+function driveStatePill(d) {
+    if (!d.opal) return statusPill("Non-OPAL", "warn")
+    return d.locked ? statusPill("Locked", "bad") : statusPill("Unlocked", "ok")
+}
+
+function renderDriveTable(drives, bootDrives) {
+    let bootSet = new Set(bootDrives || [])
+    if (!drives.length) return emptyRow(4, "No drives detected")
+    return drives.map(d => {
+        let type = d.opal ? "OPAL" : "Non-OPAL"
+        let eligible = bootSet.has(d.device) ? statusPill("Yes", "ok") : statusPill("No", "muted")
+        return `<tr><td class="mono">${escapeHTML(d.device)}</td><td>${escapeHTML(type)}</td><td>${driveStatePill(d)}</td><td>${eligible}</td></tr>`
+    }).join("")
+}
+
+function renderInterfaceRows(interfaces) {
+    if (!interfaces.length) return emptyRow(6, "No interfaces detected")
+    return interfaces.map(iface => {
+        let addresses = iface.addresses && iface.addresses.length ? iface.addresses.map(escapeHTML).join("<br>") : "<span class=\"muted\">none</span>"
+        let link = iface.carrier ? statusPill("Link", "ok") : statusPill("No link", "muted")
+        let notes = iface.loopback ? statusPill("Loopback", "muted") : ""
+        return `<tr>`
+            + `<td class="mono">${escapeHTML(iface.name)}</td>`
+            + `<td>${escapeHTML(iface.state || "unknown")}</td>`
+            + `<td>${link}</td>`
+            + `<td class="mono">${addresses}</td>`
+            + `<td class="mono">${escapeHTML(iface.mac || "")}</td>`
+            + `<td>${notes}</td>`
+            + `</tr>`
+    }).join("")
+}
 
 /** Returns an array of device paths selected on the Change Password tab. */
 function selectedChangeDevices() {
@@ -483,12 +774,18 @@ function renderChangeTargets(status) {
     let previouslySelected = selectedChangeDevices()
     let defaultSelected = previouslySelected.length ? previouslySelected : (status.bootDrives || [])
     if (!eligible.length) {
-        $("changeTargets").innerHTML = "<div class='warn'>Unlock an OPAL drive first to choose password-change targets.</div>"
+        $("changeTargets").innerHTML = emptyRow(4, "Unlock an OPAL drive first")
         return
     }
     $("changeTargets").innerHTML = eligible.map(d => {
         let checked = defaultSelected.includes(d.device) ? "checked" : ""
-        return `<label class="checkbox-row"><input type="checkbox" name="changeDevice" value="${escapeHTML(d.device)}" ${checked}> ${escapeHTML(d.device)}</label>`
+        let bootDrive = (status.bootDrives || []).includes(d.device) ? statusPill("Yes", "ok") : statusPill("No", "muted")
+        return `<tr>`
+            + `<td><input type="checkbox" name="changeDevice" value="${escapeHTML(d.device)}" ${checked}></td>`
+            + `<td class="mono">${escapeHTML(d.device)}</td>`
+            + `<td>${statusPill("Unlocked", "ok")}</td>`
+            + `<td>${bootDrive}</td>`
+            + `</tr>`
     }).join("")
 }
 
@@ -613,6 +910,14 @@ function expertHeaders() {
     return expertToken ? {"X-Expert-Token": expertToken} : {}
 }
 
+/** Returns headers for boot operations: full session when available, otherwise boot-only token. */
+function bootControlHeaders() {
+    let headers = {}
+    if (authToken) headers["X-Auth-Token"] = authToken
+    if (bootToken) headers["X-Boot-Token"] = bootToken
+    return headers
+}
+
 /** Fetches the password policy from the server and renders requirement indicators. */
 async function loadPolicy() {
     let r = await fetch("/password-policy")
@@ -684,47 +989,28 @@ async function refresh() {
     let r = await fetch("/status")
     let j = await r.json()
 
-    let html = "", ifaceHtml = ""
     let drives = Array.isArray(j.drives) ? j.drives : []
     let interfaces = Array.isArray(j.interfaces) ? j.interfaces : []
-
-    drives.forEach(d => {
-        let isLocked = d.locked
-        let isOpal = d.opal
-        let cls = isOpal ? (isLocked ? "locked" : "unlocked") : "nonopal"
-        let icon = isOpal ? (isLocked ? "&#x1F512;" : "&#x1F513;") : "&#x1F4BE;"
-        let stateText = isOpal ? (isLocked ? "Locked" : "Unlocked") : "Non-OPAL"
-        html += `<div class="drive-badge ${cls}"><span class="drive-icon">${icon}</span>${escapeHTML(d.device)} &mdash; ${stateText}</div>`
-    })
-
-    interfaces.forEach(iface => {
-        let link = iface.carrier ? "LINK" : "NO-LINK"
-        let extra = []
-        if (iface.mac) extra.push(escapeHTML(iface.mac))
-        if (iface.addresses && iface.addresses.length) extra.push(iface.addresses.map(escapeHTML).join(", "))
-        if (iface.loopback) extra.push("loopback")
-        ifaceHtml += `<div>${escapeHTML(iface.name)} - ${escapeHTML(iface.state)} - ${link}${extra.length ? ` - ${extra.join(" - ")}` : ""}</div>`
-    })
 
     let opalDrives = drives.filter(d => d.opal)
     let opalCount = opalDrives.length
     let lockedCount = opalDrives.filter(d => d.locked).length
-    $("status").innerHTML = html ? `<div class="status-grid">${html}</div>` : "<div class='warn'>No drives detected</div>"
     let bootSummary = j.bootReady ? escapeHTML((j.bootDrives || []).join(", ") || "yes") : "none yet"
     let failedUnlockAttempts = j.failedAttempts || 0
     let maxUnlockAttempts = j.maxAttempts || 0
     let remaining = j.attemptsRemaining || 0
-    let remainColor = remaining <= 1 ? "#f85149" : remaining <= 2 ? "#d29922" : "#3fb950"
-    $("statusSummary").innerHTML = `<div class="status-bar">`
-        + `<span class="stat-item">Drives <span class="stat-val">${drives.length}</span></span>`
+    let lockKind = lockedCount ? "bad" : "ok"
+    let remainKind = remaining <= 1 ? "bad" : remaining <= 2 ? "warn" : "ok"
+    $("statusSummary").innerHTML =
+        `<span class="stat-item">Drives <span class="stat-val">${drives.length}</span></span>`
         + `<span class="stat-item">OPAL <span class="stat-val">${opalCount}</span></span>`
-        + `<span class="stat-item">Locked <span class="stat-val" style="color:${lockedCount ? '#f85149' : '#3fb950'}">${lockedCount}</span></span>`
+        + `<span class="stat-item">Locked ${statusPill(String(lockedCount), lockKind)}</span>`
         + `<span class="stat-item">Boot-ready <span class="stat-val">${bootSummary}</span></span>`
-        + `<span class="stat-item">Failed unlock attempts <span class="stat-val">${failedUnlockAttempts}/${maxUnlockAttempts}</span></span>`
-        + `<span class="stat-item">Attempts before shutdown <span class="stat-val" style="color:${remainColor}">${remaining}</span></span>`
-        + `</div>`
+        + `<span class="stat-item">Failed attempts <span class="stat-val">${failedUnlockAttempts}/${maxUnlockAttempts}</span></span>`
+        + `<span class="stat-item">Before shutdown ${statusPill(String(remaining), remainKind)}</span>`
     $("buildInfo").innerHTML = buildVersionHTML(j.build, j.repoURL)
-    $("interfaces").innerHTML = ifaceHtml || "<div>No interfaces detected</div>"
+    $("driveTable").innerHTML = renderDriveTable(drives, j.bootDrives || [])
+    $("interfaces").innerHTML = renderInterfaceRows(interfaces)
     renderChangeTargets(j)
     renderExpertFlashTargets(j)
 }
@@ -745,8 +1031,8 @@ async function postJSON(url, payload, headers) {
     return j
 }
 
-/** POSTs to a URL with the session auth token and no body. */
-async function postAuthenticated(url) {
+/** POSTs to a URL with no body, adding the session token only when present. */
+async function postWithOptionalSession(url) {
     return postJSON(url, {}, authHeaders())
 }
 
@@ -768,6 +1054,7 @@ async function unlock() {
             let parts = []
             if (ok.length) parts.push(`Unlocked: ${ok.join(", ")}`)
             if (bad.length) parts.push(`Failed: ${bad.join(", ")}`)
+            if (j.bootCode) parts.push(`Web boot code: ${j.bootCode} (15 min)`)
             $("unlockResult").innerText = parts.join(" | ")
         } else if (j.token) {
             $("unlockResult").innerText = "Unlock accepted."
@@ -833,28 +1120,61 @@ async function changePassword() {
     }
 }
 
-/** Fetches per-drive diagnostics from /diagnostics and renders the raw query output. */
+function renderDiagnosticsRows(drives) {
+    if (!drives.length) return `<div class="muted">No diagnostics data available.</div>`
+    let rows = drives.map(d => {
+        return `<tr>`
+            + `<td class="mono">${escapeHTML(d.device)}</td>`
+            + `<td>${d.opal ? statusPill("OPAL", "ok") : statusPill("Non-OPAL", "warn")}</td>`
+            + `<td>${d.locked ? statusPill("Locked", "bad") : statusPill("Unlocked", "ok")}</td>`
+            + `<td>${escapeHTML(d.lockingSupported || "unknown")}</td>`
+            + `<td>${escapeHTML(d.lockingEnabled || "unknown")}</td>`
+            + `<td>${escapeHTML(d.mbrDone || "unknown")}</td>`
+            + `<td>${escapeHTML(d.mediaEncrypt || "unknown")}</td>`
+            + `</tr>`
+    }).join("")
+    let raw = drives.map(d => {
+        let rawText = d.queryRaw || "(empty)"
+        return `<details class="raw-toggle"><summary>${escapeHTML(d.device)} raw query</summary><pre>${escapeHTML(rawText)}</pre></details>`
+    }).join("")
+    return `<div class="table-wrap"><table class="data-table">`
+        + `<thead><tr><th>Device</th><th>Type</th><th>State</th><th>Locking</th><th>Enabled</th><th>MBR Done</th><th>Media Encrypt</th></tr></thead>`
+        + `<tbody>${rows}</tbody></table></div>${raw}`
+}
+
+/** Fetches per-drive diagnostics from /diagnostics and renders summary rows. */
 async function loadDiagnostics() {
     try {
         let r = await fetch("/diagnostics")
         let j = await r.json()
         $("diagSummary").innerText = `Generated: ${j.generatedAt || "unknown"}`
-        let out = ""
-        ;(j.drives || []).forEach(d => {
-            out += `Device: ${d.device}\n`
-            out += `  OPAL: ${d.opal}  Locked: ${d.locked}\n`
-            out += `  LockingSupported: ${d.lockingSupported}\n`
-            out += `  LockingEnabled: ${d.lockingEnabled}\n`
-            out += `  MBREnable: ${d.mbrEnabled}\n`
-            out += `  MBRDone: ${d.mbrDone}\n`
-            out += `  MediaEncrypt: ${d.mediaEncrypt}\n`
-            out += `  Locked (from query): ${d.lockingRange0Locked}\n`
-            out += `  --- raw --query output ---\n`
-            out += (d.queryRaw || "(empty)") + "\n\n"
-        })
-        $("diagContent").innerText = out || "No diagnostics data available."
+        $("diagContent").innerHTML = renderDiagnosticsRows(j.drives || [])
     } catch (err) {
         $("diagContent").innerText = "Failed to load diagnostics: " + (err.message || "unknown error")
+    }
+}
+
+/** Redeems a console/SSH boot code for boot-only web access. */
+async function redeemBootCode() {
+    let code = $("bootPairingCode").value.trim()
+    if (!/^[0-9]{4}$/.test(code)) {
+        $("bootPairingResult").innerText = "Enter the 4-digit boot code."
+        return
+    }
+    $("bootPairingBtn").disabled = true
+    $("bootPairingResult").innerText = "Checking boot code..."
+    try {
+        let j = await postJSON("/boot-auth", {code})
+        if (!j.bootToken) throw new Error("no boot token returned")
+        bootToken = j.bootToken
+        sessionStorage.setItem("sedunlocksrvBootToken", bootToken)
+        $("bootPairingCode").value = ""
+        $("bootPairingResult").innerText = j.expiresAt ? `Boot access enabled until ${j.expiresAt}.` : "Boot access enabled."
+        discoverKernels()
+    } catch (err) {
+        $("bootPairingResult").innerText = err.message || "Boot code rejected"
+    } finally {
+        $("bootPairingBtn").disabled = false
     }
 }
 
@@ -866,7 +1186,7 @@ async function expertLogin() {
         expertToken = j.token
         sessionStorage.setItem("sedunlocksrvExpertToken", expertToken)
         $("expertActions").classList.remove("hidden")
-        $("expertStatus").innerText = "Expert actions unlocked for this session."
+        setExpertStatus("Unlocked", "ok")
         $("expertPw").value = ""
         appendExpertOutput("Expert mode authenticated.")
         syncExpertState()
@@ -883,7 +1203,7 @@ async function syncExpertState() {
         let configured = !!j.configured
         let authenticated = !!j.authenticated
         if (!configured) {
-            $("expertStatus").innerText = "Expert mode is not configured on this image."
+            setExpertStatus("Not configured", "muted")
             $("expertAuthEntry").classList.add("hidden")
             $("expertActions").classList.add("hidden")
             expertToken = ""
@@ -891,18 +1211,18 @@ async function syncExpertState() {
             return
         }
         if (!authenticated) {
-            $("expertStatus").innerText = "Expert actions are locked."
+            setExpertStatus("Locked", "warn")
             $("expertAuthEntry").classList.remove("hidden")
             $("expertActions").classList.add("hidden")
             expertToken = ""
             sessionStorage.removeItem("sedunlocksrvExpertToken")
             return
         }
-        $("expertStatus").innerText = "Expert actions unlocked for this session."
+        setExpertStatus("Unlocked", "ok")
         $("expertAuthEntry").classList.add("hidden")
         $("expertActions").classList.remove("hidden")
     } catch (err) {
-        $("expertStatus").innerText = "Unable to verify expert session state."
+        setExpertStatus("Unknown", "warn")
         $("expertAuthEntry").classList.remove("hidden")
         $("expertActions").classList.add("hidden")
     }
@@ -913,6 +1233,12 @@ function appendExpertOutput(text) {
     let ta = $("expertOutput")
     ta.value = (ta.value ? ta.value + "\n\n" : "") + text
     ta.scrollTop = ta.scrollHeight
+}
+
+function setExpertStatus(text, kind) {
+    let el = $("expertStatus")
+    el.innerText = text
+    el.className = "status-pill pill-" + (kind || "muted")
 }
 
 /** Sends a TPer revert command to the expert API for the specified drive. */
@@ -993,7 +1319,7 @@ async function pollFlashStatus() {
             $("uploadBtn").disabled = false
         }
     } catch (err) {
-        // Network error during poll — keep trying
+        // Network error during poll; keep trying.
     }
 }
 
@@ -1080,7 +1406,7 @@ async function expertReflashPBA() {
             throw err
         }
         
-        // Flash started — poll for progress
+        // Flash started; poll for progress.
         flashStatus.innerText = "Flashing PBA image to " + device + "..."
         stopFlashPolling()
         flashPoller = setInterval(pollFlashStatus, 750)
@@ -1127,21 +1453,18 @@ async function checkRAMForFile() {
         ramStatus.style.display = "block"
         
         if (ramData.availableBytes >= fileSize) {
-            ramStatus.style.backgroundColor = "#d4edda"
-            ramStatus.style.color = "#155724"
-            ramStatus.innerHTML = `✓ Sufficient RAM: ${fileSizeMiB} MiB needed, ${availableMiB} MiB available`
+            ramStatus.className = "output-line ok"
+            ramStatus.innerText = `Sufficient RAM: ${fileSizeMiB} MiB needed, ${availableMiB} MiB available`
             uploadBtn.disabled = false
         } else {
-            ramStatus.style.backgroundColor = "#f8d7da"
-            ramStatus.style.color = "#721c24"
-            ramStatus.innerHTML = `✗ Insufficient RAM: ${fileSizeMiB} MiB needed, but only ${availableMiB} MiB available`
+            ramStatus.className = "output-line bad"
+            ramStatus.innerText = `Insufficient RAM: ${fileSizeMiB} MiB needed, ${availableMiB} MiB available`
             uploadBtn.disabled = true
         }
     } catch (err) {
         ramStatus.style.display = "block"
-        ramStatus.style.backgroundColor = "#fff3cd"
-        ramStatus.style.color = "#856404"
-        ramStatus.innerHTML = `⚠ Could not check RAM: ${err.message}`
+        ramStatus.className = "output-line warn"
+        ramStatus.innerText = `Could not check RAM: ${err.message}`
         uploadBtn.disabled = false
     }
 }
@@ -1160,7 +1483,7 @@ async function discoverKernels() {
     try {
         let r = await fetch("/boot-list", {
             method: "POST",
-            headers: {"Content-Type": "application/json", ...authHeaders()}
+            headers: {"Content-Type": "application/json", ...bootControlHeaders()}
         })
         if (!r.ok) {
             let j = await r.json().catch(() => ({}))
@@ -1206,7 +1529,7 @@ async function checkDiscoveryStatus() {
     $("bootResult").innerText = "No bootable kernels found."
 }
 
-/** Entry point for boot — initiates kernel discovery. */
+/** Entry point for boot; initiates kernel discovery. */
 async function boot() {
     if (bootInFlight) return
     discoverKernels()
@@ -1220,17 +1543,19 @@ function renderKernelList() {
     allKernels.forEach((kernel, realIdx) => {
         if (hideRecovery && kernel.recovery) return
         let label = kernel.kernelName ? escapeHTML(kernel.kernelName) : "Kernel"
-        if (kernel.recovery) label = "[Recovery] " + label
         let details = []
         if (kernel.initrdName) details.push(escapeHTML(kernel.initrdName))
         if (kernel.source) details.push(escapeHTML(kernel.source))
         if (kernel.cmdline) details.push(escapeHTML(kernel.cmdline.length > 60 ? kernel.cmdline.substring(0, 60) + "..." : kernel.cmdline))
-        let detailStr = details.length ? ` <span style="color:#8b949e">(${details.join(" | ")})</span>` : ""
-        if (visibleCount === 1) html += '<hr class="kernel-separator">'
-        html += `<label class="checkbox-row"><input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)"> ${label}${detailStr}</label>`
+        let detailStr = details.length ? `<div class="kernel-detail">${details.join(" | ")}</div>` : ""
+        let recovery = kernel.recovery ? statusPill("Recovery", "warn") : statusPill("Normal", "ok")
+        html += `<label class="kernel-option">`
+            + `<input type="radio" name="kernelChoice" value="${realIdx}" onchange="selectedKernelIndex = parseInt(this.value)">`
+            + `<span><span class="kernel-main">${label}</span> ${recovery}${detailStr}</span>`
+            + `</label>`
         visibleCount++
     })
-    $("kernelOptions").innerHTML = html
+    $("kernelOptions").innerHTML = html || `<div class="muted">No kernels visible with recovery hidden.</div>`
     let firstRadio = document.querySelector('input[name="kernelChoice"]')
     if (firstRadio) {
         firstRadio.checked = true
@@ -1272,7 +1597,7 @@ async function bootSelectedKernel() {
     try {
         let r = await fetch("/boot", { 
             method: "POST", 
-            headers: {"Content-Type": "application/json", ...authHeaders()},
+            headers: {"Content-Type": "application/json", ...bootControlHeaders()},
             body: JSON.stringify({ kernelIndex: selectedKernelIndex })
         })
         if (!r.ok) {
@@ -1306,7 +1631,7 @@ async function reboot() {
     $("systemActionResult").innerText = "Requesting reboot..."
     setSystemActionBusy("reboot")
     try {
-        let j = await postAuthenticated("/reboot")
+        let j = await postWithOptionalSession("/reboot")
         $("systemActionResult").innerText = j.status ? `Reboot requested: ${j.status}.` : "Reboot requested."
     } catch (err) {
         $("systemActionResult").innerText = err.message || "Reboot request failed"
@@ -1319,7 +1644,7 @@ async function shutdown() {
     $("systemActionResult").innerText = "Requesting shutdown..."
     setSystemActionBusy("shutdown")
     try {
-        let j = await postAuthenticated("/poweroff")
+        let j = await postWithOptionalSession("/poweroff")
         $("systemActionResult").innerText = j.status ? `Shutdown requested: ${j.status}.` : "Shutdown requested."
     } catch (err) {
         $("systemActionResult").innerText = err.message || "Shutdown request failed"
@@ -1355,6 +1680,12 @@ $("expertPw").addEventListener("keydown", e => {
     if (e.key === "Enter") {
         e.preventDefault()
         expertLogin()
+    }
+})
+$("bootPairingCode").addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+        e.preventDefault()
+        redeemBootCode()
     }
 })
 loadPolicy()

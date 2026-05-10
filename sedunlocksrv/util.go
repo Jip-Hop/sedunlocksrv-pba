@@ -37,7 +37,6 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	return false
 }
 
-// limitBody caps the request body size for JSON endpoints.
 // 64 KB is generous for any JSON payload this server accepts.
 const maxJSONBodyBytes int64 = 64 * 1024
 
@@ -220,11 +219,24 @@ func appendBootDebugAtLevel(debug *[]string, level int, format string, args ...i
 // COMMAND EXECUTION
 // ============================================================
 
+func redactedSedutilCommand(args []string) string {
+	redacted := append([]string{"sedutil-cli"}, args...)
+	for i, arg := range redacted {
+		switch arg {
+		case "--reverttper", "--yesIreallywanttoERASEALLmydatausingthePSID":
+			if i+1 < len(redacted) {
+				redacted[i+1] = "<redacted>"
+			}
+		}
+	}
+	return strings.Join(redacted, " ")
+}
+
 // runExpertCommand executes a sedutil-cli command and writes the result as JSON.
 func runExpertCommand(w http.ResponseWriter, args ...string) {
 	out, err := runSedutil(45*time.Second, args...)
 	resp := map[string]string{
-		"command": strings.Join(append([]string{"sedutil-cli"}, args...), " "),
+		"command": redactedSedutilCommand(args),
 		"output":  strings.TrimSpace(out),
 	}
 	if err != nil {
@@ -401,6 +413,11 @@ func runExpertPBAFlashImagePath(w http.ResponseWriter, password, imagePath, devi
 // newSystemActionHandler returns an HTTP handler that responds with a status
 // message and then executes a system command (e.g. reboot, poweroff) after
 // a brief delay so the response can be flushed.
+//
+// Intentional security tradeoff: reboot and poweroff must remain available even
+// before any drive is unlocked, when no web session token can exist yet. Any
+// network client that can reach the PBA can request these POST endpoints. Do not
+// add session-token auth here unless another pre-unlock recovery path is kept.
 func newSystemActionHandler(label string, args ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {

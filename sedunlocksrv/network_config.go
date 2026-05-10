@@ -393,6 +393,10 @@ func writeRuntimeNetworkConfig(cfg RuntimeNetworkConfig) error {
 	}
 
 	dir := filepath.Dir(runtimeNetworkConfigPath)
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(runtimeNetworkConfigPath); err == nil {
+		mode = info.Mode().Perm()
+	}
 	tmp, err := os.CreateTemp(dir, ".sedunlocksrv.conf.")
 	if err != nil {
 		return err
@@ -403,7 +407,7 @@ func writeRuntimeNetworkConfig(cfg RuntimeNetworkConfig) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return err

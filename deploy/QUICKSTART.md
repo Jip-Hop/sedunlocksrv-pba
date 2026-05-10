@@ -8,7 +8,7 @@ For complete command-line reference, see [README.md](README.md).
 ## 1. Check Prerequisites
 
 ```bash
-go version           # Go 1.21+
+go version           # Go 1.22+
 gcc --version        # build-essential
 openssl version      # OpenSSL
 which sedutil-cli    # sedutil-cli installed
@@ -18,9 +18,12 @@ lsblk | grep nvme    # OPAL NVMe drive visible
 If anything is missing:
 ```bash
 sudo apt update && sudo apt install -y \
-    build-essential golang-go curl xorriso bsdtar cpio xz-utils \
+    build-essential curl xorriso libarchive-tools cpio xz-utils \
     util-linux dosfstools openssl grub-common grub-efi-amd64-bin openssh-client
 ```
+
+Install Go 1.22+ from [go.dev/dl](https://go.dev/dl/). Avoid the distro
+`golang-go` package; it is usually too old for this repository.
 
 ## 2. Run Setup (one-time, as root)
 
@@ -149,7 +152,7 @@ sudo ./setup-deploy.sh     # re-run setup
 ### "Build failed"
 
 ```bash
-go version     # needs 1.21+
+go version     # needs 1.22+
 df -h /        # needs ~10 GB free
 ssh deploy@target 'tail -n 100 ~/sedunlocksrv/deploy-*.log | grep -A5 ERROR'
 ```

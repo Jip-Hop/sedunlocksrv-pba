@@ -155,6 +155,7 @@ This is a **feature-enhanced fork** of [Jip-Hop/sedunlocksrv-pba](https://github
 6. After unlock:
    - Use `Boot` for fast warm handoff via `kexec`
    - Use `Reboot` for a full hardware/firmware restart path
+   - If you unlocked from SSH or the local console but want to boot from the web UI, enter the displayed 4-digit boot code in the web UI within 15 minutes
 
 ## Boot Flow (Locked OPAL -> kexec)
 
@@ -203,10 +204,11 @@ Notes:
 
 ## Security Notes & Known Limitations
 
-- **Unauthenticated `/reboot` and `/poweroff` endpoints**: These endpoints are intentionally unauthenticated. In the PBA context there is no acceptable way to supply a session token for power operations — the user may need to reboot or power off without having unlocked any drives. This is by design.
+- **Unauthenticated power control endpoints**: `/reboot` and `/poweroff` are intentionally unauthenticated. Before a drive is unlocked there may be no web session token, but operators still need a way to recover, reboot, or shut down the PBA. The accepted drawback is that any network client able to reach the PBA can request a reboot or poweroff.
 - **Pre-auth information exposure**: `/status` and `/diagnostics` are intentionally unauthenticated so operators can troubleshoot drive detection and network setup before unlock. That means network interface names/addresses and per-drive OPAL query metadata are visible before authentication.
 - **SSH loopback transport**: The SSH UI reaches the local API over TLS on `127.0.0.1:443`, using `curl --resolve` so certificate verification is bound to `TLS_SERVER_NAME` rather than the literal loopback address. This avoids opening a plain-HTTP localhost control port while still supporting custom certificates.
-- **Loopback-only token bypass for SSH boot**: The SSH helper can use `/boot-list` and `/boot` without a web session token after a successful unlock, but only when the request originates from loopback. Remote network clients still need the normal unlock session token.
+- **Boot pairing code**: After a successful unlock, the console, SSH menu, and web API mint a random 4-digit boot code that expires after 15 minutes. A browser can redeem it for a boot-only token that works with `/boot-list` and `/boot`; it does not grant password-change or expert access. Invalid code attempts are limited to five failures, after which another unlock is required to mint a fresh code.
+- **Loopback-only SSH boot path**: The SSH helper can use `/boot-list` and `/boot` without a web session token after a successful unlock, but only when the request originates from loopback. Remote network clients need either the normal unlock session token or a redeemed boot pairing token.
 - **Private/internal CA handling**: `TLS_CA_CERT_PATH` affects only the SSH helper's internal curl path. This is intentional: browser trust belongs to the client machine accessing the web UI, so the PBA image does not need to rewrite its system CA store just to support a private PKI on the browser side.
 - **Passwords visible in `/proc/cmdline`**: Disk passwords are passed as command-line arguments to `sedutil-cli` and are therefore visible in `/proc/<pid>/cmdline` while the process runs. This is a limitation of `sedutil-cli` itself and cannot be mitigated without upstream changes. The PBA environment is a single-user, ephemeral boot image where only the operator has access.
 - **Single active session**: Only one web session token exists at a time. A new login invalidates the previous session. This is by design: the PBA is a single-user environment and does not need concurrent session support.
@@ -216,6 +218,7 @@ Notes:
 
 ## Operational Notes
 - `Boot` is a warm handoff through `kexec`. This is faster and keeps unlocked OPAL state, but it is not the same as a cold restart. If the target OS or platform firmware only behaves correctly after a full restart, use `Reboot` instead.
+- Unlocking from any interface mints a 4-digit web boot code. Use it when you unlock from SSH or the local console and then want to select/boot a kernel from a browser without re-entering the disk password.
 - Split boot layouts are supported. A working system may store EFI bootloader files on one partition and the actual kernel/initrd on another filesystem such as LVM-backed root or `/boot`.
 - **Recovery Kernels in Web UI**: Kernel discovery may include normal and recovery boot entries. Recovery kernels are hidden by default in the web flow (`Hide Recovery Kernels` checked). Users can uncheck the option to show them, and recovery entries are labeled with a `[Recovery]` prefix.
 - **Diagnostics in Console and SSH**: The local console TUI and SSH menu both include a diagnostics screen that shows the current network interfaces plus per-drive OPAL query data. This is useful when networking is misconfigured and the web UI cannot be reached.
@@ -438,11 +441,12 @@ The Go backend exposes the following HTTP endpoints on ports 80 (redirect) and 4
 | `/password-policy` | GET | — | Current password complexity requirements (JSON) |
 | `/unlock` | POST | — | Submit unlock password for startup-locked drives |
 | `/change-password` | POST | Token | Change Admin1/SID password on selected drives |
-| `/boot-list` | POST | Token or local SSH loopback | Start async kernel discovery for boot selection |
-| `/boot` | POST | Token or local SSH loopback | Load and execute a selected kernel via kexec |
+| `/boot-auth` | POST | 4-digit boot code | Redeem a short-lived boot pairing code for a boot-only token |
+| `/boot-list` | POST | Token, boot token, or local SSH loopback | Start async kernel discovery for boot selection |
+| `/boot` | POST | Token, boot token, or local SSH loopback | Load and execute a selected kernel via kexec |
 | `/boot-status` | GET | — | Current boot launch state (JSON) |
-| `/reboot` | POST | — | Immediate hardware reboot (`reboot -nf`) |
-| `/poweroff` | POST | — | Immediate power off (`poweroff -nf`) |
+| `/reboot` | POST | — (unauthenticated by design) | Immediate hardware reboot (`reboot -nf`) |
+| `/poweroff` | POST | — (unauthenticated by design) | Immediate power off (`poweroff -nf`) |
 | `/expert/auth` | POST | — | Authenticate with expert password, receive expert token |
 | `/expert/status` | GET | — | Report whether Expert Mode is configured and whether the supplied expert token is valid |
 | `/expert/revert-tper` | POST | Expert | Factory-reset drive TPer with current password |
@@ -451,7 +455,7 @@ The Go backend exposes the following HTTP endpoints on ports 80 (redirect) and 4
 | `/expert/reflash-pba` | POST | Expert | Upload and flash a replacement PBA image |
 | `/expert/flash-status` | GET | Expert | Detailed flash validation and progress (JSON) |
 
-**Auth legend:** "—" = unauthenticated, "Token" = session token from successful unlock, "Expert" = expert token from `/expert/auth`, "Token or local SSH loopback" = either a valid web session token or a loopback-local request from the forced-command SSH helper after a successful unlock.
+**Auth legend:** "—" = unauthenticated, "Token" = session token from successful unlock, "boot token" = token returned by `/boot-auth` after entering the 4-digit pairing code, "Expert" = expert token from `/expert/auth`, "local SSH loopback" = loopback-local request from the forced-command SSH helper after a successful unlock.
 
 ---
 

@@ -30,6 +30,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -71,6 +72,12 @@ var (
 	sessionMu         sync.RWMutex
 	apiSessionToken   string
 	expertSessionTok  string
+	bootPairingMu     sync.Mutex
+	bootPairingCode   string
+	bootPairingExpiry time.Time
+	bootPairingFails  int
+	bootSessionToken  string
+	bootSessionExpiry time.Time
 	bootStateMu       sync.RWMutex
 	startupLockedOpal = map[string]struct{}{}
 	bootLaunchState   BootLaunchStatus
@@ -110,6 +117,11 @@ const (
 	debugVerbose = 0 // full trace
 	debugNormal  = 1 // user-facing progress
 	debugQuiet   = 2 // suppress logs
+)
+
+const (
+	bootPairingTTL         = 15 * time.Minute
+	maxBootPairingAttempts = 5
 )
 
 var settleFactor = parseSettleFactor()
@@ -656,6 +668,105 @@ func mintExpertToken() (string, error) {
 	return token, nil
 }
 
+type bootPairingInfo struct {
+	Code      string
+	ExpiresAt time.Time
+}
+
+// mintBootPairingCode creates a short-lived 4-digit code that can be typed into
+// another interface to obtain boot-only access. It intentionally does not grant
+// password-change or expert permissions.
+func mintBootPairingCode() (bootPairingInfo, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(10000))
+	if err != nil {
+		return bootPairingInfo{}, err
+	}
+	info := bootPairingInfo{
+		Code:      fmt.Sprintf("%04d", n.Int64()),
+		ExpiresAt: time.Now().Add(bootPairingTTL),
+	}
+	bootPairingMu.Lock()
+	bootPairingCode = info.Code
+	bootPairingExpiry = info.ExpiresAt
+	bootPairingFails = 0
+	bootSessionToken = ""
+	bootSessionExpiry = time.Time{}
+	bootPairingMu.Unlock()
+	return info, nil
+}
+
+func isFourDigitCode(code string) bool {
+	if len(code) != 4 {
+		return false
+	}
+	for _, c := range code {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func clearBootPairingLocked() {
+	bootPairingCode = ""
+	bootPairingExpiry = time.Time{}
+	bootPairingFails = 0
+}
+
+// redeemBootPairingCode validates a one-time 4-digit code and returns a
+// boot-only token that expires with the code. Invalid attempts are capped to
+// keep the small code space useful without allowing casual brute force.
+func redeemBootPairingCode(code string) (string, time.Time, error) {
+	code = strings.TrimSpace(code)
+	now := time.Now()
+
+	bootPairingMu.Lock()
+	defer bootPairingMu.Unlock()
+
+	if bootPairingCode == "" || now.After(bootPairingExpiry) {
+		clearBootPairingLocked()
+		return "", time.Time{}, fmt.Errorf("boot code expired or unavailable")
+	}
+	if bootPairingFails >= maxBootPairingAttempts {
+		clearBootPairingLocked()
+		return "", time.Time{}, fmt.Errorf("too many invalid boot code attempts; unlock again to mint a new code")
+	}
+	if !isFourDigitCode(code) || code != bootPairingCode {
+		bootPairingFails++
+		if bootPairingFails >= maxBootPairingAttempts {
+			clearBootPairingLocked()
+			return "", time.Time{}, fmt.Errorf("too many invalid boot code attempts; unlock again to mint a new code")
+		}
+		return "", time.Time{}, fmt.Errorf("invalid boot code")
+	}
+
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", time.Time{}, err
+	}
+	token := hex.EncodeToString(buf)
+	expiresAt := bootPairingExpiry
+	bootSessionToken = token
+	bootSessionExpiry = expiresAt
+	clearBootPairingLocked()
+	return token, expiresAt, nil
+}
+
+func validBootSessionToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	now := time.Now()
+	bootPairingMu.Lock()
+	defer bootPairingMu.Unlock()
+	if bootSessionToken == "" || now.After(bootSessionExpiry) {
+		bootSessionToken = ""
+		bootSessionExpiry = time.Time{}
+		return false
+	}
+	return token == bootSessionToken
+}
+
 // validSessionToken returns true if the given token matches the current
 // active API session token (issued after a successful unlock).
 func validSessionToken(token string) bool {
@@ -696,12 +807,14 @@ func isLoopbackRequest(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// requireSessionTokenOrUnlockedDrive is an HTTP middleware guard. Returns
-// true (and writes a 403) if the request has neither a valid session token
-// nor a loopback-local unlocked-drive request. This preserves the SSH helper's
-// local boot flow without exposing tokenless boot control over the network.
-func requireSessionTokenOrUnlockedDrive(w http.ResponseWriter, r *http.Request) bool {
+// requireBootControlAuth guards remote boot selection. It accepts the normal
+// web unlock session token, a redeemed boot-only pairing token, or a loopback
+// SSH-helper request after a boot drive has been unlocked.
+func requireBootControlAuth(w http.ResponseWriter, r *http.Request) bool {
 	if validSessionToken(r.Header.Get("X-Auth-Token")) {
+		return false
+	}
+	if validBootSessionToken(r.Header.Get("X-Boot-Token")) {
 		return false
 	}
 	if isLoopbackRequest(r) && hasUnlockedBootDrive() {
@@ -3154,6 +3267,13 @@ func runActiveConsoleMenu(fd int) {
 					fmt.Printf("❌ %s unlock failed\n", result.Device)
 				}
 			}
+			if hasSuccessfulUnlock(results) {
+				if pairing, pairErr := mintBootPairingCode(); pairErr != nil {
+					fmt.Printf("⚠️ Web boot code unavailable: %v\n", pairErr)
+				} else {
+					fmt.Printf("Web boot code: %s (expires in 15 minutes)\n", pairing.Code)
+				}
+			}
 			if err != nil {
 				fmt.Println("❌", err)
 			}
@@ -3405,6 +3525,8 @@ func main() {
 			return
 		}
 		token := ""
+		bootCode := ""
+		bootCodeExpiresAt := ""
 		if hasSuccessfulUnlock(results) {
 			var mintErr error
 			token, mintErr = mintSessionToken()
@@ -3412,8 +3534,45 @@ func main() {
 				jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session token"})
 				return
 			}
+			pairing, pairErr := mintBootPairingCode()
+			if pairErr != nil {
+				jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create boot pairing code"})
+				return
+			}
+			bootCode = pairing.Code
+			bootCodeExpiresAt = pairing.ExpiresAt.UTC().Format(time.RFC3339)
 		}
-		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results, Token: token})
+		jsonResponse(w, http.StatusOK, UnlockResponse{Results: results, Token: token, BootCode: bootCode, BootCodeExpiresAt: bootCodeExpiresAt})
+	})
+
+	mux.HandleFunc("/boot-auth", func(w http.ResponseWriter, r *http.Request) {
+		if requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if checkOrigin(w, r) {
+			return
+		}
+		if !hasUnlockedBootDrive() {
+			jsonResponse(w, http.StatusForbidden, map[string]string{"error": "boot is unavailable until a startup-locked OPAL drive is unlocked"})
+			return
+		}
+		limitBody(r)
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		token, expiresAt, err := redeemBootPairingCode(req.Code)
+		if err != nil {
+			jsonResponse(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]string{
+			"bootToken": token,
+			"expiresAt": expiresAt.UTC().Format(time.RFC3339),
+		})
 	})
 
 	mux.HandleFunc("/change-password", func(w http.ResponseWriter, r *http.Request) {
@@ -3773,7 +3932,7 @@ func main() {
 		if checkOrigin(w, r) {
 			return
 		}
-		if requireSessionTokenOrUnlockedDrive(w, r) {
+		if requireBootControlAuth(w, r) {
 			return
 		}
 		if err := startKernelDiscovery(); err != nil {
@@ -3790,7 +3949,7 @@ func main() {
 		if checkOrigin(w, r) {
 			return
 		}
-		if requireSessionTokenOrUnlockedDrive(w, r) {
+		if requireBootControlAuth(w, r) {
 			return
 		}
 

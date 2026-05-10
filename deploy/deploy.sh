@@ -28,7 +28,7 @@
 # SSH Key Requirements:
 #   - Ed25519 keys only (deterministic signatures required for key derivation)
 #   - ECDSA keys are NOT supported (non-deterministic signatures)
-#   - RSA keys work but Ed25519 is recommended
+#   - RSA keys are not supported by setup-deploy.sh for this KDF flow
 #   - SSH agent forwarding (ssh -A) must be enabled for autonomous deployments
 #
 # Security Notes:
@@ -46,7 +46,7 @@
 #   --cert-path=PATH         Absolute path to fullchain.pem
 #   --key-path=PATH          Absolute path to key.pem
 #   --build-args=ARGS        Comma-separated additional arguments for build.sh
-#                             (e.g., --build-args=--sedutil-fork=ChubbyAnt,--no-cache)
+#                             (e.g., --build-args=--ssh,--sedutil-fork=ChubbyAnt)
 #   --expert-password=PASS   Expert mode password passed directly to build.sh;
 #                             use this instead of --build-args to avoid shell
 #                             interpretation of special characters in the password
@@ -391,7 +391,7 @@ build_pba() {
 # =============================================================================
 
 # validate_pba_image IMAGE — validates PBA image structure (MBR, FAT32, boot sector)
-# Replicates checks from Go's validateUploadedPBAImageBytes function.
+# Replicates checks from Go's validateUploadedPBAImageFile function.
 # Returns 0 on success, exits on failure.
 validate_pba_image() {
     local image="$1"

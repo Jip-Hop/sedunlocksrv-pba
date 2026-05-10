@@ -617,7 +617,7 @@ sudo apt update
 sudo apt install -y \
   build-essential gcc make \
   curl wget git \
-  xorriso bsdtar \
+  xorriso libarchive-tools \
   cpio rsync \
   jq openssh-client file unzip \
   dropbear-bin \

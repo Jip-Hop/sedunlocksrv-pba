@@ -58,8 +58,10 @@ type UnlockResult struct {
 }
 
 type UnlockResponse struct {
-	Results []UnlockResult `json:"results"`
-	Token   string         `json:"token,omitempty"`
+	Results           []UnlockResult `json:"results"`
+	Token             string         `json:"token,omitempty"`
+	BootCode          string         `json:"bootCode,omitempty"`
+	BootCodeExpiresAt string         `json:"bootCodeExpiresAt,omitempty"`
 }
 
 type PasswordChangeResult struct {

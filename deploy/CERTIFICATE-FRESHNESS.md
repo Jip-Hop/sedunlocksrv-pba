@@ -138,7 +138,6 @@ Checks when the certificate file was last modified.
 ```bash
 deploy.sh --cert-path=/opt/certs/cert.pem \
           --key-path=/opt/certs/key.pem \
-          --use-ssh-key-encrypted \
           --cert-freshness=mtime \
           --cert-grace=5 \
           --cert-timeout=60
@@ -164,7 +163,7 @@ Waits for explicit marker file (created by certificate update process).
 
 **Disadvantages:**
 - ❌ Requires certificate update process to create marker file
-- ❌ Marker file cleanup logic needed
+- ❌ Certificate update process must create the marker file reliably
 - ❌ Tight coupling between cert update and deploy processes
 
 **Use case:**
@@ -184,7 +183,6 @@ Then in deployment:
 ```bash
 deploy.sh --cert-path=/opt/pba-certs/cert.pem \
           --key-path=/opt/pba-certs/key.pem \
-          --use-ssh-key-encrypted \
           --cert-freshness=marker
 ```
 
@@ -218,7 +216,6 @@ Disables certificate freshness validation entirely.
 ```bash
 deploy.sh --cert-path=/tmp/cert.pem \
           --key-path=/tmp/key.pem \
-          --use-ssh-key-encrypted \
           --cert-freshness=none
 ```
 
@@ -302,7 +299,6 @@ ssh -i ~/.ssh/id_deploy deploy@pba-host \
 ./deploy.sh \
   --cert-path=/shared/certs/fullchain.pem \
   --key-path=/shared/certs/privkey.pem \
-  --use-ssh-key-encrypted \
   --cert-freshness=marker \
   --cert-timeout=300
 ```
@@ -352,7 +348,6 @@ ssh deploy@proxmox-node \
 ./deploy.sh \
   --cert-path=./test-cert.pem \
   --key-path=./test-key.pem \
-  --use-ssh-key-encrypted \
   --cert-freshness=none \
   --dry-run
 ```
@@ -384,7 +379,7 @@ export CERT_FRESHNESS_STRATEGY="serial"    # Strategy: serial, hash, mtime, mark
 export CERT_FRESHNESS_TIMEOUT="300"        # Max wait seconds
 export CERT_FRESHNESS_GRACE="10"           # Grace period (mtime only)
 
-./deploy.sh --cert-path=... --key-path=... --use-ssh-key-encrypted
+./deploy.sh --cert-path=... --key-path=...
 ```
 
 ---
@@ -476,7 +471,6 @@ ssh -i ~/.ssh/id_deploy deploy@pba-server \
   "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
-    --use-ssh-key-encrypted \
     --cert-freshness=hash \
     --cert-timeout=300"
 ```
@@ -494,7 +488,6 @@ ssh deploy@pba-server \
   "~/sedunlocksrv/deploy/deploy.sh \
     --cert-path=${CERT_PATH} \
     --key-path=${KEY_PATH} \
-    --use-ssh-key-encrypted \
     --cert-freshness=mtime \
     --cert-grace=15 \
     --cert-timeout=60"
@@ -529,7 +522,6 @@ if wait_for_cert_marker; then
     ./deploy.sh \
       --cert-path=${CERT_PATH} \
       --key-path=${KEY_PATH} \
-      --use-ssh-key-encrypted \
       --cert-freshness=marker
 else
     echo "Certificate marker file not found"
@@ -547,7 +539,6 @@ fi
 # Terminal 1: Start deployment with hash check
 deploy.sh --cert-path=/tmp/test-cert.pem \
           --key-path=/tmp/test-key.pem \
-          --use-ssh-key-encrypted \
           --cert-freshness=hash \
           --cert-timeout=30
 
@@ -566,7 +557,6 @@ openssl req -x509 -newkey rsa:2048 -keyout /tmp/test.key -out /tmp/test.crt -day
 # Start deployment with mtime check
 deploy.sh --cert-path=/tmp/test.crt \
           --key-path=/tmp/test.key \
-          --use-ssh-key-encrypted \
           --cert-freshness=mtime \
           --cert-grace=5 \
           --cert-timeout=30

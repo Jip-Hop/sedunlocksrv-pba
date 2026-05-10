@@ -75,3 +75,16 @@ func TestRuntimeNetworkConfigRejectsInvalidStaticIPv4(t *testing.T) {
 		})
 	}
 }
+
+func TestParseShellAssignmentHandlesQuotedValues(t *testing.T) {
+	key, value, ok := parseShellAssignment("TLS_SERVER_NAME='pba.example.com' # kept for SSH")
+	if !ok {
+		t.Fatal("assignment was not parsed")
+	}
+	if key != "TLS_SERVER_NAME" {
+		t.Fatalf("key = %q, want TLS_SERVER_NAME", key)
+	}
+	if value != "pba.example.com" {
+		t.Fatalf("value = %q, want pba.example.com", value)
+	}
+}

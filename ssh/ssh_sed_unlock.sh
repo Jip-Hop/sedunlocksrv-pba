@@ -588,6 +588,10 @@ while true; do
                 else
                     echo "No unlockable OPAL drives were reported."
                 fi
+                BOOT_CODE=$(echo "$RESP" | jq -r '.bootCode // empty')
+                if [ -n "${BOOT_CODE}" ]; then
+                    echo "Web boot code: ${BOOT_CODE} (expires in 15 minutes)."
+                fi
             fi
             echo -n "Press Enter to continue: "
             read -r _
